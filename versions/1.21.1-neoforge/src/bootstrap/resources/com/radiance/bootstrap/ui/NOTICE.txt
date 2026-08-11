@@ -1,0 +1,18 @@
+The Java loading-scene model in com.radiance.bootstrap.ui is adapted from
+net.neoforged.fancymodloader:earlydisplay:4.0.43.
+
+Copyright (c) Forge Development LLC and contributors
+SPDX-License-Identifier: LGPL-2.1-only
+
+The full LGPL 2.1 license is included as LGPL-2.1.txt in this directory.
+
+Monocraft.ttf, fox_running.png, squirrel.png, and the root neoforged_icon.png
+are preserved byte-for-byte
+from the published earlydisplay 4.0.43 artifact. Monocraft version 3.0 is
+Copyright (c) 2022 Idrees Hassan and licensed under the SIL Open Font License
+1.1; its copyright notice and license are included as OFL-1.1-Monocraft.txt.
+
+The published earlydisplay JAR and sources JAR contain no separate notices
+for fox_running.png, squirrel.png, or neoforged_icon.png. They are retained under FancyModLoader's
+project-wide LGPL 2.1 terms and attribution rather than assigned an inferred
+third-party license.

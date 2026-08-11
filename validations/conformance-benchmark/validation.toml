@@ -1,0 +1,8 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+
+[instances.client]
+memory-max = "4G"
+width = 2560
+height = 1440
+jvm-args = ["-Dradiance.audit.experiments=true", "-Dradiance.audit.correctnessOnly=true", "-Dradiance.audit.benchmark=true", "-Dradiance.audit.benchmark.version=1.21.1-neoforge", "-Dradiance.audit.unattended=true"]
