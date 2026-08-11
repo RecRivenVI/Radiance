@@ -1,0 +1,157 @@
+package com.radiance.audit.mixin;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+import org.junit.jupiter.api.Test;
+
+class AuditMixinPluginTest {
+    @Test
+    void controllerOnlyLeavesNoRendererOrNativeObserversWoven() throws Exception {
+        String key = "radiance.audit.controllerOnly";
+        String previous = System.getProperty(key);
+        try {
+            System.setProperty(key, "true");
+            var plugin = new AuditMixinPlugin(name -> true, () -> true);
+            try (var input = getClass().getResourceAsStream("/radiance-audit.mixins.json")) {
+                var config =
+                        com.google.gson.JsonParser.parseReader(
+                                new java.io.InputStreamReader(input));
+                for (var element : config.getAsJsonObject().getAsJsonArray("client")) {
+                    String name = element.getAsString();
+                    assertEquals(
+                            name.equals("MinimalCityBenchmarkMixin"),
+                            plugin.shouldApplyMixin(
+                                    "net.minecraft.client.Minecraft",
+                                    "com.radiance.audit.mixin." + name),
+                            name);
+                }
+            }
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
+    void correctnessSessionsRetainDriverWithoutRewritingProducers() {
+        String key = "radiance.audit.correctnessOnly";
+        String previous = System.getProperty(key);
+        try {
+            System.setProperty(key, "true");
+            var plugin = new AuditMixinPlugin(name -> true);
+            for (String source : java.util.List.of("Model", "Baked", "Item", "Storage"))
+                assertFalse(
+                        plugin.shouldApplyMixin(
+                                "net.minecraft.client.renderer.block.ModelBlockRenderer",
+                                "com.radiance.audit.mixin.ProfileProducer" + source + "Mixin"));
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "net.minecraft.client.Minecraft",
+                            "com.radiance.audit.mixin.MinecraftAuditMixin"));
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
+    void vanillaPerformanceDoesNotModifyTakeoverSourceModels() {
+        String key = "radiance.audit.vanillaPerformance";
+        try {
+            System.setProperty(key, "true");
+            var plugin = new AuditMixinPlugin(name -> true);
+            for (String source : java.util.List.of("Model", "Baked", "Item"))
+                assertFalse(
+                        plugin.shouldApplyMixin(
+                                "net.minecraft.client.model.geom.ModelPart",
+                                "com.radiance.audit.mixin.ProfileProducer" + source + "Mixin"));
+            for (String observer :
+                    java.util.List.of("LevelRendererAccessor", "ProfileLevelSetupMixin"))
+                assertFalse(
+                        plugin.shouldApplyMixin(
+                                "net.minecraft.client.renderer.LevelRenderer",
+                                "com.radiance.audit.mixin." + observer));
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "com.radiance.client.proxy.world.EntityProxy",
+                            "com.radiance.audit.mixin.ProfileEntityProxyMixin"));
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "com.radiance.client.vertex.StorageVertexConsumerProvider",
+                            "com.radiance.audit.mixin.ProfileProducerStorageMixin"));
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "com.radiance.adapter.vanilla.VanillaLivingReplacement",
+                            "com.radiance.audit.mixin.ProfileTakeoverWorkMixins$Living"));
+        } finally {
+            System.clearProperty(key);
+        }
+    }
+
+    @Test
+    void sourceMutationNeverLoadsInAnOrdinaryOrPerformanceRun() {
+        String key = "radiance.audit.unregisteredSource";
+        String previous = System.getProperty(key);
+        try {
+            var plugin = new AuditMixinPlugin(name -> true);
+            System.clearProperty(key);
+            assertFalse(
+                    plugin.shouldApplyMixin(
+                            "net.minecraft.client.model.geom.ModelPart$Cube",
+                            "com.radiance.audit.mixin.UnregisteredPartMutationMixin"));
+            System.setProperty(key, "true");
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "net.minecraft.client.model.geom.ModelPart$Cube",
+                            "com.radiance.audit.mixin.UnregisteredPartMutationMixin"));
+        } finally {
+            if (previous == null) System.clearProperty(key);
+            else System.setProperty(key, previous);
+        }
+    }
+
+    @Test
+    void explicitScenarioRetainsAccessorWithoutEnablingChunkObservers() {
+        AuditMixinPlugin ordinary = new AuditMixinPlugin(name -> true, () -> false);
+        AuditMixinPlugin scenario = new AuditMixinPlugin(name -> true, () -> true);
+        String target = "net.minecraft.client.renderer.LevelRenderer";
+        String prefix = "com.radiance.audit.mixin.";
+        assertTrue(scenario.shouldApplyMixin(target, prefix + "LevelRendererAccessor"));
+        assertEquals(
+                ordinary.shouldApplyMixin(target, prefix + "LevelRendererAuditMixin"),
+                scenario.shouldApplyMixin(target, prefix + "LevelRendererAuditMixin"));
+        assertFalse(
+                new AuditMixinPlugin(name -> false, () -> true)
+                        .shouldApplyMixin(target, prefix + "LevelRendererAccessor"));
+    }
+
+    @Test
+    void missingRendererSelectsOnlyVanillaClientMixinBeforeTransformation() {
+        AuditMixinPlugin plugin = new AuditMixinPlugin(name -> name.startsWith("net.minecraft."));
+        assertFalse(
+                plugin.shouldApplyMixin(
+                        "net.minecraft.client.Minecraft",
+                        "com.radiance.audit.mixin.MinecraftAuditMixin"));
+        assertTrue(
+                plugin.shouldApplyMixin(
+                        "net.minecraft.client.Minecraft",
+                        "com.radiance.audit.mixin.VanillaMinecraftAuditMixin"));
+        assertFalse(
+                plugin.shouldApplyMixin(
+                        "com.radiance.client.proxy.vulkan.ShaderProxy",
+                        "com.radiance.audit.mixin.ShaderProxyAuditMixin"));
+    }
+
+    @Test
+    void installedRendererSelectsOnlyRadianceClientMixin() {
+        AuditMixinPlugin plugin = new AuditMixinPlugin(name -> true);
+        assertTrue(
+                plugin.shouldApplyMixin(
+                        "net.minecraft.client.Minecraft",
+                        "com.radiance.audit.mixin.MinecraftAuditMixin"));
+        assertFalse(
+                plugin.shouldApplyMixin(
+                        "net.minecraft.client.Minecraft",
+                        "com.radiance.audit.mixin.VanillaMinecraftAuditMixin"));
+    }
+}

@@ -1,0 +1,18 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define VPT_DIRECT_LIGHT_STRENGTH 1.0
+#define VPT_INDIRECT_LIGHT_STRENGTH 16.0
+#include "util/display_colour.glsl"
+#include "util/source_radiance.glsl"
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std430) buffer Results {vec4 rows[];} result;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    vec3 colour=vec3(float(i)/9.0,0.25,0.75);
+    result.rows[i*8]=vec4(displaySrgbDecode(displaySrgbEncode(colour)),1);
+    result.rows[i*8+1]=vec4(displayHdrShoulder(vec3(float(i)*2),5),1);
+    result.rows[i*8+2]=vec4(displayPqEncode(vec3(100,1000,10000)),1);
+    result.rows[i*8+3]=vec4(displayRec709To2020(vec3(1)),1);
+    result.rows[i*8+4]=vec4(materialEmissionRadiance(vec3(0.25,0.5,1),0.5),1);
+    result.rows[i*8+5]=vec4(displaySrgbEncode(vec3(0.18)),1);
+}

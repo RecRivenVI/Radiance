@@ -1,0 +1,80 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "../../common/shared.hpp"
+#include "../../common/entity_convert.hpp"
+#include "common/final_position.hpp"
+
+layout(local_size_x=64) in;
+layout(set=0,binding=0,std430) readonly buffer Input { uint words[]; } src;
+layout(set=0,binding=1,std430) readonly buffer Jobs { EntityConvertJob jobs[]; } work;
+layout(set=0,binding=2,std430) writeonly buffer Positions { PositionVertex vertices[]; } positions;
+layout(set=0,binding=3,std430) writeonly buffer Materials { MaterialVertex vertices[]; } materials;
+layout(set=0,binding=4,std430) writeonly buffer Indices { uint indices[]; } indices;
+layout(push_constant) uniform Push { uint firstJob; } pushData;
+
+float f(uint at) { return uintBitsToFloat(src.words[at]); }
+vec2 f2(uint at) { return vec2(f(at), f(at+1)); }
+vec3 f3(uint at) { return vec3(f(at), f(at+1), f(at+2)); }
+vec4 f4(uint at) { return vec4(f(at), f(at+1), f(at+2), f(at+3)); }
+
+void main() {
+    EntityConvertJob j = work.jobs[pushData.firstJob + gl_WorkGroupID.x];
+    uint v = j.first + gl_LocalInvocationID.x;
+    if (v < j.vertexCount) {
+        bool compact = j.sourceVersion == SOURCE_COMPACT_VERSION;
+        uint at = j.source + v * (compact ? PBR_COMPACT_BYTES / 4u : PBR_CANONICAL_BYTES / 4u);
+        PositionVertex p;
+        p.pos = f3(at);
+        p.pad0 = j.hasPositionFlags!=0u ? src.words[j.positionFlagsSource+v] : 0u;
+        MaterialVertex m;
+        uint normalMode,color,textureMode,overlayMode,glint,lightMode,coordinate,alpha;
+        if (compact) {
+            m.norm=f3(at+COMPACT_NORM_WORD); m.textureID=src.words[at+COMPACT_TEXTURE_ID_WORD]; m.colorLayer=f4(at+COMPACT_COLOR_LAYER_WORD);
+            m.textureUV=f2(at+COMPACT_TEXTURE_UV_WORD); m.overlayUV=ivec2(src.words[at+COMPACT_OVERLAY_UV_WORD],src.words[at+(COMPACT_OVERLAY_UV_WORD+1u)]);
+            m.glintUV=f2(at+COMPACT_GLINT_UV_WORD); m.glintTexture=src.words[at+COMPACT_GLINT_TEXTURE_WORD]; m.albedoEmission=f(at+COMPACT_ALBEDO_EMISSION_WORD);
+            m.lightUV=ivec2(src.words[at+COMPACT_LIGHT_UV_WORD],src.words[at+(COMPACT_LIGHT_UV_WORD+1u)]);
+            uint flags=src.words[at+COMPACT_PACKED_MODES_WORD];
+            normalMode=(flags>>COMPACT_NORMAL_SHIFT)&1u; color=(flags>>COMPACT_COLOR_SHIFT)&3u; textureMode=(flags>>COMPACT_TEXTURE_SHIFT)&1u;
+            overlayMode=(flags>>COMPACT_OVERLAY_SHIFT)&1u; glint=(flags>>COMPACT_GLINT_SHIFT)&3u; lightMode=(flags>>COMPACT_LIGHT_SHIFT)&1u;
+            coordinate=(flags>>COMPACT_COORDINATE_SHIFT)&255u; alpha=(flags>>COMPACT_ALPHA_SHIFT)&255u;
+        } else {
+            m.norm=f3(at+CANONICAL_NORM_WORD); m.textureID=src.words[at+CANONICAL_TEXTURE_ID_WORD]; m.colorLayer=f4(at+CANONICAL_COLOR_LAYER_WORD);
+            m.textureUV=f2(at+CANONICAL_TEXTURE_UV_WORD); m.overlayUV=ivec2(src.words[at+CANONICAL_OVERLAY_UV_WORD],src.words[at+(CANONICAL_OVERLAY_UV_WORD+1u)]);
+            m.glintUV=f2(at+CANONICAL_GLINT_UV_WORD); m.glintTexture=src.words[at+CANONICAL_GLINT_TEXTURE_WORD]; m.albedoEmission=f(at+CANONICAL_ALBEDO_EMISSION_WORD);
+            m.lightUV=ivec2(src.words[at+CANONICAL_LIGHT_UV_WORD],src.words[at+(CANONICAL_LIGHT_UV_WORD+1u)]);
+            normalMode=src.words[at+CANONICAL_USE_NORM_WORD];color=src.words[at+CANONICAL_USE_COLOR_LAYER_WORD];textureMode=src.words[at+CANONICAL_USE_TEXTURE_WORD];
+            overlayMode=src.words[at+CANONICAL_USE_OVERLAY_WORD];glint=src.words[at+CANONICAL_USE_GLINT_WORD];lightMode=src.words[at+CANONICAL_USE_LIGHT_WORD];
+            coordinate=src.words[at+CANONICAL_COORDINATE_WORD];alpha=src.words[at+CANONICAL_ALPHA_MODE_WORD];
+        }
+        m.packedData=(color>0u?PACKED_COLOR_BIT:0u) | (textureMode>0u?PACKED_TEXTURE_BIT:0u) |
+            (overlayMode>0u?PACKED_OVERLAY_BIT:0u) | (glint>0u?PACKED_GLINT_BIT:0u) |
+            (normalMode>0u?PACKED_NORMAL_BIT:0u) | (lightMode>0u?PACKED_LIGHT_BIT:0u) |
+            (color>1u?PACKED_COLOR_MIX_BIT:0u) | (normalMode==NORMAL_VERTEX?PACKED_VERTEX_NORMAL_BIT:0u) | ((alpha&PACKED_ALPHA_MASK)<<PACKED_ALPHA_SHIFT) |
+            ((coordinate&PACKED_COORDINATE_MASK)<<PACKED_COORDINATE_SHIFT) | ((glint&PACKED_GLINT_MASK)<<PACKED_GLINT_SHIFT) |
+            (((alpha >> SOURCE_ALPHA_RULE_SHIFT) & SOURCE_ALPHA_RULE_MASK) << PACKED_ALPHA_RULE_SHIFT);
+        if (j.deferred == 1u) {
+            // Deferred PBR topology/material processing; alpha remains the encoded PBR mode.
+            if (j.normalOffset != 0u && normalMode != 0u)
+                p.pos = finalPosition(p.pos, m.norm, true);
+            m.packedData = (m.packedData & ~(PACKED_COORDINATE_MASK<<PACKED_COORDINATE_SHIFT)) | ((j.coordinate & PACKED_COORDINATE_MASK)<<PACKED_COORDINATE_SHIFT);
+            if ((j.emissionPolicy & 1u) != 0u) {
+                float value = uintBitsToFloat(j.emissionBits);
+                // Same comparison as std::max, including a NaN original value.
+                if (m.albedoEmission < value) m.albedoEmission = value;
+            }
+            if ((j.emissionPolicy & 2u) != 0u) m.albedoEmission = 1.0;
+        }
+        m.emissiveOverlayTextureID=j.emissiveOverlay;
+        positions.vertices[j.vertexOffset+v]=p;
+        materials.vertices[j.vertexOffset+v]=m;
+    }
+    if (v < j.indexCount) {
+        uint index;
+        if (j.deferred != 1u) index=src.words[j.indexSource+v];
+        else if (j.quadIndices != 0u) {
+            const uint pattern[6]=uint[6](0u,1u,2u,2u,3u,0u);
+            index=(v/6u)*4u+pattern[v%6u];
+        } else index=v;
+        indices.indices[j.indexOffset+v]=index;
+    }
+}

@@ -1,0 +1,15 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "util/colour_transform.glsl"
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std430) buffer Results {vec4 rows[];} result;
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    float value=float(i+1)/10.0;
+    vec3 c=vec3(value,.5*value,.25*value);
+    result.rows[i*8]=vec4(colourFromHsv(colourToHsv(c)),1);
+    result.rows[i*8+1]=vec4(transformHsvColour(vec3(value,0,0),vec4(.25,1,.8,0),vec4(0,0,1,0),0,1),1);
+    result.rows[i*8+2]=vec4(transformHsvColour(vec3(value,0,0),vec4(-.45,1,.8,0),vec4(0,0,1,0),0,1),1);
+    result.rows[i*8+3]=vec4(transformHsvColour(vec3(value),vec4(0,1,1,0),vec4(0,0,1,0),.7,0),1);
+    result.rows[i*8+4]=vec4(transformHsvColour(vec3(value),vec4(0,1,1,.06),vec4(.25,-.45,.8,0),0,1),1);
+}

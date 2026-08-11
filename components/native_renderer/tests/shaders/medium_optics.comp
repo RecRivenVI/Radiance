@@ -1,0 +1,232 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_ray_query : require
+#define gl_LaunchIDEXT gl_GlobalInvocationID
+#define gl_LaunchSizeEXT gl_NumWorkGroups
+#define VPT_NUM_RAY_BOUNCES 16
+#include "util/ray.glsl"
+#include "util/sharc_query_math.glsl"
+#include "util/dielectric.glsl"
+#include "util/water_material.glsl"
+#include "util/layered_mask.glsl"
+#include "util/imaging_distance.glsl"
+#include "util/weather_optics.glsl"
+#include "util/material_faces.glsl"
+#include "util/celestial_math.glsl"
+layout(local_size_x=1) in;
+layout(set=0,binding=0) uniform accelerationStructureEXT opticsScene;
+layout(set=0,binding=1,std430) buffer Results { uint results[]; };
+bool near(float a,float b) { return abs(a-b)<0.0001; }
+bool slabBoundary(vec3 origin, uint purpose, out float distance, out bool front) {
+    rayQueryEXT query;
+    rayQueryInitializeEXT(query,opticsScene,queryTraversalFlags(purpose,gl_RayFlagsCullBackFacingTrianglesEXT),16,origin,.0001,vec3(0,0,-1),10);
+    while(rayQueryProceedEXT(query))
+        if(acceptsQueryTriangleFace(FACE_BACK_BIT | FACE_MEDIUM_BOUNDARY_BIT,
+            rayQueryGetIntersectionFrontFaceEXT(query,false),0u,purpose==queryDirect))
+            rayQueryConfirmIntersectionEXT(query);
+    if(rayQueryGetIntersectionTypeEXT(query,true)!=gl_RayQueryCommittedIntersectionTriangleEXT)return false;
+    distance=rayQueryGetIntersectionTEXT(query,true);
+    front=rayQueryGetIntersectionFrontFaceEXT(query,true);
+    return true;
+}
+void main() {
+    MediumHistory history, copiedHistory, insideHistory;
+    MainRay ray;
+    ray.stateBits=0u;ray.throughput=vec3(1);
+    rayInitializeMedium(ray,1.0);
+    rayPrepareMedium(ray,1.5,vec3(.2,.3,.4),true,0.0);
+    bool passed=near(ray.boundaryEta,1.0/1.5) && ray.mediumDepth==0u;
+    passed = passed && !sharcSegmentEligible(1.0,1.0,1.0,0u)
+        && sharcSegmentEligible(3.0,1.0,0.0,0u)
+        && !sharcSegmentEligible(3.0,1.0,0.0,1u)
+        && sharcSegmentEligible(3.0,1.0,0.99,1u)
+        && !sharcSegmentEligible(3.0,1.0,0.2,1u);
+    // A cached vertex replaces its local lighting before the BSDF; changing
+    // the continuation's albedo must not change the arriving path weight.
+    ray.radiance=vec3(1);ray.throughput=vec3(.5);ray.scatterRoughness=.7;
+    raySetCacheQuery(ray,true);raySetTerminal(ray,true);
+    passed=passed && !rayCacheHit(ray) && !rayCacheAttempted(ray) && rayTerminal(ray)
+        && (ray.stateBits&rayCacheQueryBit)!=0u;
+    rayAcceptCachedRadiance(ray,vec3(10));
+    passed=passed && rayCacheHit(ray) && rayShouldStop(ray) && all(equal(ray.radiance,vec3(6)));
+    raySetCacheQuery(ray,false);raySetTerminal(ray,false);
+    passed=passed && !rayTerminal(ray) && (ray.stateBits&rayCacheQueryBit)==0u;
+    passed=passed && all(lessThan(abs(sharcLocalValue(vec3(2,1,0),vec3(.5,.25,0))-vec3(4,4,0)),vec3(.0001)));
+    ray.throughput=vec3(1);
+
+    // A coloured LoD projection and an uncoloured near texture must produce the
+    // same water optics; fractional source coverage must not become opaque.
+    vec4 nearWater=vec4(1.0,1.0,1.0,180.0/255.0);
+    vec4 farWater=vec4(0.04,0.24,0.45,nearWater.a);
+    vec3 nearTint=nearWater.rgb,farTint=farWater.rgb;
+    LabPBRMat nearMat=convertLabPBRMaterial(nearWater,vec4(0),vec4(.5,.5,1,0),true);
+    LabPBRMat farMat=convertLabPBRMaterial(farWater,vec4(0),vec4(.5,.5,1,0),true);
+    applyWaterMaterial(nearWater,nearTint,nearMat);
+    applyWaterMaterial(farWater,farTint,farMat);
+    passed=passed && all(equal(nearWater,farWater)) && all(equal(nearMat.albedo,farMat.albedo))
+        && near(nearWater.a,180.0/255.0) && near(farMat.ior,1.333)
+        && near(farMat.transmission,1) && near(farMat.roughness,.01) && near(farMat.metallic,0);
+    // The real TLAS must yield the far glass wall, not just the front surface.
+    // Afterwards even a distant additive plane must see air, not stale absorption.
+    for(uint purpose=0u;purpose<=1u;++purpose) {
+        MainRay glassRay;MediumHistory glassHistory;
+        glassRay.stateBits=0u;glassRay.throughput=vec3(1);glassRay.direction=vec3(0,0,-1);
+        rayInitializeMedium(glassRay,1);
+        float distance;bool front;
+        bool entry=slabBoundary(vec3(0,0,2),purpose,distance,front);
+        passed=passed && entry && front && near(distance,2);
+        rayPrepareSurfaceMedium(glassRay,1,1.5,vec4(exp(-.2),exp(-.3),exp(-.4),1),FACE_BACK_BIT | FACE_MEDIUM_BOUNDARY_BIT,front,vec3(0),distance);
+        rayCommitMedium(glassRay,glassHistory);
+        bool exit=slabBoundary(vec3(0,0,-.0002),purpose,distance,front);
+        passed=passed && exit && !front && abs(distance-.9998)<.0001;
+        rayPrepareSurfaceMedium(glassRay,1,1.5,vec4(exp(-.2),exp(-.3),exp(-.4),1),FACE_BACK_BIT | FACE_MEDIUM_BOUNDARY_BIT,front,vec3(0),distance);
+        rayCommitMedium(glassRay,glassHistory);
+        vec3 transmitted=glassRay.throughput;
+        rayPrepareOpaque(glassRay,100);
+        passed=passed && glassRay.mediumDepth==0u && abs(transmitted.x-exp(-.2))<.0001
+            && all(lessThan(abs(glassRay.throughput-transmitted),vec3(.0001)));
+    }
+    passed=passed && near(celestialAtmosphereCosine(-.4),celestialAtmosphereCosine(.4))
+        && near(celestialAtmosphereCosine(0),0);
+    // The same cutoff is reused by straight and refracted imaging rays. Transport is uncut.
+    float cutoff = imagingRadius(80,100,.5);
+    passed = passed && near(cutoff,85.857864)
+        && near(imagingDistanceLimit(true,vec3(0),vec3(0,0,1),vec3(0),80,100,.5,1000),cutoff)
+        && near(imagingDistanceLimit(true,vec3(0,0,30),vec3(0,0,1),vec3(0),80,100,.5,1000),cutoff-30)
+        && near(imagingDistanceLimit(false,vec3(0),vec3(0,0,1),vec3(0),80,100,.5,1000),1000)
+        && near(imagingDistanceLimit(true,vec3(0),vec3(0,0,1),vec3(0),0,0,.5,1000),1000)
+        && near(imagingDistanceLimit(true,vec3(0),vec3(0,0,1),vec3(0),95,95,.5,1000),1000)
+        && near(imagingDistanceLimit(true,vec3(0,0,91),vec3(0,0,1),vec3(0),80,100,.5,1000),0)
+        && near(weatherDirectStrength(0,0),1) && near(weatherDirectStrength(1,0),.35)
+        && near(weatherDirectStrength(1,1),0) && near(weatherAtmosphereStrength(1,1),.15);
+    // Two distant opaque walls are accepted together or rejected together; density
+    // does not turn a stack of surfaces opaque as independent alpha tests would.
+    ivec3 visible = ivec3(0);
+    for(int i=0;i<100;i++) {
+        float radius = imagingRadius(95,100,(float(i)+.5)/100.0);
+        passed = passed && radius >= 95 && radius <= 100;
+        visible += ivec3(greaterThan(vec3(radius),vec3(96.25,97.5,98.75)));
+    }
+    passed = passed && all(equal(visible,ivec3(56,25,6)))
+        && near(imagingRadius(95,100,0),95) && near(imagingRadius(95,100,1),100);
+    MainRay reflected=ray;
+    rayCommitMedium(ray, history);
+    passed=passed && ray.mediumDepth==1u && reflected.mediumDepth==0u;
+    rayPrepareMedium(ray,1.333,vec3(.1),true,2.0);
+    passed=passed && near(ray.boundaryEta,1.5/1.333) && near(ray.throughput.x,exp(-.4));
+    rayCommitMedium(ray, history);
+    rayPrepareMedium(ray,1.333,vec3(.1),false,1.0);
+    passed=passed && near(ray.boundaryEta,1.333/1.5);
+    rayCommitMedium(ray, history);
+    rayPrepareMedium(ray,1.5,vec3(.2,.3,.4),false,2.0);
+    passed=passed && near(ray.boundaryEta,1.5) && near(ray.throughput.x,exp(-.9));
+    rayCommitMedium(ray, history);
+    passed=passed && ray.mediumDepth==0u;
+    MainRay submerged;
+    submerged.stateBits=0u;submerged.origin=vec3(0);submerged.throughput=vec3(1);
+    rayInitializeMedium(submerged,1.333);
+    MainRay copied=submerged;
+    rayCopyMedium(copied,submerged);
+    rayPrepareMedium(copied,1.5,vec3(.3),true,0);
+    rayCommitMedium(copied, copiedHistory);
+    passed=passed && copied.mediumDepth==2u && near(copied.currentMedium.w,1.5)
+        && near(copied.enclosingMedium.w,1.333) && submerged.mediumDepth==1u;
+    rayPrepareMedium(copied,1.5,vec3(.3),false,1);
+    rayCommitMedium(copied, copiedHistory);
+    passed=passed && copied.mediumDepth==1u && near(copied.currentMedium.w,1.333)
+        && near(copied.enclosingMedium.w,1);
+    MainRay inside;
+    inside.stateBits=0u;inside.origin=vec3(0);inside.throughput=vec3(1);
+    rayInitializeMedium(inside,1);
+    rayPrepareMedium(inside,1.5,vec3(.2),false,2);
+    MainRay insideReflection=inside;
+    rayPrepareOpaque(insideReflection,2);
+    passed=passed && inside.mediumDepth==1u && near(inside.currentMedium.w,1.5)
+        && near(insideReflection.throughput.x,exp(-.8));
+    rayCommitMedium(inside, insideHistory);
+    passed=passed && inside.mediumDepth==0u && near(rayCurrentMedium(inside).w,1);
+    // A reflected sibling keeps the complete enclosing stack, independently of a
+    // transmitted sibling. Exercise the configured capacity without truncation.
+    rayInitializeMedium(ray,1);
+    for (uint i=0u;i<uint(RADIANCE_MEDIUM_CAPACITY);++i) {
+        rayPrepareMedium(ray,1.1+float(i)*.01,vec3(.01*float(i)),true,0);
+        rayCommitMedium(ray,history);
+    }
+    MainRay sibling=ray;
+    MediumHistory siblingHistory=history;
+    for (uint i=uint(RADIANCE_MEDIUM_CAPACITY);i>0u;--i) {
+        rayPrepareMedium(ray,1.1+float(i-1u)*.01,vec3(.01*float(i-1u)),false,0);
+        rayCommitMedium(ray,history);
+        float expected=i>1u?1.1+float(i-2u)*.01:1.0;
+        passed=passed && near(rayCurrentMedium(ray).w,expected);
+    }
+    passed=passed && sibling.mediumDepth==uint(RADIANCE_MEDIUM_CAPACITY);
+    rayPrepareMedium(sibling,sibling.currentMedium.w,sibling.currentMedium.xyz,false,0);
+    rayCommitMedium(sibling,siblingHistory);
+    passed=passed && sibling.mediumDepth==uint(RADIANCE_MEDIUM_CAPACITY)-1u;
+    LabPBRMat mat;mat.roughness=0.0;
+    uint seed=gl_GlobalInvocationID.x+1u;
+    vec3 direction,weight;float pdf,f;
+    bool valid=sampleDielectricBranch(mat,vec3(.5,0,-sqrt(.75)),vec3(0,0,1),1.0/1.5,false,seed,direction,weight,pdf,f);
+    passed=passed && valid && abs(direction.x-1.0/3.0)<.001 && abs(f-.0415226)<.001;
+    passed=passed && abs(weight.x-(1-f)/2.25)<.001;
+    valid=sampleDielectricBranch(mat,vec3(.8,0,-.6),vec3(0,0,1),1.5,false,seed,direction,weight,pdf,f);
+    passed=passed && !valid && f>.999;
+    // A minimum branch probability must change sample counts, not energy. The
+    // two coloured environments make missing/double-counted lobes observable.
+    passed=passed && near(dielectricReflectionProbability(0,.25),0)
+        && near(dielectricReflectionProbability(1,.25),1)
+        && near(dielectricReflectionProbability(.04,.25),.25)
+        && near(dielectricReflectionProbability(.96,.25),.75);
+    // Both lobes remain represented within NRD's reconstruction footprint.
+    for(uint phase=0u;phase<16u;++phase) {
+        for(uint y=0u;y<4u;++y)for(uint x=0u;x<4u;++x) {
+            uint quartiles=0u;
+            for(uint j=0u;j<2u;++j)for(uint i=0u;i<2u;++i) {
+                float selected=dielectricBalancedSelection(uvec2(x+i,y+j),phase | 0xFFFFFF00u);
+                quartiles|=1u<<min(uint(selected*4.0),3u);
+            }
+            passed=passed && quartiles==15u;
+        }
+    }
+    // Match the production 31-bit seed range at a non-quartile probability.
+    // Sixteen ranks and 64 jitter values form an exact 1024-sample grid.
+    uint selectedCount=0u;
+    for(uint phase=0u;phase<16u;++phase)for(uint j=0u;j<64u;++j) {
+        uint frameSeed=(j<<25u)|phase;
+        if(dielectricBalancedSelection(gl_GlobalInvocationID.xy,frameSeed)<.271)selectedCount++;
+    }
+    passed=passed && selectedCount==278u;
+    for(int budget=0;budget<3;++budget) {
+        vec3 sum=vec3(0);
+        uint reflectedSamples=0u;
+        uint sampleSeed=gl_GlobalInvocationID.x*7919u+23u;
+        for(uint i=0u;i<4096u;++i) {
+            uint lobe;
+            float selected=budget==2?dielectricBalancedSelection(uvec2(gl_GlobalInvocationID.xy),pcg(sampleSeed)):-1.0;
+            vec3 value=sampleDielectricWithSelection(mat,vec3(0,0,-1),vec3(0,0,1),1.0/1.5,
+                budget==0?0.0:.25,selected,sampleSeed,direction,pdf,lobe);
+            vec3 environment=lobe==1u?vec3(2,0,0):vec3(0,0,3);
+            if(pdf>0.0)sum+=environment*value/pdf;
+            if(lobe==1u)reflectedSamples++;
+        }
+        vec3 expected=vec3(.08,0,3.0*.96/2.25);
+        passed=passed && all(lessThan(abs(sum/4096.0-expected),vec3(.04)))
+            && (budget==0 || (reflectedSamples>800u && reflectedSamples<1250u));
+    }
+    for(uint i=0u;i<32u;++i) {
+        uint lobe;
+        vec3 value=sampleDielectricWithSelection(mat,vec3(.8,0,-.6),vec3(0,0,1),1.5,.25,-1.0,
+            seed,direction,pdf,lobe);
+        passed=passed && lobe==1u && pdf>0.0 && value.x>0.0;
+    }
+    vec4 depthRange=vec4(-128,128,10,3);
+    passed=passed && near(layeredDepthCoverage(1,1,-64,depthRange),0)
+        && near(layeredDepthCoverage(.5,1,-63,depthRange),0)
+        && near(layeredDepthCoverage(.5,.8,-64,depthRange),.8)
+        && near(layeredDepthCoverage(.5,.8,-69,depthRange),.1);
+    raySetReceiveOnlyReceiver(ray,true);
+    passed=passed && (receiverQueryMask(queryTransport,true,rayReceiveOnlyReceiver(ray))&queryReceiveOnly)!=0u
+        && (receiverQueryMask(queryTransport,true,false)&queryReceiveOnly)==0u;
+    results[gl_GlobalInvocationID.x]=passed?1u:0u;
+}

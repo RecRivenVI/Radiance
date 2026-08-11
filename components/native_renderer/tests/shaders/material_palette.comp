@@ -1,0 +1,29 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#extension GL_EXT_buffer_reference2 : require
+#include "common/shared.hpp"
+#include "util/material_palette.glsl"
+layout(local_size_x=1) in;
+layout(set=0,binding=0,std430) buffer Results {vec4 rows[];} result;
+layout(std430,buffer_reference,buffer_reference_align=8) readonly buffer Words {uint values[];};
+bool equalMaterial(MaterialVertex m, uint64_t reference, uint index) {
+    uvec4 words[5]=uvec4[5](uvec4(floatBitsToUint(m.norm),m.textureID),floatBitsToUint(m.colorLayer),
+        uvec4(floatBitsToUint(m.textureUV),uvec2(m.overlayUV)),
+        uvec4(floatBitsToUint(m.glintUV),m.glintTexture,floatBitsToUint(m.albedoEmission)),
+        uvec4(uvec2(m.lightUV),m.packedData,m.emissiveOverlayTextureID));
+    for(uint w=0;w<20;++w) if(words[w/4][w%4]!=Words(reference).values[index*20+w])return false;
+    return true;
+}
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    uvec4 header=floatBitsToUint(result.rows[80]);
+    uint64_t direct=uint64_t(header.x)|(uint64_t(header.y)<<32);
+    uint64_t dictionary=uint64_t(header.z)|(uint64_t(header.w)<<32);
+    bool passed=true;
+    for(uint v=i;v<96;v+=10) {
+        passed=passed&&equalMaterial(loadMaterialVertex(direct,v),direct,v);
+        passed=passed&&equalMaterial(loadMaterialVertex(dictionary,v),direct,v);
+    }
+    result.rows[i*8]=vec4(passed?1:0,0,0,1);
+}

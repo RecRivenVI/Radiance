@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr wchar_t sdkPath[] = LR"(@AFTERMATH_SDK@/lib/x64/GFSDK_Aftermath_Lib.x64.dll)";

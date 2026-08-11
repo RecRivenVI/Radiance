@@ -1,0 +1,10 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+
+[instances.client]
+memory-max = "8G"
+width = 1920
+height = 1080
+player-name = "RecRivenVI"
+mods = ["create", "sable", "aeronautics_bundled"]
+jvm-args = ["-Dradiance.audit.nativePerformance=true", "-Dradiance.audit.profileControl=true"]

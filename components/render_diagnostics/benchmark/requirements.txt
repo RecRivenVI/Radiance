@@ -1,0 +1,2 @@
+-r ../inventory/requirements.txt
+Pillow==12.3.0

@@ -1,0 +1,61 @@
+# 构建与本地验证
+
+## 适用范围
+
+构建 1.21.1 NeoForge Radiance。本仓库同时包含原生渲染组件，外部 MCVR 不再是构建依赖。
+
+## 步骤
+
+1. 安装 Java 25（Gradle），Java 21（Target）、CMake、Visual Studio C++、完整 Vulkan SDK 与 Python，通用环境要求见[开发环境](../../gradle/conventions/specification/development/setup-environment.md)，项目工具版本见[构建工具依赖](../reference/dependency-build_tools.md)。
+   `clangFormatCheck` 在任务执行时先从 PATH 查找 clang-format；Windows 上找不到时，调用 `${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe -latest -products * -find VC\Tools\Llvm\x64\bin\clang-format.exe`，使用最新 Visual Studio 安装中的工具。两处都找不到时任务失败；安装 Visual Studio 的“C++ Clang 工具”组件或把 clang-format 加入 PATH 后重试。工具路径不在配置阶段固定，支持该任务的配置缓存复用。
+   Windows 下 CMake 调用暂时映射仓库到 `R:`，规避第三方着色器工具的路径长度限制，每次调用结束即解除映射。若盘符已占用，传入 `-Pnative.cmakeDrive=<未使用的大写盘符>`；产物仍在组件 `build/` 内。
+2. 初始化固定子模块。
+
+   ```powershell
+   git submodule update --init --recursive
+   python -m pip install -r components/render_diagnostics/inventory/requirements.txt
+   ```
+
+3. 按 `inputs.toml` 下载固定兼容发行包，在 ignored `local.toml` 的 `[inputs]` 指定本机文件；窗口尺寸也写入 `local.toml`，不擅自接受 EULA。
+4. 执行格式、测试和发行包结构校验。
+
+   ```powershell
+   .\gradlew.bat spotlessApply
+   .\gradlew.bat check
+   .\gradlew.bat verifyRelease
+   .\gradlew.bat :native_renderer:gpuTest
+   ```
+
+5. 启动日常客户端或打包客户端；只用仓库内实例，画面由使用者验收。
+
+   ```powershell
+   .\gradlew.bat :version:1.21.1-neoforge:runClient
+   .\gradlew.bat :version:1.21.1-neoforge:runPackagedClient
+   ```
+
+## 验收
+
+发行 JAR 位于 `versions/1.21.1-neoforge/build/libs/`；GAME JAR 位于 Target 的 `build/intermediates/`。目标是 `check`、`verifyRelease` 与显式 GPU 测试成功，标题界面日志包含 Radiance 且无崩溃报告。
+
+冻结验收包时，在所有会触发 Native 构建的检查结束后重新打包，并核对 JAR 内 DLL 的 CodeView GUID／age 与保留 PDB 一致，再同时固定 JAR、符号和源码身份。后续检查可能再次链接 Native；不能用更新后的 PDB 解释旧 JAR。重包若只改变链接调试信息或着色器 ZIP 容器信息，也应保留差异核验与实际包运行回执，启动缓存与性能数据按各自产物身份记录。
+
+二进制云噪声资源由 `.gitattributes` 的 `*.raw binary` 登记，合规检查跳过其文本编码检查。具体执行证据见[当前状态](../project/status-current.md)。Windows CI 安装固定版本的 Python、盘点工具依赖与完整 Vulkan SDK 后执行 `checkRepository`。SDK 位于托管运行器的临时目录；CI 只上传合规报告，不上传原生运行库或发行包。本地验证与实际 GitHub Actions 结果分别记录。
+
+## 日常运行与自动化边界
+
+参考 Target 为 `1.21.1-neoforge`。`runClient` 加载 Radiance 与下表的手工辅助模组；`runClientCreate`、`runClientSable`、`runClientAeronautics` 分别加载登记的兼容组合，来源以 `instances.toml` 与本机覆盖为准。实例采用以下默认配置；已有历史测量不按新分辨率重写。
+
+| 用途 | 分辨率 | 主音量 | 音乐 | 玩家名 | 辅助模组 |
+| --- | --- | --- | --- | --- | --- |
+| 自动验证、自动化打包客户端及基准工具默认值 | 1920×1080 | 0% | 关闭 | 验证角色配置 | 不加载手工辅助模组 |
+| 日常手工实例、`runManualBase` 与 `runManualFull` | 2560×1440 | 50% | 关闭 | `RecRivenVI` | CustomSkinLoader、Zume |
+
+窗口与名称读取 `instances.toml` 或 `validation.toml`，本机覆盖写在 `local.toml`；音量由 Target 的准备任务写入。准备任务采用窗口模式并清除旧 `overrideWidth` / `overrideHeight`，使窗口尺寸按启动参数生效，避免旧 `options.txt` 覆盖标准尺寸。手工辅助模组从 Modrinth 查找当前 Target 的适配发行版，缺少适配版本时跳过，不用其他加载器版本替代。本轮仅下载并核验输入，不据此声称已在游戏中验证皮肤、缩放或渲染兼容；Prism 不由这些准备任务修改。
+
+```powershell
+.\gradlew.bat :version:1.21.1-neoforge:runClientAeronautics
+```
+
+日常运行供手工操作，不自动进行性能测试。自动采样使用项目内验证实例与 `radiance_probe`，只有使用者授权对应调查后执行。smoke 验证会自动停止客户端，不是持续手工游玩的入口；`runPackagedClient` 使用 Target 的 `build/run/`，开发源码启动不能代替完整发行 JAR 验证。
+
+通用命令与参数来源查询见[日常工作流程](../../gradle/conventions/specification/development/workflow-daily.md)。Git 操作须遵守[项目规范](../AGENTS.md)；Check 执行 `checkRepository`，Specification 独立核对模板文件，云端只上传合规报告。本地仍执行完整 `check` 与受影响的 `verifyRelease`。

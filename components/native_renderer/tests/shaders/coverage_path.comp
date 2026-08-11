@@ -1,0 +1,64 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define RADIANCE_COVERAGE_MODE 1
+#include "util/ray_payloads.glsl"
+#include "util/coverage_blend.glsl"
+#include "util/ray_origin.glsl"
+#include "util/ui_primary_visibility.glsl"
+#include "util/random.glsl"
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Results { vec4 rows[]; } result;
+const float INF_DISTANCE = 65504.0;
+MainRay mainRay;
+uint id, visits = 0u, bad = 0u, tail = 0u;
+bool capture = false;
+float hitAlpha = 1.0;
+void raySetCaptureSurface(inout MainRay ray, bool value) {}
+void raySetCoverageCapture(inout MainRay ray, bool value) { capture = value; }
+void resetMainRay(inout MainRay ray, int bounce) { ray.hitT = 0.0; }
+float rayLoadCoverage(MainRay ray) { return hitAlpha; }
+void testTraceLayer(vec3 origin, vec3 incident) {
+    uint layer = uint(round(1.0 - origin.z));
+    ++visits;
+    if ((mainRay.stateBits & rayUiPrimaryBit) == 0u || (mainRay.stateBits & 1u) != (id == 8u ? 0u : 1u) || mainRay.pad0 != 77u ||
+        any(notEqual(incident, vec3(0, 0, -1))) || layer != visits - 1u) ++bad;
+    if (!capture) ++tail;
+    bool red = layer == 0u || id == 9u;
+    bool green = id == 3u && layer == 1u;
+    hitAlpha = (red || green) ? .5 : 1.0;
+    if (id == 0u || id == 1u) { red = false; green = false; hitAlpha = 1.0; }
+    if (id == 4u && layer == 0u) hitAlpha = 0.0;
+    if ((id == 5u || id == 6u || id == 8u) && layer == 0u) hitAlpha = 1.0;
+    if (!capture) hitAlpha = 1.0;
+    mainRay.radiance = red ? vec3(1, 0, 0) : green ? vec3(0, 1, 0) : vec3(0, 0, 1);
+    mainRay.hitT = id == 1u ? INF_DISTANCE : origin.z + float(layer);
+    mainRay.coneWidth += mainRay.hitT * .01;
+}
+void completeCoverageLighting(inout MainRay ray, inout MediumHistory mediumHistory, int isHand) {
+    // The production continuation overwrites the global payload, including purpose.
+    // A straight sibling must retain its saved state rather than this result.
+    ray.origin = vec3(999.0);
+    ray.direction = vec3(1, 0, 0);
+    ray.stateBits = 0u;
+    ray.pad0 = 12345u;
+    mainRay = ray;
+}
+#define COVERAGE_TRACE_LAYER(origin, incident) testTraceLayer(origin, incident)
+#include "util/coverage_raygen.glsl"
+void main() {
+    id = gl_GlobalInvocationID.x;
+    MainRay source;
+    MediumHistory mediumHistory;
+    source.origin = vec3(0, 0, 1);
+    source.direction = vec3(0, 0, -1);
+    source.radiance = vec3(999.0);
+    source.throughput = vec3(999.0);
+    source.coneWidth = 0.0;
+    source.coneSpread = .01;
+    source.seed = 17u;
+    source.stateBits = id == 8u ? 0u : 1u;
+    source.pad0 = 77u;
+    vec3 color = traceCoverageBackground(source, mediumHistory, vec3(0, 0, 1), vec3(0, 0, -1), 0);
+    result.rows[id * 8u] = vec4(color, 0);
+    result.rows[id * 8u + 1u] = vec4(float(visits), float(bad), float(tail), float(source.pad0));
+}

@@ -1,0 +1,329 @@
+#include "core/render/frame_retention.hpp"
+#include "core/render/scene_table.hpp"
+#include "core/render/instance_content.hpp"
+#include <algorithm>
+#include <array>
+#include <iostream>
+#include <random>
+#include <string_view>
+#include <vulkan/vulkan_core.h>
+
+namespace {
+size_t checks = 0;
+void require(bool value, std::string_view message) {
+    ++checks;
+    if (!value) throw std::runtime_error(std::string(message));
+}
+template <class Action>
+void rejects(Action action) {
+    bool caught = false;
+    try {
+        action();
+    } catch (const std::exception &) { caught = true; }
+    require(caught, "invalid input/failure must propagate");
+}
+struct Buffer {
+    std::vector<std::byte> bytes;
+};
+struct Recording {
+    mcvr::FrameRetention<std::shared_ptr<Buffer>> frames;
+    std::vector<std::shared_ptr<Buffer>> recorded;
+    std::weak_ptr<Buffer> lastRetained;
+    size_t preparations = 0;
+    bool failPrepare = false, failRetain = false, failRecord = false, nullPrepare = false;
+    mcvr::SceneTableCache<Buffer>::Selection submit(mcvr::SceneTableCache<Buffer> &cache,
+                                                    const mcvr::SceneTable &data) {
+        return cache.acquire(
+            data,
+            [&](const auto &input) {
+                if (failPrepare) throw std::bad_alloc();
+                ++preparations;
+                if (nullPrepare) return std::shared_ptr<Buffer>{};
+                auto result = std::make_shared<Buffer>();
+                result->bytes.resize(input.size());
+                input.write(result->bytes);
+                return result;
+            },
+            [&](const auto &buffer) {
+                require(lastRetained.lock() == buffer, "retain this exact version before recording");
+                recorded.push_back(buffer);
+                if (failRecord) throw std::runtime_error("record failed");
+            },
+            [&](const auto &buffer) {
+                if (failRetain) throw std::bad_alloc();
+                frames.retain(buffer);
+                lastRetained = buffer;
+            });
+    }
+};
+} // namespace
+
+int main() {
+    try {
+        using Instance = VkAccelerationStructureInstanceKHR;
+        static_assert(sizeof(Instance) == 64);
+        const auto model = std::make_shared<Buffer>();
+        const auto otherModel = std::make_shared<Buffer>();
+        std::vector<Instance> instances(2);
+        instances[0].instanceCustomIndex = 7;
+        instances[0].mask = 0xff;
+        instances[0].instanceShaderBindingTableRecordOffset = 3;
+        instances[0].accelerationStructureReference = 0x1000;
+        instances[1].instanceCustomIndex = 8;
+        instances[1].mask = 0x40;
+        instances[1].instanceShaderBindingTableRecordOffset = 5;
+        instances[1].flags = 2;
+        instances[1].accelerationStructureReference = 0x2000;
+        const std::vector<Buffer *> models{model.get(), model.get()};
+        require(mcvr::sameInstanceContent(instances, models, instances, models),
+                "resident instance content is reusable");
+        for (int component = 0; component < 8; ++component) {
+            auto changed = instances;
+            auto changedModels = models;
+            switch (component) {
+                case 0: changed.front().transform.matrix[0][3] = .001f; break;
+                case 1: ++changed.front().instanceCustomIndex; break;
+                case 2: ++changed.front().mask; break;
+                case 3: ++changed.front().instanceShaderBindingTableRecordOffset; break;
+                case 4: ++changed.front().flags; break;
+                case 5: changedModels.front() = otherModel.get(); break;
+                case 6: std::swap(changed[0], changed[1]); break;
+                case 7: ++changed.front().accelerationStructureReference; break;
+            }
+            require(!mcvr::sameInstanceContent(instances, models, changed, changedModels),
+                    "pose, mask, flags, SBT, order and model replacement require a new TLAS");
+        }
+        auto removed = instances;
+        removed.pop_back();
+        require(!mcvr::sameInstanceContent(instances, models, removed, models),
+                "removed instance invalidates TLAS content");
+        require(!mcvr::sameInstanceContent(instances, models, instances, std::vector<Buffer *>{model.get()}),
+                "model identities must match the packed instance count");
+        std::mt19937 random(0x5c3e);
+        for (size_t sample = 0; sample < 1000; ++sample) {
+            auto stable = std::make_shared<std::vector<uint64_t>>(random() % 35);
+            std::vector<uint64_t> changing(random() % 23);
+            for (auto &v : changing) v = random();
+            for (auto &v : *stable) v = random();
+            const size_t split = random() % (changing.size() + 1);
+            auto data = mcvr::sceneTable<uint64_t>(changing, split, *stable, stable);
+            auto reference = changing;
+            reference.insert(reference.begin() + split, stable->begin(), stable->end());
+            const auto bytes = std::as_bytes(std::span(reference));
+            std::vector<std::byte> packed(data.size());
+            data.write(packed);
+            require(std::equal(packed.begin(), packed.end(), bytes.begin(), bytes.end()), "exact ordered bytes");
+            require(data.equals(bytes), "observer compares final upload");
+            if (data.size())
+                rejects([&] { data.write(std::span<std::byte>{}); });
+            else
+                data.write({});
+            if (!packed.empty()) {
+                packed[random() % packed.size()] ^= std::byte{1};
+                require(!data.equals(packed), "same-size content edit detected");
+            }
+            rejects([&] { mcvr::sceneTable<uint64_t>(changing, changing.size() + 1); });
+        }
+
+        auto stable = std::make_shared<const std::vector<uint64_t>>(std::initializer_list<uint64_t>{10, 20, 30});
+        std::weak_ptr<const std::vector<uint64_t>> weakOwner = stable;
+        std::vector<uint64_t> dynamic{1, 2, 3, 4};
+        auto data = mcvr::sceneTable<uint64_t>(dynamic, 2, *stable, stable);
+        mcvr::SceneTableCache<Buffer> cache, anotherView;
+        Recording recording;
+        recording.frames.beginFrame(1, 0, 2);
+        auto first = recording.submit(cache, data);
+        require(first.uploaded, "cold creates GPU version");
+        const auto originalBytes = first.buffer->bytes;
+        require(!recording.submit(cache, data).uploaded && recording.preparations == 1, "unchanged skips all packing");
+        require(recording.submit(anotherView, data).buffer != first.buffer, "independent view cache");
+        dynamic[0] = 9;
+        auto next = recording.submit(cache, data);
+        require(next.uploaded && first.buffer != next.buffer && first.buffer->bytes == originalBytes,
+                "same-frame new content never overwrites recorded buffer");
+        std::swap(dynamic[0], dynamic[1]);
+        require(recording.submit(cache, data).uploaded, "same-size prefix reorder invalidates");
+        dynamic.back() = 77;
+        require(recording.submit(cache, data).uploaded, "external suffix edit invalidates");
+
+        for (int failure = 0; failure < 4; ++failure) {
+            auto before = recording.submit(cache, data).buffer;
+            dynamic[0] += 1;
+            recording.failPrepare = failure == 0;
+            recording.failRetain = failure == 1;
+            recording.failRecord = failure == 2;
+            recording.nullPrepare = failure == 3;
+            rejects([&] { recording.submit(cache, data); });
+            recording.failPrepare = recording.failRetain = recording.failRecord = recording.nullPrepare = false;
+            dynamic[0] -= 1;
+            require(recording.submit(cache, data).buffer == before, "failed transaction preserves previous content");
+        }
+        // Same owner, different borrowed range must not be considered identical.
+        auto range = mcvr::sceneTable<uint64_t>(dynamic, 2, std::span(*stable).subspan(1), stable);
+        require(recording.submit(cache, range).uploaded, "owner identity alone is not table identity");
+        auto sameBytesNewOwner = std::make_shared<const std::vector<uint64_t>>(*stable);
+        require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic, 2, *sameBytesNewOwner, sameBytesNewOwner))
+                    .uploaded,
+                "new publication retires old owner even with identical bytes");
+        require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic, 1, *sameBytesNewOwner, sameBytesNewOwner))
+                    .uploaded,
+                "changing dynamic insertion boundary invalidates");
+        auto replacement = std::make_shared<const std::vector<uint64_t>>(std::initializer_list<uint64_t>{10, 20, 31});
+        require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic, 2, *replacement, replacement)).uploaded,
+                "resource reload/replacement contents invalidate");
+        require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic)).uploaded, "uncached-scene fallback");
+        rejects([&] { mcvr::sceneTable<uint64_t>(dynamic, 0, *stable); });
+        rejects([&] { recording.submit(cache, {}); });
+
+        std::weak_ptr<Buffer> pending = first.buffer;
+        first.buffer.reset();
+        next.buffer.reset();
+        recording.recorded.clear();
+        cache.reset();
+        anotherView.reset();
+        require(!pending.expired(), "GPU-in-flight ownership independent of caches");
+        recording.frames.beginFrame(2, 0, 2);
+        require(!pending.expired(), "frame age alone cannot retire GPU resource");
+        recording.frames.beginFrame(3, 1, 2);
+        require(pending.expired(), "completion and frame age retire old version");
+        data = {};
+        range = {};
+        stable.reset();
+        require(weakOwner.expired(), "world leave drops immutable snapshot owner");
+        require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic)).uploaded, "reset starts fresh identity");
+        auto bypass = [&](const mcvr::SceneTable &input) {
+            return cache.acquire(
+                input,
+                [&](const auto &v) {
+                    auto b = std::make_shared<Buffer>();
+                    b->bytes.resize(v.size());
+                    v.write(b->bytes);
+                    return b;
+                },
+                [&](const auto &b) { require(b->bytes.size() == input.size(), "bypass records complete table"); },
+                [&](const auto &b) { recording.frames.retain(b); }, false);
+        };
+        auto bypassFirst = bypass(mcvr::sceneTable<uint64_t>(dynamic));
+        auto bypassSecond = bypass(mcvr::sceneTable<uint64_t>(dynamic));
+        require(bypassFirst.uploaded && bypassSecond.uploaded && bypassFirst.buffer != bypassSecond.buffer,
+                "changing-table policy creates independent versions without comparison copies");
+        require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic)).uploaded,
+                "bypass clears stale reusable key");
+        // Production page plan: grow/shrink/reorder static publications while a dynamic
+        // prefix changes length. Simulate the exact GPU copies plus changed uploads.
+        mcvr::SceneTableCache<Buffer> paged;
+        std::vector<std::shared_ptr<const std::vector<uint64_t>>> pages;
+        for (uint64_t i = 0; i < 8; ++i)
+            pages.push_back(std::make_shared<const std::vector<uint64_t>>(size_t(i + 1), i + 100));
+        std::vector<std::shared_ptr<Buffer>> inflight, versions;
+        std::vector<std::vector<std::byte>> oldBytes;
+        size_t copiedBytes = 0, uploadedBytes = 0;
+        for (size_t turn = 0; turn < 150; ++turn) {
+            if (turn % 3 == 0)
+                pages[turn % pages.size()] = std::make_shared<const std::vector<uint64_t>>(turn % 7 + 1, turn + 200);
+            if (turn % 5 == 0) std::rotate(pages.begin(), pages.begin() + 1, pages.end());
+            std::vector<uint64_t> ends(turn % 11 + 2, turn);
+            const auto split = turn % ends.size();
+            auto table = mcvr::sceneTable<uint64_t>(ends, split);
+            for (const auto &page : pages) table.segments.push_back({std::as_bytes(std::span(*page)), page});
+            if (turn % 2) {
+                auto directory = std::make_shared<mcvr::SceneTable::Directory>();
+                for (const auto &segment : table.segments) directory->add(segment);
+                table.segments.clear();
+                table.directory = std::move(directory);
+            }
+            std::vector<std::byte> expected(table.size());
+            table.write(expected);
+            auto result = paged.acquirePatched(
+                table,
+                [&](const auto &input, const auto &, const auto &) {
+                    auto buffer = std::make_shared<Buffer>();
+                    buffer->bytes.resize(input.size(), std::byte{0xff});
+                    return buffer;
+                },
+                [&](const auto &buffer, const auto &patch, const auto &source) {
+                    size_t produced = 0;
+                    if (source)
+                        require(std::find(inflight.begin(), inflight.end(), source) != inflight.end(),
+                                "copy source retained before recording");
+                    for (const auto &copy : patch.copies) {
+                        require(source && copy.source + copy.bytes <= source->bytes.size() &&
+                                    copy.target + copy.bytes <= buffer->bytes.size(),
+                                "copy range");
+                        std::memcpy(buffer->bytes.data() + copy.target, source->bytes.data() + copy.source, copy.bytes);
+                        copiedBytes += copy.bytes;
+                        produced += copy.bytes;
+                    }
+                    for (const auto &upload : patch.uploads) {
+                        std::memcpy(buffer->bytes.data() + upload.target, upload.bytes.data(), upload.bytes.size());
+                        uploadedBytes += upload.bytes.size();
+                        produced += upload.bytes.size();
+                    }
+                    require(produced == buffer->bytes.size(), "new version completely initialized");
+                },
+                [&](const auto &buffer) { inflight.push_back(buffer); });
+            require(result.buffer->bytes == expected, "paged patch matches exact flat shader layout");
+            oldBytes.push_back(expected);
+            versions.push_back(result.buffer);
+            require(!paged
+                         .acquirePatched(
+                             table,
+                             [](const auto &, const auto &, const auto &) -> std::shared_ptr<Buffer> {
+                                 throw std::runtime_error("unchanged table must not allocate");
+                             },
+                             [](const auto &, const auto &, const auto &) {}, [](const auto &) {})
+                         .uploaded,
+                    "same page versions skip copies and uploads");
+        }
+        require(copiedBytes > uploadedBytes, "unchanged pages reduce host transfer rather than flatten again");
+        for (size_t i = 0; i < versions.size(); ++i)
+            require(versions[i]->bytes == oldBytes[i], "later patches never overwrite an in-flight table");
+        // Production steady state: the exact same immutable directory survives
+        // changing lengths/contents of dynamic ends, including empty ends.
+        {
+            mcvr::SceneTableCache<Buffer> steady;
+            auto directory = std::make_shared<mcvr::SceneTable::Directory>();
+            for (const auto &page : pages) directory->add({std::as_bytes(std::span(*page)), page});
+            std::vector<std::shared_ptr<Buffer>> retained;
+            for (size_t turn = 0; turn < 50; ++turn) {
+                std::vector<uint64_t> ends(turn % 12, turn + 50);
+                auto input = mcvr::sceneTable<uint64_t>(ends, ends.empty() ? 0 : turn % ends.size());
+                input.directory = directory;
+                std::vector<std::byte> expected(input.size());
+                input.write(expected);
+                auto selection = steady.acquirePatched(
+                    input,
+                    [](const auto &table, const auto &, const auto &) {
+                        auto buffer = std::make_shared<Buffer>();
+                        buffer->bytes.resize(table.size());
+                        return buffer;
+                    },
+                    [&](const auto &buffer, const auto &patch, const auto &previous) {
+                        if (previous) {
+                            require(patch.copies.size() <= 3 && patch.uploads.size() <= 2,
+                                    "unchanged directory uses at most three ranges");
+                            require(std::find(retained.begin(), retained.end(), previous) != retained.end(),
+                                    "source GPU version retained before rebased copies");
+                        }
+                        for (const auto &copy : patch.copies)
+                            std::memcpy(buffer->bytes.data() + copy.target, previous->bytes.data() + copy.source,
+                                        copy.bytes);
+                        for (const auto &upload : patch.uploads)
+                            std::memcpy(buffer->bytes.data() + upload.target, upload.bytes.data(), upload.bytes.size());
+                    },
+                    [&](const auto &buffer) { retained.push_back(buffer); });
+                require(selection.buffer->bytes == expected, "stable-directory rebase matches the complete table");
+            }
+        }
+        rejects([&] {
+            auto invalid = mcvr::sceneTable<uint64_t>(dynamic);
+            invalid.segments.push_back({std::as_bytes(std::span(dynamic)), {}});
+            recording.submit(cache, invalid);
+        });
+        std::cout << checks << " scene-table checks passed\n";
+        return 0;
+    } catch (const std::exception &e) {
+        std::cerr << e.what() << '\n';
+        return 1;
+    }
+}

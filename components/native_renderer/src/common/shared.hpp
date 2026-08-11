@@ -1,0 +1,441 @@
+#ifndef SHARED_HPP
+#define SHARED_HPP
+
+#include "common/mapping.hpp"
+
+#define INF_DISTANCE 65504.0
+#define PI 3.14159265358979323
+#define INV_PI 0.31830988618379067
+#define TWO_PI 6.28318530717958648
+#define INV_TWO_PI 0.15915494309189533
+#define INV_4_PI 0.07957747154594766
+
+#ifdef __cplusplus
+namespace vk {
+#endif
+#ifdef __cplusplus
+namespace VertexFormat {
+#endif
+    struct Triangle {
+        T_VEC3 pos;
+        T_VEC3 color;
+    };
+
+    struct TexturedTriangle {
+        T_VEC3 pos;
+        T_VEC2 uv;
+    };
+
+    struct ArrayTexturedTriangle {
+        T_VEC3 pos;
+        T_FLOAT metallic;
+        T_VEC3 norm;
+        T_FLOAT roughness;
+        T_VEC2 uv;
+        T_FLOAT textureLayer;
+        T_FLOAT pad0;
+        T_VEC3 color;
+        T_FLOAT intensity;
+    };
+
+    struct PositionOnly {
+        T_VEC3 position;
+    };
+
+    struct PositionTexColor {
+        T_VEC3 position;
+        T_VEC2 uv;
+        T_UINT color;
+    };
+
+    struct PositionColor {
+        T_VEC3 position;
+        T_UINT color;
+    };
+
+    struct PositionColorNormal {
+        T_VEC3 position;
+        T_UINT color;
+        T_UINT normal; // first 3 bytes
+    };
+
+    struct PositionTex {
+        T_VEC3 position;
+        T_VEC2 uv;
+    };
+
+    struct PositionColorTexLight {
+        T_VEC3 position;
+        T_UINT color;
+        T_VEC2 uv0;
+        T_UINT uv2;
+    };
+
+    struct PositionColorLight {
+        T_VEC3 position;
+        T_UINT color;
+        T_UINT uv2;
+    };
+
+    struct PositionTexColorLight {
+        T_VEC3 position;
+        T_VEC2 uv0;
+        T_UINT color;
+        T_UINT uv2;
+    };
+
+    struct PositionTexColorNormal {
+        T_VEC3 position;
+        T_VEC2 uv0;
+        T_UINT color;
+        T_UINT normal; // first 3 bytes
+    };
+
+    struct PositionTexLightColor {
+        T_VEC3 position;
+        T_VEC2 uv0;
+        T_UINT uv2;
+        T_UINT color;
+    };
+
+    struct PositionColorTexLightNormal {
+        T_VEC3 position;
+        T_UINT color;
+        T_VEC2 uv0;    // texture
+        T_UINT uv2;    // lightmap
+        T_UINT normal; // first 3 bytes
+    };
+
+    struct PositionColorTexOverlayLightNormal {
+        T_VEC3 position;
+        T_UINT color;
+        T_VEC2 uv0;    // texture
+        T_UINT uv1;    // overlay
+        T_UINT uv2;    // lightmap
+        T_UINT normal; // first 3 bytes
+    };
+
+    struct PBRVertex {
+        T_VEC3 pos;
+        T_UINT useNorm;
+
+        T_VEC3 norm;
+        T_UINT useColorLayer;
+
+        T_VEC4 colorLayer;
+
+        T_UINT useTexture;
+        T_UINT useOverlay;
+        T_VEC2 textureUV;
+
+        T_IVEC2 overlayUV;
+        T_UINT useGlint;
+        T_UINT textureID;
+
+        T_VEC2 glintUV;
+        T_UINT glintTexture;
+        T_UINT useLight;
+
+        T_IVEC2 lightUV;
+        T_UINT coordinate;
+        T_FLOAT albedoEmission;
+
+        T_VEC3 postBase;
+        T_UINT alphaMode;
+    };
+
+    struct PositionVertex {
+        T_VEC3 pos;
+        T_UINT pad0;
+    };
+
+    struct MaterialVertex {
+        T_VEC3 norm;
+        T_UINT textureID;
+
+        T_VEC4 colorLayer;
+
+        T_VEC2 textureUV;
+        T_IVEC2 overlayUV;
+
+        T_VEC2 glintUV;
+        T_UINT glintTexture;
+        T_FLOAT albedoEmission;
+
+        T_IVEC2 lightUV;
+        T_UINT packedData;
+        T_UINT emissiveOverlayTextureID;
+    };
+
+    struct SurfaceLayerRange {
+        T_UINT addressLo;
+        T_UINT addressHi;
+        T_UINT count;
+        T_UINT reserved;
+    };
+
+    struct SurfaceLayerTriangle {
+        MaterialVertex vertices[3];
+        T_UINT faces;
+        T_UINT primitivePolicy;
+        T_UINT sourceGeometry;
+        T_UINT sourcePrimitive;
+    };
+
+    struct InstanceAppearance {
+        T_VEC4 colorMultiply;
+        T_VEC4 colorReplace;
+        T_VEC4 uv;
+        T_VEC4 shadow;
+        T_IVEC2 overlay;
+        T_IVEC2 light;
+        T_UINT flags;
+        T_UINT textureOverride;
+        T_FLOAT fluidProgress;
+        T_INT lightScene;
+        T_VEC4 normalCorrection0;
+        T_VEC4 normalCorrection1;
+        T_VEC4 normalCorrection2;
+        T_UINT lightSectionStart;
+        T_UINT lightSectionCount;
+        T_UINT materialFlags;
+        T_UINT materialState;
+        T_MAT4 lightTransform;
+        T_VEC4 entityLight0;
+        T_VEC4 entityLight1;
+        T_MAT4 crumblingTransform;
+        T_VEC4 crumblingNormal0;
+        T_VEC4 crumblingNormal1;
+        T_VEC4 crumblingNormal2;
+        T_UINT surfaceLayerAddressLo;
+        T_UINT surfaceLayerAddressHi;
+        T_UINT surfaceLayerPrimitiveCount;
+        T_UINT surfaceLayerPadding;
+        T_VEC4 uvTransform0;
+        T_VEC4 uvTransform1;
+        T_VEC4 sourceColour;
+        T_VEC4 sectionColourPlane;
+        T_VEC4 sectionColourTarget;
+    };
+
+#ifdef __cplusplus
+}; // namespace VertexFormat
+
+static_assert(sizeof(VertexFormat::MaterialVertex) == 80);
+static_assert(offsetof(VertexFormat::MaterialVertex, lightUV) == 64);
+static_assert(offsetof(VertexFormat::MaterialVertex, packedData) == 72);
+static_assert(sizeof(VertexFormat::SurfaceLayerRange) == 16);
+static_assert(sizeof(VertexFormat::SurfaceLayerTriangle) == 256);
+static_assert(sizeof(VertexFormat::InstanceAppearance) == 464);
+#endif
+
+#ifdef __cplusplus
+namespace Data {
+#endif
+    struct Camera {
+        T_MAT4 viewMatrix;
+        T_MAT4 projMatrix;
+        T_MAT4 viewMatrixInv;
+        T_MAT4 projMatrixInv;
+        T_VEC2 jitter;
+        T_VEC2 pad0;
+    };
+
+    struct DirectionalLight {
+        T_VEC3 direction;  // 12 bytes
+        T_FLOAT pad0;      // 4 bytes
+        T_VEC3 color;      // 12 bytes
+        T_FLOAT intensity; // 4 bytes
+    };
+
+    struct World {
+        DirectionalLight directionalLight; // 32 bytes
+        T_FLOAT time;                      // 4 bytes
+        T_UINT seed;                       // 4 bytes
+    };
+
+    struct OverlayPostUBO {
+        T_MAT4 projectionMat;
+        T_VEC2 inSize;
+        T_VEC2 outSize;
+        T_VEC2 blurDir;
+        T_FLOAT radius;
+        T_FLOAT radiusMultiplier;
+        T_VEC4 diagramRect;
+        T_VEC4 diagramLineColor;
+        T_VEC4 diagramShadowColor;
+        T_VEC4 diagramParams;
+    };
+
+    struct WorldUBO {
+        T_MAT4 cameraViewMat;
+
+        T_MAT4 cameraEffectedViewMat;
+
+        T_MAT4 cameraProjMat;
+
+        T_MAT4 cameraViewMatInv;
+
+        T_MAT4 cameraEffectedViewMatInv;
+
+        T_MAT4 cameraProjMatInv;
+
+        T_VEC2 cameraJitter;
+        T_FLOAT gameTime;
+        T_UINT seed;
+
+        T_MAT4 textureMat;
+
+        T_UINT overlayTextureID;
+        T_UINT isFirstPerson;
+        T_FLOAT fadeStart;
+        T_FLOAT fadeEnd;
+
+        T_VEC4 atmosphereColor;
+
+        T_UINT environmentFlags;
+        T_UINT skyType;
+        T_FLOAT glintStrength;
+        T_UINT lodGeometry;
+
+        T_DVEC4 cameraPos;              // w for padding
+        T_IVEC4 chunkGridInfo;          // x=sizeX, y=sizeY, z=sizeZ, w=bottomSectionCoord
+        T_IVEC4 chunkStorageSectionPos; // xyz=BuiltChunkStorage.sectionPos
+
+        T_UINT endSkyTextureID;
+        T_UINT endPortalTextureID;
+        T_UINT lightMapTextureID;
+        T_UINT uiPrimaryOwner; // 0 = ordinary world; UI view owner for direct camera visibility
+
+        // Display-resolution camera effects are composed after denoising/upscaling and after
+        // exposure metering, but before tone mapping.  A negative texture id disables a layer.
+        // x=block atlas, y=fluid overlay, z=fire atlas, w=reserved.
+        T_IVEC4 cameraEffectTextureIDs;
+
+        // Atlas UV bounds are (u0, v0, u1, v1). The standalone fluid texture uses
+        // cameraFluidParams=(uBase, vBase, repeatU, alpha) and cameraFluidColor.a=repeatV;
+        // signed repeat axes also encode Veil's fullscreen-triangle orientation.
+        T_VEC4 cameraBlockUV;
+        T_VEC4 cameraBlockColor;
+        T_VEC4 cameraFluidParams;
+        T_VEC4 cameraFluidColor;
+        T_VEC4 cameraFireUV;
+        // x=alpha, y=scene-linear emission scale, z/w reserved.
+        T_VEC4 cameraFireParams;
+    };
+#ifdef __cplusplus
+    static_assert(sizeof(WorldUBO) == 704, "WorldUBO layout must match BufferProxy serialization");
+#endif
+
+    struct SkyUBO {
+        T_VEC3 baseColor;
+        T_UINT skyType;
+
+        T_VEC4 horizonColor;
+
+        T_VEC3 sunDirection;
+        T_UINT isSunRisingOrSetting;
+
+        T_FLOAT thunderGradient;
+        T_UINT reservedSkyWord;
+        T_UINT cameraSubmersionType;
+        T_UINT moonPhase;
+        T_FLOAT rainGradient;
+
+        T_UINT sunTextureID;
+        T_UINT moonTextureID;
+        // Vanilla's LevelRenderer multiplies the star vertex color and alpha by
+        // ClientLevel#getStarBrightness(partialTick). Keep this in the existing
+        // source-provided brightness without reapplying the day/night tint.
+        T_FLOAT starBrightness;
+        // Projected solid-angle energy: sun, full-moon, current/full phase ratio.
+        T_VEC4 celestialProfile;
+    };
+
+    struct TextureMapEntry {
+        T_INT specular;
+        T_INT normal;
+        T_INT flag;
+    };
+
+    struct LayeredWorldMaterial {
+        T_IVEC4 textures;
+        T_UVEC4 settings;
+        T_VEC4 uv;
+        T_VEC4 motion;
+        T_VEC4 mask;
+        T_VEC4 origin;
+        T_VEC4 surface;
+    };
+
+    struct TextureMapping {
+        TextureMapEntry entries[4096];
+        LayeredWorldMaterial programs[4096];
+        T_UVEC4 programInfo;
+        T_UINT programEmitters[4096];
+    };
+
+    struct ExposureData {
+        T_INT width;
+        T_INT height;
+        T_INT stride;
+        T_FLOAT exposure;
+
+        T_FLOAT minL;
+        T_FLOAT maxL;
+        T_UINT total;
+        T_UINT pad0;
+
+        T_UINT bins[256];
+    };
+
+    struct LightMapUBO {
+        T_FLOAT ambientLightFactor;
+        T_FLOAT skyFactor;
+        T_FLOAT blockFactor;
+        T_INT useBrightLightmap;
+
+        T_VEC3 skyLightColor;
+        T_FLOAT nightVisionFactor;
+
+        T_FLOAT darknessScale;
+        T_FLOAT darkenWorldFactor;
+        T_FLOAT brightnessFactor;
+        T_FLOAT pad0;
+    };
+#ifdef __cplusplus
+}; // namespace Data
+#endif
+#ifdef __cplusplus
+}; // namespace vk
+#endif
+
+#ifdef __cplusplus
+static_assert(sizeof(vk::VertexFormat::PBRVertex) == mcvr::abi::PBR_CANONICAL_BYTES);
+static_assert(sizeof(vk::VertexFormat::PositionVertex) == mcvr::abi::POSITION_VERTEX_BYTES);
+static_assert(sizeof(vk::VertexFormat::MaterialVertex) == mcvr::abi::MATERIAL_VERTEX_BYTES);
+#endif
+
+#ifdef __cplusplus
+static_assert(offsetof(vk::VertexFormat::PBRVertex, pos) == mcvr::abi::CANONICAL_POS_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, useNorm) == mcvr::abi::CANONICAL_USE_NORM_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, norm) == mcvr::abi::CANONICAL_NORM_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, useColorLayer) == mcvr::abi::CANONICAL_USE_COLOR_LAYER_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, colorLayer) == mcvr::abi::CANONICAL_COLOR_LAYER_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, useTexture) == mcvr::abi::CANONICAL_USE_TEXTURE_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, useOverlay) == mcvr::abi::CANONICAL_USE_OVERLAY_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, textureUV) == mcvr::abi::CANONICAL_TEXTURE_UV_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, overlayUV) == mcvr::abi::CANONICAL_OVERLAY_UV_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, useGlint) == mcvr::abi::CANONICAL_USE_GLINT_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, textureID) == mcvr::abi::CANONICAL_TEXTURE_ID_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, glintUV) == mcvr::abi::CANONICAL_GLINT_UV_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, glintTexture) == mcvr::abi::CANONICAL_GLINT_TEXTURE_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, useLight) == mcvr::abi::CANONICAL_USE_LIGHT_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, lightUV) == mcvr::abi::CANONICAL_LIGHT_UV_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, coordinate) == mcvr::abi::CANONICAL_COORDINATE_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, albedoEmission) == mcvr::abi::CANONICAL_ALBEDO_EMISSION_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, postBase) == mcvr::abi::CANONICAL_POST_BASE_WORD * 4);
+static_assert(offsetof(vk::VertexFormat::PBRVertex, alphaMode) == mcvr::abi::CANONICAL_ALPHA_MODE_WORD * 4);
+#endif
+
+#endif

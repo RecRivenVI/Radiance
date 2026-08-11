@@ -1,0 +1,151 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+#include "util/material_faces.glsl"
+#include "util/source_draw_colour.glsl"
+#include "util/ui_primary_visibility.glsl"
+#include "common/query_policy.hpp"
+#include "util/ray_origin.glsl"
+#define WATER_EXCLUSION_SET 0
+#define WATER_EXCLUSION_BINDING 3
+#include "util/water_clip.glsl"
+layout(local_size_x=1) in;
+layout(set=0,binding=0) uniform accelerationStructureEXT scene;
+layout(set=0,binding=1,std430) buffer Results { uint result[]; };
+layout(set=0,binding=2,std430) readonly buffer Cases { uvec4 cases[]; };
+bool acceptCandidate(uint face,bool front,uint mode,uint purpose) {
+    if ((mode & 0x20000000u) != 0u)
+        return acceptsQueryTriangleFace(face,front,(face & (1u<<19u))!=0u?1u:0u,purpose==queryDirect);
+    return acceptsWorldTriangleFace(face,front,(face & (1u<<19u))!=0u?1u:0u,(mode&0x80000000u)!=0u);
+}
+void main() {
+    uint i=gl_GlobalInvocationID.x, c=i/4, g=(i/2)%2, side=i%2;
+    float mirror=cases[c].z==0?1:-1;
+    vec3 origin=vec3(mirror*((cases[c].w&0x40000000u)!=0u?0.0:float(g)*3.0),float(c)*4.0,side==0?2:-2);
+    rayQueryEXT ray;
+    rayQueryInitializeEXT(ray,scene,((cases[c].w&0x20000000u)!=0u || (cases[c].w&0x80000000u)==0u ? gl_RayFlagsCullBackFacingTrianglesEXT : 0u),1,origin,0.001,vec3(0,0,side==0?-1:1),4);
+    uint acceptedInterfaces=0u;
+    while(rayQueryProceedEXT(ray)) {
+        uint geom=rayQueryGetIntersectionGeometryIndexEXT(ray,false);
+        uint face=cases[c][geom];
+        if ((cases[c].w&0xffu)!=0u) {
+            uint effective = effectiveMaterialFaces(face);
+            if (effective == materialCullFrontBit) face |= materialHardwareFrontFlipBit;
+        }
+        if(acceptCandidate(face,rayQueryGetIntersectionFrontFaceEXT(ray,false),cases[c].w,queryDirect)) {++acceptedInterfaces;rayQueryConfirmIntersectionEXT(ray);}
+    }
+    result[i]=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT?1:0;
+    if((cases[c].w&0x40000000u)!=0u && result[i]!=0u)
+        result[i]|=(1024u<<rayQueryGetIntersectionGeometryIndexEXT(ray,true))|(acceptedInterfaces<<12u);
+    rayQueryInitializeEXT(ray,scene,((cases[c].w&0x80000000u)!=0u ? 0u : gl_RayFlagsCullBackFacingTrianglesEXT),1,origin,0.001,vec3(0,0,side==0?-1:1),4);
+    while(rayQueryProceedEXT(ray)) {
+        uint geom=rayQueryGetIntersectionGeometryIndexEXT(ray,false);
+        uint face=cases[c][geom];
+        if ((cases[c].w&0xffu)!=0u && effectiveMaterialFaces(face)==materialCullFrontBit)
+            face |= materialHardwareFrontFlipBit;
+        if(acceptCandidate(face,rayQueryGetIntersectionFrontFaceEXT(ray,false),cases[c].w,queryTransport))
+            rayQueryConfirmIntersectionEXT(ray);
+    }
+    if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT) result[i]|=64u;
+    rayQueryInitializeEXT(ray,scene,((cases[c].w&0x80000000u)!=0u ? 0u : gl_RayFlagsCullBackFacingTrianglesEXT),1,origin,0.001,vec3(0,0,side==0?-1:1),4);
+    while(rayQueryProceedEXT(ray)) {
+        uint face=cases[c][rayQueryGetIntersectionGeometryIndexEXT(ray,false)];
+        if ((cases[c].w&0xffu)!=0u && effectiveMaterialFaces(face)==materialCullFrontBit)
+            face |= materialHardwareFrontFlipBit;
+        if(acceptCandidate(face,rayQueryGetIntersectionFrontFaceEXT(ray,false),cases[c].w,queryTransport)) rayQueryConfirmIntersectionEXT(ray);
+    }
+    if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT) result[i]|=128u;
+    // An opaque accepted face selects foreground only. A rejected face exposes
+    // the blue background; it is never a red+blue identity/material mixture.
+    uint layerMask=1u | (side==0?2u:4u);
+    rayQueryInitializeEXT(ray,scene,((cases[c].w&0x20000000u)!=0u || (cases[c].w&0x80000000u)==0u ? gl_RayFlagsCullBackFacingTrianglesEXT : 0u),layerMask,origin,0.001,vec3(0,0,side==0?-1:1),4);
+    while(rayQueryProceedEXT(ray)) {
+        if(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false)!=0u) {
+            rayQueryConfirmIntersectionEXT(ray);
+            continue;
+        }
+        uint face=cases[c][rayQueryGetIntersectionGeometryIndexEXT(ray,false)];
+        if((cases[c].w&0xffu)!=0u && effectiveMaterialFaces(face)==materialCullFrontBit) face|=materialHardwareFrontFlipBit;
+        if(acceptCandidate(face,rayQueryGetIntersectionFrontFaceEXT(ray,false),cases[c].w,queryDirect)) rayQueryConfirmIntersectionEXT(ray);
+    }
+    if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT)
+        result[i]|=rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true)==0u?256u:512u;
+    uint primary=uiPrimaryTraceState(7u,0u);
+    uint reflected=uiPrimaryTraceState(primary,1u);
+    result[i] |= (acceptsUiOwner(1u<<24u,1u,primary)?2u:0u)
+        | (acceptsUiOwner(2u<<24u,1u,primary)?4u:0u)
+        | (acceptsUiOwner(2u<<24u,1u,reflected)?8u:0u)
+        | (acceptsUiOwner(0u,1u,primary)?16u:0u)
+        | (acceptsUiOwner(2u<<24u,0u,primary)?32u:0u);
+    if ((cases[c].w & 0x20000000u) != 0u) {
+        bool valid = queryIncludes(querySelf,queryTransport,true) && !queryIncludes(querySelf,queryDirect,true)
+            && queryIncludes(queryReceiveOnly,queryDirect,true) && !queryIncludes(queryReceiveOnly,queryTransport,true)
+            && !queryIncludes(queryOverlay,queryDirect,true) && queryIncludes(queryOverlay,queryPriority,true)
+            && queryIncludes(queryOverlay,queryTransport,true)
+            && advanceQuery(advanceQuery(queryDirect,2u),2u)==queryDirect
+            && advanceQuery(advanceQuery(queryDirect,1u),2u)==queryTransport
+            && (cacheUpdateMask(queryDirect,true)&querySelf)==0u
+            && (cacheUpdateMask(queryDirect,false)&querySelf)!=0u
+            && (cacheUpdateMask(advanceQuery(queryDirect,0u),true)&querySelf)!=0u
+            && (cacheUpdateMask(advanceQuery(queryDirect,2u),true)&querySelf)==0u
+            && (cacheUpdateMask(queryDirect,true)&queryReceiveOnly)==0u
+            && (cacheUpdateMask(queryTransport,true)&queryReceiveOnly)==0u
+            && (cacheUpdateMask(queryDirect,true)&queryParticle)!=0u
+            && (cacheUpdateMask(queryTransport,true)&queryParticle)!=0u;
+        if (rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT) {
+            bool hitFront=rayQueryGetIntersectionFrontFaceEXT(ray,true);
+            uint coating=42u|EYE_CULL_BACK_BIT;
+            uint visibleEye=eyeOverlayTextureForQuery(coating,0u,hitFront,true);
+            valid=valid && visibleEye==(hitFront?42u:0u)
+                && eyeOverlayTextureForQuery(coating,0u,hitFront,false)==42u;
+            // A transport query hitting the body carries the coating's coloured radiance to its receiver.
+            vec3 received=vec3(.5)*resolveEyeRadiance(vec4(.8,.1,.2,1),vec4(1));
+            valid=valid && received.r>received.g && received.g>0.0;
+        }
+        if(rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT &&
+           rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true)==0u) {
+            vec3 direction=vec3(0,0,side==0?-1:1);
+            vec3 hit=origin+direction*rayQueryGetIntersectionTEXT(ray,true);
+            vec3 next=offsetQueryOrigin(hit,vec3(0,0,1),direction);
+            rayQueryInitializeEXT(ray,scene,0u,layerMask,next,0.0,direction,1.0);
+            while(rayQueryProceedEXT(ray)) {
+                uint geom=rayQueryGetIntersectionGeometryIndexEXT(ray,false);
+                if(rayQueryGetIntersectionInstanceCustomIndexEXT(ray,false)!=0u ||
+                   acceptsWorldTriangleFace(cases[c][geom],rayQueryGetIntersectionFrontFaceEXT(ray,false),
+                       (cases[c][geom]&(1u<<19u))!=0u?1u:0u,true)) rayQueryConfirmIntersectionEXT(ray);
+            }
+            valid=valid && rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT
+                && rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true)==1u;
+        }
+        if(valid) result[i]|=1u<<24;
+        vec3 clipDirection=vec3(0,0,side==0?-1:1);
+        rayQueryInitializeEXT(ray,scene,gl_RayFlagsNoOpaqueEXT,layerMask,origin,0.0,clipDirection,4.0);
+        while(rayQueryProceedEXT(ray)) {
+            vec3 point=origin+clipDirection*rayQueryGetIntersectionTEXT(ray,false);
+            if(!excludedWaterPosition(point)) rayQueryConfirmIntersectionEXT(ray);
+        }
+        bool clipped=excludedWaterPosition(vec3(0)) && !excludedWaterPosition(vec3(0,0,0.0002))
+            && !excludedWaterPosition(vec3(2000,0,0))
+            && excludedWaterPosition(vec3(2000,.365625,0))
+            && !excludedWaterPosition(vec3(2002,.365625,0))
+            && rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT
+            && rayQueryGetIntersectionInstanceCustomIndexEXT(ray,true)==1u;
+        if(clipped) result[i]|=1u<<25;
+        bool categories=true;
+        for(uint category=0u;category<3u;++category) {
+            for(uint purpose=0u;purpose<3u;++purpose) {
+                vec3 from=vec3(20.0+10.0*float(category),0,2);
+                rayQueryInitializeEXT(ray,scene,0u,queryMask(purpose,true),from,0.0,vec3(0,0,-1),4.0);
+                while(rayQueryProceedEXT(ray)) rayQueryConfirmIntersectionEXT(ray);
+                bool hit=rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT;
+                bool wanted=category==0u?purpose==queryTransport:
+                    (category==1u?purpose==queryDirect:purpose!=queryDirect);
+                categories=categories && (hit==wanted);
+            }
+        }
+        if(categories) result[i]|=1u<<26;
+
+
+    }
+
+}

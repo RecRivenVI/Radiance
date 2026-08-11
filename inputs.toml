@@ -1,0 +1,79 @@
+[create]
+version = "6.0.10"
+description = "create 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/LNytGWDc/versions/UjX6dr61/create-1.21.1-6.0.10.jar"
+sha256 = ["ef87fe5709f1ba1f5b8bb20a2925b5afb4669e178fd6d8bf10c167759eefe37a"]
+
+[sable]
+version = "2.0.6"
+description = "sable 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/T9PomCSv/versions/fg9dTRz9/sable-neoforge-1.21.1-2.0.6.jar"
+sha256 = ["9c199157843bf953a47dff625fc5bb41c01a90538d35ad18e6996bbcb8a617c2"]
+
+[aeronautics_bundled]
+version = "1.3.2"
+description = "aeronautics_bundled 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/oWaK0Q19/versions/44pLdPGg/create-aeronautics-bundled-1.21.1-1.3.2.jar"
+sha256 = ["a3f330d4757640f8715d991a43eedb826e4d0e51558d859c843ae6693bd35f1e"]
+
+[newport_city_snapshot]
+version = "3955"
+description = "使用者授权复制的 Newport City 世界及原设置；版本为 level.dat DataVersion，仅用于区块加载诊断"
+source = "使用者最近一次 Prism 手工运行，2026-10-15 只读快照；不修改原世界"
+sha256 = ["5e0f1d38256b0e831b10aacad504e866cfe825d0ff508166b374430fdf80e395"]
+
+[epicsawrunner_city_original]
+version = "1.2"
+description = "使用者提供的 By Epicsawrunner v1.2 原始城市存档，Minecraft 1.12.2 / DataVersion 1343；只读输入，原版优化后用于阶段 3 纯原版城市对照"
+source = "使用者于 2026-10-20 指定的原始存档 By Epicsawrunner v1.2.zip"
+sha256 = ["7fb7080c653aeb2073a813c4f20d046c2057f3ed281ef993305578b8e637f53a"]
+
+[nsight_aftermath_sdk]
+version = "2026.3.26197.2318"
+description = "已安装 Nsight Graphics 附带的 NsightAftermathSDK 私有 ZIP 输入，仅构建项目内 JVM 诊断代理，不进入发行包"
+source = "https://docs.nvidia.com/nsight-aftermath/SDK/index.html"
+sha256 = ["5586ad39ef37f18542cf6940d8702ea338d3827b911b00ceb1d80326f244ada1"]
+
+[customskinloader-bootstrap]
+version = "15.1"
+description = "customskinloader 手工验收实例辅助模组，不是产品依赖或兼容声明"
+source = "https://cdn.modrinth.com/data/idMHQ4n2/versions/yyYvYfZI/CustomSkinLoader_Universal-15.1.jar"
+sha256 = ["c8769a38b3cc1da2a7b2f5827d1a53a24cd1ef6d0784b1eb545569f5882a2ffb"]
+
+[zume]
+version = "1.2.2"
+description = "zume 手工验收实例辅助模组，不是产品依赖或兼容声明"
+source = "https://cdn.modrinth.com/data/o6qsdrrQ/versions/Rh2ImJ86/zume-1.2.2.jar"
+sha256 = ["c33b99e8976dfeb0aeb1afcc2ad8e65c7310532ae5ccc38c75317d672dc95e6f"]
+
+[voxy_legacy]
+mod-id = "voxy"
+version = "0.2.20-beta+1.21.1-neoforge"
+description = "voxy 本地移植构建，供 Radiance 可选远景 PT 后端编译与项目内功能验证"
+source = "https://github.com/RecRivenVI/voxy；本地 build/libs 构建，Manifest Voxy-Commit 为 11a3799，使用者确认与当前 Voxy 工作区源码一致"
+sha256 = ["182d4a19c06cdc769cf371a361c8e83c8741764313fedb3b5dd36546cbc86932"]
+
+[voxy]
+mod-id = "voxy"
+version = "0.2.20-beta.1+1.21.1-neoforge"
+description = "voxy 当前适配编译与项目内功能验证输入"
+source = "https://github.com/RecRivenVI/voxy；2026-10-28 核对本地工作区 build/libs 的普通构建，Voxy-Commit 为 3b8ac52；生产源码无较 JAR 更新文件，包内 401 个项目类与当前编译输出一致，工作区仍有未提交改动"
+sha256 = ["3f7a8120f639b80d70a92499653ae37432f920a23848807d5c021ad98f656862"]
+
+[prism_rendering_baseline]
+version = "2026-10-24"
+description = "使用者授权只读复制的 Radiance 实例配置，用于项目内加载至平静的全链路诊断；不包含模组、运行库或世界"
+source = "使用者的 Radiance 1.21.1-neoforge Prism 实例；2026-10-24 停止后只读冻结"
+sha256 = ["5ccfbf65d7ad9a04d763549ff9b1798313a9d63bca943baee5b0957fc8f35e76"]
+
+[prism_city_baseline_20261029]
+version = "2026-10-29"
+description = "城市性能重测的 Prism 当前配置与两份已启用 SPBR 资源包；不含账户、世界、模组和运行库"
+source = "使用者的 Radiance 1.21.1-neoforge Prism 实例，2026-10-29 停止后只读冻结，逐文件 SHA-256 校验"
+sha256 = ["97cb78a16363a7e7818317d49f982ccecd916a5b9d25f5234e2539f46793e0e7"]
+
+[prism_runtime_baseline]
+version = "2026-10-24"
+description = "使用者 Radiance 实例继承的内存、额外 JVM 参数与 Java 身份，只读提取，不包含账户或凭据"
+source = "使用者授权的 Radiance 1.21.1-neoforge Prism 实例及其全局继承设置"
+sha256 = ["3a9bea919a5796f863abbd88a06758ed6affc4f9946aadc5766b910c52681d7b"]

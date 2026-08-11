@@ -1,0 +1,10 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+
+[instances.client]
+memory-max = "4G"
+width = 1920
+height = 1080
+mods = []
+jvm-args = ["-Dradiance.audit.experiments=true", "-Dradiance.audit.takeoverStages=true", "-Dradiance.audit.takeoverCompare=true", "-Dradiance.audit.correctnessOnly=true", "-Dradiance.audit.paintingVerify=true", "-Dradiance.audit.capture=true", "-Dradiance.audit.benchmark=true", "-Dradiance.audit.benchmark.version=1.21.1-neoforge", "-Dradiance.audit.unattended=true", "-javaagent:../../../../../components/render_diagnostics/build/benchmark-support/radiance-benchmark-agent.jar"]
+game-args = ["--quickPlaySingleplayer", "Audit Benchmark"]
