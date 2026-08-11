@@ -1,42 +1,52 @@
 package com.radiance.mixins.vanilla_resource_tracker;
 
-import com.radiance.client.texture.IdentifierInputStream;
-import java.io.InputStream;
-import net.minecraft.resource.InputSupplier;
-import net.minecraft.resource.NamespaceResourceManager;
-import net.minecraft.resource.Resource;
-import net.minecraft.resource.ResourcePack;
-import net.minecraft.resource.metadata.ResourceMetadata;
-import net.minecraft.util.Identifier;
+import com.radiance.client.texture.ClientResourceScope;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import net.minecraft.resources.ResourceLocation;
+import net.minecraft.server.packs.PackType;
+import net.minecraft.server.packs.resources.FallbackResourceManager;
+import net.minecraft.server.packs.resources.Resource;
 import org.spongepowered.asm.mixin.Mixin;
+import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
-@Mixin(NamespaceResourceManager.class)
+@Mixin(FallbackResourceManager.class)
 public abstract class NamespaceResourceManagerMixins {
 
     @Shadow
-    private static InputSupplier<InputStream> wrapForDebug(Identifier id, ResourcePack pack,
-        InputSupplier<InputStream> supplier) {
-        return null;
+    @Final
+    private PackType type;
+
+    @Inject(method = "getResource(Lnet/minecraft/resources/ResourceLocation;)Ljava/util/Optional;",
+        at = @At("RETURN"), cancellable = true)
+    private void addIdentifierToSingleResource(ResourceLocation id,
+        CallbackInfoReturnable<Optional<Resource>> cir) {
+        cir.setReturnValue(cir.getReturnValue().map(
+            resource -> ClientResourceScope.wrapClientTexture(type, id, resource)));
     }
 
-    @Inject(method = "createResource(Lnet/minecraft/resource/ResourcePack;Lnet/minecraft/util/Identifier;Lnet/minecraft/resource/InputSupplier;Lnet/minecraft/resource/InputSupplier;)Lnet/minecraft/resource/Resource;", at = @At(value = "HEAD"),
-        cancellable = true)
-    private static void addIdentifierToInputStream(ResourcePack pack,
-        Identifier id,
-        InputSupplier<InputStream> supplier,
-        InputSupplier<ResourceMetadata> metadataSupplier,
-        CallbackInfoReturnable<Resource> cir) {
-        cir.setReturnValue(new Resource(pack, () -> {
-            InputSupplier<InputStream> inputStreamInputSupplier = wrapForDebug(id, pack, supplier);
-            if (inputStreamInputSupplier == null) {
-                return null;
+    @Inject(method = "listResources", at = @At("RETURN"))
+    private void addIdentifiersToListedResources(String path,
+        java.util.function.Predicate<ResourceLocation> filter,
+        CallbackInfoReturnable<Map<ResourceLocation, Resource>> cir) {
+        cir.getReturnValue().replaceAll(
+            (id, resource) -> ClientResourceScope.wrapClientTexture(type, id, resource));
+    }
+
+    @Inject(method = "listResourceStacks", at = @At("RETURN"))
+    private void addIdentifiersToListedResourceStacks(String path,
+        java.util.function.Predicate<ResourceLocation> filter,
+        CallbackInfoReturnable<Map<ResourceLocation, List<Resource>>> cir) {
+        cir.getReturnValue().forEach((id, resources) -> {
+            for (int index = 0; index < resources.size(); index++) {
+                resources.set(index,
+                    ClientResourceScope.wrapClientTexture(type, id, resources.get(index)));
             }
-            InputStream inputStream = inputStreamInputSupplier.get();
-            return new IdentifierInputStream(inputStream, id);
-        }, metadataSupplier));
+        });
     }
 }

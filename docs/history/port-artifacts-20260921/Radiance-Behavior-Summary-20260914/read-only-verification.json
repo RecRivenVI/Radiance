@@ -1,0 +1,16 @@
+{
+  "Radiance": {
+    "result": "PASS",
+    "files": 587,
+    "changedSourceFiles": [],
+    "head": "414d8e330a2fc6cb1e8630cc95f2302b2b97a0e8",
+    "branch": "1.21.1-neoforge"
+  },
+  "MCVR": {
+    "result": "PASS",
+    "files": 421,
+    "changedSourceFiles": [],
+    "head": "9905c81b1999f5845bf66d13501d371c16adf561",
+    "branch": "develop"
+  }
+}

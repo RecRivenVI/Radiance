@@ -1,0 +1,16 @@
+# A组原生崩溃来源判断
+
+13:17:38，入世界后字幕HUD提交文本batch时，ShaderProxy.draw进入native，NVIDIA驱动EXCEPTION_ACCESS_VIOLATION，读-1。未发现VK_ERROR_DEVICE_LOST。13:15—13:19 System事件查询未返回Display/nvlddmkm/WHEA/4101匹配事件；这不排除未记录的GPU故障。
+
+## 已确认调用点
+hs_err_pid49588.log栈槽0x8000b2cbb8保存返回地址0x7ffdbdbc556e；已加载core基址0x7ffdbda50000，所以RVA=0x17556e。
+实际运行core.dll和当前打包资源SHA256均AD8A0EC3460CE971554395777B4D6AAAEB6B5DD1BB0B112C7B763AF9F7FE991B。
+DLL RVA0x175568为间接call，下一指令正是0x17556e。与实际Release command.obj的drawIndexed方法机器码和COFF relocation逐项对应，调用目标为vkCmdDrawIndexed。证据acceptance-a-crash-native-call.txt。
+因此不是仅根据nvoglv64.dll名称推断OpenGL路径，也不是已确认的vkQueueSubmit/vkWaitForFences设备丢失。此时driver尚未从记录indexed draw调用返回。
+
+## 判断与限度
+优先方向是MCVR这次绘制的pipeline/descriptor/dynamic UBO或buffer生命周期/绑定状态错误，字幕是触发消费者，不足以归罪字幕字符串逻辑。UIModuleContext::drawIndexed在prepareOverlayDescriptorTable、switchOverlayDraw、bind pipeline/descriptors/vertex/index之后调用vkCmdDrawIndexed。资源表复制、UBO扩容、重载与入世界的帧切换值得重点核对。
+驱动内部寄存器R9=-1及非法读取只能证明无效CPU指针，不足以直接确定哪个VkBuffer或descriptor；不能把内部type数字视为公开Vulkan枚举。当前无完整native dump或validation VUID，不能宣布具体根因已证实。
+RTSSVkLayer64.dll确实被加载，但已知直接栈地址是core→NVIDIA；没有证据把RTSS作为根因，未修改其进程/设置。
+
+本轮未修改业务源码、重构资源生命周期、构建或启动游戏。下一步应以Vulkan validation捕获首个无效绑定/生命周期VUID，必要时保留原生异常dump与精确shader/buffer/descriptor关联，随后定向修复并复测；不以关闭字幕、关闭核心功能或猜测性驱动替换冒充修复。

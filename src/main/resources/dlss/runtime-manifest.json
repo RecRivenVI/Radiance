@@ -1,0 +1,32 @@
+[
+  {
+    "Name": "nvngx_dlss.dll",
+    "Url": "https://raw.githubusercontent.com/NVIDIA/DLSS/374959484e79a640feaba44c93ac8cfb0a03f5b5/lib/Windows_x86_64/rel/nvngx_dlss.dll",
+    "Bytes": 58956912,
+    "Version": "310,9,1,0",
+    "SHA256": "3975567B8943C53ACCE397F2B72380092F84F162D00B0D2C7D08A1025C563983",
+    "GitBlob": "875981984f56e71b4fde6605484ef767dadf9910",
+    "SignatureStatus": "Valid",
+    "Signer": "CN=NVIDIA Corporation, OU=1005bk6, O=NVIDIA Corporation, L=Santa Clara, S=California, C=US"
+  },
+  {
+    "Name": "nvngx_dlssd.dll",
+    "Url": "https://raw.githubusercontent.com/NVIDIA/DLSS/374959484e79a640feaba44c93ac8cfb0a03f5b5/lib/Windows_x86_64/rel/nvngx_dlssd.dll",
+    "Bytes": 48343664,
+    "Version": "310,9,1,0",
+    "SHA256": "4BC7EA5FCB2F32CF86BC2CB072E8D2860914A0BE511CBDCB2FC206C1D9D83B80",
+    "GitBlob": "a9c3c1cbe2ef1c78fd68db5a778d72382040e677",
+    "SignatureStatus": "Valid",
+    "Signer": "CN=NVIDIA Corporation, OU=1005bk6, O=NVIDIA Corporation, L=Santa Clara, S=California, C=US"
+  },
+  {
+    "Name": "nvngx_dlssg.dll",
+    "Url": "https://raw.githubusercontent.com/NVIDIA/DLSS/374959484e79a640feaba44c93ac8cfb0a03f5b5/lib/Windows_x86_64/rel/nvngx_dlssg.dll",
+    "Bytes": 7460976,
+    "Version": "310,9,1,0",
+    "SHA256": "FF6E90EB78B827927DFF5B4ECC6B1C870C2E9BCA29ED9F48C7D348CC9E170B82",
+    "GitBlob": "f43cac176a0fc8168d2baf5b7ec4eff63cd12975",
+    "SignatureStatus": "Valid",
+    "Signer": "CN=NVIDIA Corporation, OU=1005bk6, O=NVIDIA Corporation, L=Santa Clara, S=California, C=US"
+  }
+]

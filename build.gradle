@@ -1,5 +1,5 @@
 plugins {
-    id 'fabric-loom' version '1.11-SNAPSHOT'
+    id 'net.neoforged.moddev' version '2.0.140'
     id 'maven-publish'
 }
 
@@ -10,113 +10,844 @@ base {
     archivesName = project.archives_base_name
 }
 
-compileJava {
-    options.compilerArgs += ['-h', "${projectDir}/src/main/native/include"]
-    outputs.upToDateWhen { false }
+def windowsHost = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')
+def javaToolchains = extensions.getByType(org.gradle.jvm.toolchain.JavaToolchainService)
+def jniJavaHome = javaToolchains.launcherFor {
+    languageVersion = JavaLanguageVersion.of(21)
+}.map { it.metadata.installationPath.asFile }
+// Keep nested compile libraries isolated by the selected optional-mod versions. Copy tasks
+// must not leave an older nested JAR on the classpath after a version change.
+def compatibilityCompileDirectory = layout.buildDirectory.dir(
+        "radiance-compatibility-compile/${project.create_version}_${project.sable_version}_${project.aeronautics_version}_${project.veil_version}")
+def bootstrapGeneratedResources = layout.buildDirectory.dir('generated/bootstrapResources')
+def distributedArchiveName =
+        "${project.archives_base_name}-${project.version}-neoforge-${project.minecraft_version}.jar".toString()
+def gameArchiveName = "${project.archives_base_name}-${project.version}.jar".toString()
+def embeddedGameMetadata = layout.buildDirectory.file('generated/bootstrapMetadata/game.sha256')
+def embeddedGamePath = layout.buildDirectory.file('generated/bootstrapMetadata/game.path')
+def launcherMetadataDirectory = layout.buildDirectory.dir('generated/launcherMetadata')
+// One source for the real NeoForge declaration and the outer launcher's display-only metadata.
+def modInformation = [
+        id: project.mod_id, name: project.mod_name, version: project.version.toString(),
+        description: 'A Minecraft mod that uses modern Vulkan C++ as its rendering backend.',
+        authors: 'LJIONG, Interstellarss', license: 'GPL-3.0-only',
+        homepage: 'https://www.minecraft-radiance.com/',
+        issues: 'https://github.com/Minecraft-Radiance/Radiance/issues',
+        sources: 'https://github.com/Minecraft-Radiance/Radiance',
+        logo: 'assets/radiance/icon.png',
+        minecraft: project.minecraft_version_range, neo_loader: project.neo_loader_version
+]
+ext.radianceModInformation = modInformation
+def packagedClientDirectory = layout.projectDirectory.dir('run/packaged-client')
+def manualAcceptanceDirectory = file(providers.gradleProperty('radiance.acceptanceDirectory')
+        .getOrElse(layout.buildDirectory.dir('manual-acceptance').get().asFile.absolutePath))
+def mcvrRoot = providers.gradleProperty('mcvr.root')
+        .map { rootProject.file(it) }
+        .orElse(providers.provider { rootProject.file('../MCVR') })
+def mcvrBuildDirectory = providers.gradleProperty('mcvr.buildDirectory')
+        .map { rootProject.file(it) }
+        .orElse(mcvrRoot.map { new File(it, 'build-radiance-1.21.1-neoforge') })
+def requestedMcvrCmakeGenerator = providers.gradleProperty('mcvr.cmakeGenerator')
+def mcvrConfiguration = providers.gradleProperty('mcvr.configuration').orElse('Release')
+
+def readCachedCmakeGenerator = { File buildDirectory ->
+    def cache = new File(buildDirectory, 'CMakeCache.txt')
+    if (!cache.isFile()) {
+        return null
+    }
+    def entry = cache.readLines('UTF-8').find { it.startsWith('CMAKE_GENERATOR:INTERNAL=') }
+    return entry == null ? null : entry.substring(entry.indexOf('=') + 1).trim()
 }
 
-loom {
-    accessWidenerPath = file("src/main/resources/radiance.accesswidener")
+def detectWindowsCmakeGenerator = {
+    def process = new ProcessBuilder('cmake', '--help')
+            .redirectErrorStream(true)
+            .start()
+    def output = process.inputStream.getText('UTF-8')
+    def exitCode = process.waitFor()
+    if (exitCode != 0) {
+        throw new GradleException("Unable to query CMake generators (exit ${exitCode}):\n${output}")
+    }
+
+    def defaultGenerator = (output =~ /(?m)^\s*\*\s+(Visual Studio \d+ \d+)\s+=/)
+    if (defaultGenerator.find()) {
+        return defaultGenerator.group(1)
+    }
+
+    def availableGenerator = (output =~ /(?m)^\s*(Visual Studio \d+ \d+)\s+=/)
+    if (availableGenerator.find()) {
+        return availableGenerator.group(1)
+    }
+    throw new GradleException('No Visual Studio CMake generator is available. Install Visual Studio C++ build tools or set -Pmcvr.cmakeGenerator explicitly.')
 }
 
-tasks.named("runClient", JavaExec) {
-   args "--width", "1920", "--height", "1080"
+// Shared by the optional Audit collector; a custom paired checkout must not silently use ../MCVR.
+ext.mcvrNativeBuild = [root: mcvrRoot, configuration: mcvrConfiguration,
+        generatorFor: { File directory ->
+            requestedMcvrCmakeGenerator.orNull ?: readCachedCmakeGenerator(directory) ?: detectWindowsCmakeGenerator()
+        }]
+
+sourceSets {
+    bootstrap {
+        java.setSrcDirs(['src/bootstrap/java'])
+        resources {
+            setSrcDirs(['src/bootstrap/resources', bootstrapGeneratedResources])
+        }
+        compileClasspath += configurations.compileClasspath
+        runtimeClasspath += configurations.runtimeClasspath
+    }
+    bootstrapTest {
+        java.setSrcDirs(['src/bootstrapTest/java'])
+        resources.setSrcDirs(['src/bootstrapTest/resources'])
+        compileClasspath += sourceSets.bootstrap.output + sourceSets.bootstrap.compileClasspath
+        runtimeClasspath += output + compileClasspath + sourceSets.bootstrap.runtimeClasspath
+    }
+    packagedLaunch {
+        java.setSrcDirs([])
+        resources.setSrcDirs([])
+        compileClasspath += configurations.compileClasspath
+        runtimeClasspath += configurations.runtimeClasspath
+    }
+    test {
+        compileClasspath += sourceSets.main.compileClasspath
+        runtimeClasspath += sourceSets.main.runtimeClasspath
+    }
 }
+
+sourceSets.main.compileClasspath += sourceSets.bootstrap.output.classesDirs
 
 repositories {
-    // Add repositories to retrieve artifacts from in here.
-    // You should only use this when depending on other mods because
-    // Loom adds the essential maven repositories to download Minecraft and libraries from automatically.
-    // See https://docs.gradle.org/current/userguide/declaring_repositories.html
-    // for more information about repositories.
-    maven {
-        name = "Fabric"
-        url = "https://maven.fabricmc.net/"
-    }
-    maven {
-        name = "Mojang"
-        url = "https://libraries.minecraft.net/"
-    }
     mavenCentral()
+    maven {
+        name = 'BlameJared'
+        url = 'https://maven.blamejared.com/'
+        content { includeGroup 'foundry.veil' }
+    }
+    maven {
+        name = 'Modrinth'
+        url = 'https://api.modrinth.com/maven'
+        content { includeGroup 'maven.modrinth' }
+    }
+}
+
+configurations {
+    bootstrapImplementation.extendsFrom implementation
+    bootstrapTestImplementation.extendsFrom testImplementation
+    bootstrapTestRuntimeOnly.extendsFrom testRuntimeOnly
+    compatibilityCompileArtifacts {
+        canBeConsumed = false
+        canBeResolved = true
+        transitive = false
+    }
+    compatibilityRuntimeCreate {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+    compatibilityRuntimeSable {
+        canBeConsumed = false
+        canBeResolved = true
+    }
+    compatibilityRuntimeAeronautics {
+        canBeConsumed = false
+        canBeResolved = true
+    }
 }
 
 dependencies {
-    // To change the versions see the gradle.properties file
-    minecraft "com.mojang:minecraft:${project.minecraft_version}"
-    mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
-    modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+    def snakeYaml = implementation('org.yaml:snakeyaml:2.6')
+    jarJar(snakeYaml)
 
-    modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
-
-    // https://mvnrepository.com/artifact/org.yaml/snakeyaml
-    implementation "org.yaml:snakeyaml:2.5"
-    include "org.yaml:snakeyaml:2.5"
-}
-
-processResources {
-    inputs.property "version", project.version
-    inputs.property "minecraft_version", project.minecraft_version
-    inputs.property "loader_version", project.loader_version
-    filteringCharset "UTF-8"
-
-    filesMatching("fabric.mod.json") {
-        expand "version": project.version,
-                "minecraft_version": project.minecraft_version,
-                "loader_version": project.loader_version
+    compileOnly("foundry.veil:veil-neoforge-${minecraft_version}:${veil_version}") {
+        transitive = false
     }
+    compileOnly("maven.modrinth:create:${create_version}") { transitive = false }
+    compileOnly("maven.modrinth:sable:${sable_version}") { transitive = false }
+    compileOnly("maven.modrinth:create-aeronautics:${aeronautics_version}") {
+        transitive = false
+    }
+    compileOnly(fileTree(compatibilityCompileDirectory) { include '*.jar' })
+
+    compatibilityCompileArtifacts("maven.modrinth:create:${create_version}")
+    compatibilityCompileArtifacts("maven.modrinth:sable:${sable_version}")
+    compatibilityCompileArtifacts("maven.modrinth:create-aeronautics:${aeronautics_version}")
+    compatibilityCompileArtifacts("foundry.veil:veil-neoforge-${minecraft_version}:${veil_version}")
+
+    compatibilityRuntimeCreate("maven.modrinth:create:${create_version}")
+    compatibilityRuntimeSable("maven.modrinth:sable:${sable_version}")
+    compatibilityRuntimeAeronautics("maven.modrinth:create-aeronautics:${aeronautics_version}")
+
+    testImplementation('org.junit.jupiter:junit-jupiter:6.1.3')
+    testRuntimeOnly('org.junit.platform:junit-platform-launcher:6.1.3')
+    testRuntimeOnly("foundry.veil:veil-neoforge-${minecraft_version}:${veil_version}") {
+        transitive = false
+    }
+    testRuntimeOnly("maven.modrinth:sable:${sable_version}") { transitive = false }
+    // Optional backend contract tests use Flywheel's API, without adding it to the mod's
+    // required runtime dependencies or loading an OpenGL backend.
+    testRuntimeOnly(fileTree(compatibilityCompileDirectory) { include 'flywheel-*.jar' })
 }
 
-def targetJavaVersion = 21
-tasks.withType(JavaCompile).configureEach {
-    // ensure that the encoding is set to UTF-8, no matter what the system default is
-    // this fixes some edge cases with special characters not displaying correctly
-    // see http://yodaconditions.net/blog/fix-for-java-file-encoding-problems-with-gradle.html
-    // If Javadoc is generated, this must be specified in that task too.
-    it.options.encoding = "UTF-8"
-    if (targetJavaVersion >= 10 || JavaVersion.current().isJava10Compatible()) {
-        it.options.release.set(targetJavaVersion)
+neoForge {
+    version = project.neo_loader_version
+    accessTransformers.from(file('src/main/resources/META-INF/accesstransformer.cfg'))
+
+    mods {
+        radiance {
+            sourceSet sourceSets.main
+        }
+        radianceBootstrap {
+            sourceSet sourceSets.bootstrap
+        }
+    }
+
+    runs {
+        configureEach {
+            if (!(name in ['packagedClient', 'packagedServer', 'manualBase', 'manualFull'])) {
+                additionalRuntimeClasspathConfiguration.dependencies.add(
+                        project.dependencies.create('org.yaml:snakeyaml:2.6'))
+            }
+        }
+        client {
+            client()
+            gameDirectory = file('run/client')
+            programArgument '--width'
+            programArgument '2560'
+            programArgument '--height'
+            programArgument '1440'
+        }
+        clientS1 {
+            client()
+            gameDirectory = file('run/client-s1')
+            programArgument '--width'
+            programArgument '2560'
+            programArgument '--height'
+            programArgument '1440'
+        }
+        clientCreate {
+            client()
+            gameDirectory = file('run/create')
+            additionalRuntimeClasspathConfiguration.extendsFrom(configurations.compatibilityRuntimeCreate)
+        }
+        clientSable {
+            client()
+            gameDirectory = file('run/sable')
+            additionalRuntimeClasspathConfiguration.extendsFrom(configurations.compatibilityRuntimeSable)
+        }
+        clientAeronautics {
+            client()
+            gameDirectory = file('run/aeronautics')
+            additionalRuntimeClasspathConfiguration.extendsFrom(
+                    configurations.compatibilityRuntimeCreate,
+                    configurations.compatibilityRuntimeSable,
+                    configurations.compatibilityRuntimeAeronautics)
+        }
+        packagedClient {
+            client()
+            gameDirectory = packagedClientDirectory.asFile
+            loadedMods.set([])
+            sourceSet = sourceSets.packagedLaunch
+            programArgument '--width'
+            programArgument '2560'
+            programArgument '--height'
+            programArgument '1440'
+        }
+        packagedServer {
+            server()
+            gameDirectory = file('run/packaged-server')
+            loadedMods.set([])
+            sourceSet = sourceSets.packagedLaunch
+            programArgument '--nogui'
+        }
+        manualBase {
+            client()
+            gameDirectory = new File(manualAcceptanceDirectory, 'base')
+            loadedMods.set([])
+            sourceSet = sourceSets.packagedLaunch
+            programArgument '--width'
+            programArgument '2560'
+            programArgument '--height'
+            programArgument '1440'
+        }
+        manualFull {
+            client()
+            gameDirectory = new File(manualAcceptanceDirectory, 'full')
+            loadedMods.set([])
+            sourceSet = sourceSets.packagedLaunch
+            programArgument '--width'
+            programArgument '2560'
+            programArgument '--height'
+            programArgument '1440'
+        }
     }
 }
 
 java {
-    def javaVersion = JavaVersion.toVersion(targetJavaVersion)
-    if (JavaVersion.current() < javaVersion) {
-        toolchain.languageVersion = JavaLanguageVersion.of(targetJavaVersion)
-    }
-    // Loom will automatically attach sourcesJar to a RemapSourcesJar task and to the "build" task
-    // if it is present.
-    // If you remove this line, sources will not be generated.
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
     withSourcesJar()
 }
 
-jar {
-    from("LICENSE") {
-        rename { "${it}_${project.archivesBaseName}" }
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+}
+
+tasks.register('bootstrapTest', Test) {
+    description = 'Runs the SERVICE-layer bootstrap tests.'
+    group = 'verification'
+    testClassesDirs = sourceSets.bootstrapTest.output.classesDirs
+    classpath = sourceSets.bootstrapTest.runtimeClasspath
+    useJUnitPlatform()
+}
+
+def bootstrapRuntimeFiles = fileTree('src/main/resources') {
+    include 'core.dll', 'core.lib', 'libcore.so', 'libxess*.dll', 'XESS_LICENCE.txt'
+    include 'shaders/**', 'dlss/**'
+}
+
+tasks.register('generateBootstrapRuntimeIndex') {
+    description = 'Generates the content-addressed runtime resource index used by the SERVICE bootstrap.'
+    inputs.files(bootstrapRuntimeFiles)
+    outputs.file(bootstrapGeneratedResources.map { it.file('META-INF/radiance/runtime.index') })
+    doLast {
+        def outputFile = bootstrapGeneratedResources.get().file('META-INF/radiance/runtime.index').asFile
+        outputFile.parentFile.mkdirs()
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        def lines = bootstrapRuntimeFiles.files.sort { a, b ->
+            rootProject.file('src/main/resources').toPath().relativize(a.toPath()).toString() <=>
+                    rootProject.file('src/main/resources').toPath().relativize(b.toPath()).toString()
+        }.collect { resource ->
+            digest.reset()
+            resource.withInputStream { stream ->
+                byte[] buffer = new byte[65536]
+                for (int read; (read = stream.read(buffer)) >= 0;) {
+                    if (read > 0) digest.update(buffer, 0, read)
+                }
+            }
+            def relative = rootProject.file('src/main/resources').toPath().relativize(resource.toPath())
+                    .toString().replace('\\', '/')
+            "${digest.digest().encodeHex()}  ${relative}"
+        }
+        outputFile.setText(lines.join('\n') + '\n', 'UTF-8')
     }
 }
 
-tasks.named("remapJar") {
-    archiveFileName.set("${project.archives_base_name}-${project.version}-fabric-${project.minecraft_version}.jar")
+tasks.named('processBootstrapResources', ProcessResources) {
+    dependsOn tasks.named('generateBootstrapRuntimeIndex')
+    from(bootstrapRuntimeFiles)
 }
 
-tasks.named("remapSourcesJar") {
-    archiveFileName.set("${project.archives_base_name}-${project.version}-fabric-${project.minecraft_version}-sources.jar")
+tasks.register('prepareCompatibilityCompileDependencies', Copy) {
+    group = 'radiance'
+    description = 'Extracts nested compatibility libraries needed to compile optional integrations.'
+    from {
+        configurations.compatibilityCompileArtifacts.collect { zipTree(it) }
+    }
+    include 'META-INF/jarjar/*.jar'
+    eachFile { details -> details.path = details.name }
+    includeEmptyDirs = false
+    duplicatesStrategy = DuplicatesStrategy.INCLUDE
+    into compatibilityCompileDirectory
 }
 
-// configure the maven publication
-publishing {
-    publications {
-        create("mavenJava", MavenPublication) {
-            artifactId = project.archives_base_name
-            from components.java
+tasks.named('compileJava') {
+    dependsOn tasks.named('prepareCompatibilityCompileDependencies')
+}
+
+tasks.named('compileBootstrapJava') {
+    dependsOn tasks.named('prepareCompatibilityCompileDependencies')
+}
+
+tasks.named('compileBootstrapTestJava') {
+    dependsOn tasks.named('prepareCompatibilityCompileDependencies')
+}
+
+tasks.named('sourcesJar') {
+    dependsOn tasks.named('prepareCompatibilityCompileDependencies'),
+            tasks.named('generateBootstrapRuntimeIndex')
+}
+
+tasks.register('generateJniHeaders', JavaCompile) {
+    group = 'radiance'
+    description = 'Compiles the complete GAME source set to regenerate the JNI header contract.'
+    dependsOn tasks.named('prepareCompatibilityCompileDependencies')
+    source = sourceSets.main.allJava
+    classpath = sourceSets.main.compileClasspath
+    destinationDirectory = layout.buildDirectory.dir('classes/jniHeaderGeneration')
+    options.headerOutputDirectory.set(layout.projectDirectory.dir('src/main/native/include'))
+    options.incremental = false
+    options.compilerArgs.addAll(['-proc:none', '-Xmaxerrs', '1000'])
+    outputs.cacheIf { false }
+    doFirst {
+        delete destinationDirectory
+        delete fileTree('src/main/native/include') { include '*.h' }
+    }
+}
+
+tasks.register('configureRuntimeDependencies', Exec) {
+    group = 'radiance'
+    description = 'Configures the sibling upstream MCVR project for this Radiance checkout.'
+    dependsOn tasks.named('generateJniHeaders')
+    doFirst {
+        def root = mcvrRoot.get()
+        if (!new File(root, 'CMakeLists.txt').isFile()) {
+            throw new GradleException("Sibling MCVR repository is missing: ${root}")
+        }
+        workingDir root
+        environment 'JAVA_HOME', jniJavaHome.get().absolutePath
+        commandLine 'cmake', '-S', root.absolutePath, '-B', mcvrBuildDirectory.get().absolutePath,
+                "-DJAVA_PROJECT_ROOT_DIR=${rootProject.projectDir.absolutePath}",
+                '-DMCVR_ENABLE_NRD=ON', '-DUSE_AMD=ON',
+                '-DBZIP2_REPOSITORY=https://gitlab.com/bzip2/bzip2.git',
+                '-DFETCHCONTENT_UPDATES_DISCONNECTED=ON'
+        if (windowsHost) {
+            def buildDirectory = mcvrBuildDirectory.get()
+            def cachedGenerator = readCachedCmakeGenerator(buildDirectory)
+            def generator = requestedMcvrCmakeGenerator.orNull ?: cachedGenerator ?: detectWindowsCmakeGenerator()
+            if (!generator.startsWith('Visual Studio ')) {
+                throw new GradleException("Windows MCVR builds with FFX and NRD require a Visual Studio generator, but '${generator}' was selected. Use a fresh build directory and optionally set -Pmcvr.cmakeGenerator=\"Visual Studio 17 2022\".")
+            }
+            args '-G', generator, '-A', 'x64'
+            logger.lifecycle("Configuring MCVR with ${generator} (x64) in ${buildDirectory}")
         }
     }
+}
 
-    // See https://docs.gradle.org/current/userguide/publishing_maven.html for information on how to set up publishing.
-    repositories {
-        // Add repositories to publish to here.
-        // Notice: This block does NOT have the same function as the block in the top level.
-        // The repositories here will be used for publishing your artifact, not for
-        // retrieving dependencies.
+tasks.register('installRuntimeDependencies', Exec) {
+    group = 'radiance'
+    description = 'Builds MCVR in mcvr.configuration (default Release) and runs its INSTALL target.'
+    dependsOn tasks.named('configureRuntimeDependencies')
+    doFirst {
+        environment 'JAVA_HOME', jniJavaHome.get().absolutePath
+        commandLine 'cmake', '--build', mcvrBuildDirectory.get().absolutePath,
+                '--config', mcvrConfiguration.get(), '--target', 'INSTALL', '--parallel'
+    }
+}
+
+tasks.register('prepareRuntime') {
+    group = 'radiance'
+    description = 'Builds and installs the sibling MCVR runtime into src/main/resources.'
+    dependsOn tasks.named('installRuntimeDependencies')
+}
+
+tasks.register('verifyRuntimeResources') {
+    group = 'verification'
+    description = 'Checks that upstream MCVR installed the platform library and shaders.'
+    inputs.dir layout.projectDirectory.dir('src/main/resources')
+    doLast {
+        def resources = file('src/main/resources')
+        def required = windowsHost ? ['core.dll', 'core.lib'] : ['libcore.so']
+        if (windowsHost) required += ['nvngx_dlss', 'nvngx_dlssd', 'nvngx_dlssg', 'sl.interposer', 'sl.common', 'sl.dlss', 'sl.dlss_d', 'sl.dlss_g', 'sl.reflex', 'sl.pcl', 'NvLowLatencyVk'].collect { 'dlss/' + it + '.dll' }
+        def missing = required.findAll { !new File(resources, it).isFile() }
+        if (!new File(resources, 'shaders').isDirectory()) {
+            missing += 'shaders/'
+        }
+        if (!missing.isEmpty()) {
+            throw new GradleException("MCVR runtime resources are missing: ${missing.join(', ')}. Run prepareRuntime first.")
+        }
+    }
+}
+
+tasks.named('processResources', ProcessResources) {
+    inputs.properties modInformation
+    filteringCharset = 'UTF-8'
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand modInformation
+    }
+    exclude 'fabric.mod.json', 'META-INF/mods.toml'
+}
+
+tasks.named('jar', Jar) {
+    from('LICENCE') {
+        rename { "${it}_${project.archives_base_name}" }
+    }
+    exclude 'core.dll', 'core.lib', 'libcore.so', 'libxess*.dll', 'XESS_LICENCE.txt'
+    exclude 'shaders/**', 'dlss/**'
+    destinationDirectory = layout.buildDirectory.dir('intermediates/radiance-game')
+    archiveFileName = gameArchiveName
+}
+
+tasks.register('generateEmbeddedGameMetadata') {
+    description = 'Records the nested GAME-layer mod JAR name and SHA-256.'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar', Jar).flatMap { it.archiveFile })
+    outputs.files(embeddedGameMetadata, embeddedGamePath)
+    doLast {
+        def gameJar = tasks.named('jar', Jar).get().archiveFile.get().asFile
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        gameJar.withInputStream { stream ->
+            byte[] buffer = new byte[65536]
+            for (int read; (read = stream.read(buffer)) >= 0;) {
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        def hashFile = embeddedGameMetadata.get().asFile
+        hashFile.parentFile.mkdirs()
+        hashFile.setText(digest.digest().encodeHex().toString() + '\n', 'US-ASCII')
+        def pathFile = embeddedGamePath.get().asFile
+        pathFile.setText("META-INF/radiance/${gameJar.name}\n", 'US-ASCII')
+    }
+}
+
+tasks.register('generateLauncherMetadata') {
+    description = 'Generates display-only metadata for launchers without turning the SERVICE JAR into a GAME mod.'
+    inputs.properties modInformation
+    inputs.property 'minecraftVersion', project.minecraft_version
+    outputs.dir launcherMetadataDirectory
+    doLast {
+        def metadata = [[modid: modInformation.id, name: modInformation.name,
+                version: modInformation.version, description: modInformation.description,
+                authorList: modInformation.authors.split(',').collect { it.trim() },
+                url: modInformation.homepage, issueTrackerURL: modInformation.issues,
+                license: modInformation.license, logoFile: modInformation.logo,
+                mcversion: project.minecraft_version]]
+        def output = launcherMetadataDirectory.get().file('mcmod.info').asFile
+        output.parentFile.mkdirs()
+        output.setText(groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson(metadata)) + '\n', 'UTF-8')
+    }
+}
+
+tasks.register('distributedJar', Jar) {
+    description = 'Builds the single distributable SERVICE bootstrap JAR with its nested GAME mod.'
+    group = 'build'
+    dependsOn tasks.named('bootstrapClasses'), tasks.named('generateEmbeddedGameMetadata'),
+            tasks.named('generateLauncherMetadata')
+    from(sourceSets.bootstrap.output)
+    // NeoForge excludes this service-bearing archive from GAME discovery. mcmod.info is only
+    // a launcher-readable facade; never add a second NeoForge mod declaration to the outer JAR.
+    from(launcherMetadataDirectory)
+    from('src/main/resources') {
+        include modInformation.logo
+    }
+    from(tasks.named('jar', Jar).flatMap { it.archiveFile }) {
+        into 'META-INF/radiance'
+    }
+    from(embeddedGameMetadata) {
+        into 'META-INF/radiance'
+    }
+    from(embeddedGamePath) {
+        into 'META-INF/radiance'
+    }
+    from('src/bootstrap/resources/com/radiance/bootstrap/ui/LGPL-2.1.txt') {
+        into 'META-INF/licenses'
+        rename { 'fml-earlydisplay-LGPL-2.1.txt' }
+    }
+    from('src/bootstrap/resources/com/radiance/bootstrap/ui/OFL-1.1-Monocraft.txt') {
+        into 'META-INF/licenses'
+        rename { 'Monocraft-OFL-1.1.txt' }
+    }
+    from('src/bootstrap/resources/com/radiance/bootstrap/ui/NOTICE.txt') {
+        into 'META-INF/licenses'
+        rename { 'radiance-loading-assets-NOTICE.txt' }
+    }
+    from('LICENCE') {
+        rename { "${it}_${project.archives_base_name}" }
+    }
+    manifest {
+        attributes(
+                'Automatic-Module-Name': 'com.radiance.bootstrap',
+                'Implementation-Title': project.mod_name,
+                'Implementation-Version': project.version)
+    }
+    duplicatesStrategy = DuplicatesStrategy.FAIL
+    archiveFileName = distributedArchiveName
+}
+
+tasks.named('bootstrapTest', Test) {
+    dependsOn tasks.named('distributedJar')
+    inputs.file(tasks.named('distributedJar', Jar).flatMap { it.archiveFile })
+    // SecureJarHandler's real service classifier uses the same lookup access as the launcher.
+    // Tests run on the classpath rather than the launcher's named module layer.
+    jvmArgs '--add-opens=java.base/java.lang.invoke=ALL-UNNAMED',
+            '--add-opens=java.base/java.util.jar=ALL-UNNAMED'
+    systemProperty 'radiance.test.distribution', tasks.named('distributedJar', Jar).get().archiveFile.get().asFile.absolutePath
+    systemProperty 'radiance.test.neoforge', project.neo_loader_version
+}
+
+tasks.register('preparePackagedClient', Copy) {
+    description = 'Places only the distributable JAR in the packaged-client mods directory.'
+    dependsOn tasks.named('distributedJar')
+    from(tasks.named('distributedJar', Jar).flatMap { it.archiveFile })
+    into(packagedClientDirectory.dir('mods'))
+}
+
+tasks.register('preparePackagedServer', Copy) {
+    description = 'Places only the distributable JAR in the packaged-server mods directory.'
+    dependsOn tasks.named('distributedJar')
+    from(tasks.named('distributedJar', Jar).flatMap { it.archiveFile })
+    into(layout.projectDirectory.dir('run/packaged-server/mods'))
+}
+
+tasks.named('runPackagedClient') {
+    dependsOn tasks.named('preparePackagedClient'), 'verifyDistributedJar'
+    doFirst {
+        environment.remove('MOD_CLASSES')
+        def modJars = fileTree(packagedClientDirectory.dir('mods')) {
+            include '*.jar'
+        }.files
+        if (modJars.size() != 1 || modJars.first().name != distributedArchiveName) {
+            throw new GradleException(
+                    "runPackagedClient requires exactly run/packaged-client/mods/${distributedArchiveName}")
+        }
+    }
+}
+
+tasks.named('runPackagedServer') {
+    dependsOn tasks.named('preparePackagedServer'), 'verifyDistributedJar'
+    doFirst {
+        environment.remove('MOD_CLASSES')
+        def modJars = fileTree(layout.projectDirectory.dir('run/packaged-server/mods')) {
+            include '*.jar'
+        }.files
+        if (modJars.size() != 1 || modJars.first().name != distributedArchiveName) {
+            throw new GradleException(
+                    "runPackagedServer requires exactly run/packaged-server/mods/${distributedArchiveName}")
+        }
+    }
+}
+
+['Base', 'Full'].each { groupName ->
+    def targetDirectory = new File(manualAcceptanceDirectory, groupName.toLowerCase(Locale.ROOT))
+    def dependencyJars = providers.provider {
+        groupName == 'Full' ? (configurations.compatibilityRuntimeCreate.files +
+                configurations.compatibilityRuntimeSable.files +
+                configurations.compatibilityRuntimeAeronautics.files) : []
+    }
+    def expectedNames = providers.provider {
+        ([distributedArchiveName] + dependencyJars.get().collect { it.name }).toSet()
+    }
+    def preparation = tasks.register("prepareManual${groupName}", Copy) {
+        description = "Prepares isolated ${groupName == 'Base' ? 'A base' : 'B full'} manual acceptance without starting Minecraft."
+        group = 'verification'
+        dependsOn tasks.named('verifyDistributedJar')
+        from(tasks.named('distributedJar', Jar).flatMap { it.archiveFile })
+        from(dependencyJars)
+        into(new File(targetDirectory, 'mods'))
+        doFirst {
+            def marker = new File(targetDirectory, '.radiance-acceptance')
+            if (targetDirectory.exists() && !targetDirectory.isDirectory()) {
+                throw new GradleException("Acceptance path is not a directory: ${targetDirectory}")
+            }
+            // Gradle may create the declared Copy output directory before task actions.
+            // An empty mods directory contains no user state and is safe to initialize.
+            def existingState = targetDirectory.exists() ? targetDirectory.listFiles().findAll {
+                !(it.name == 'mods' && it.isDirectory() && it.listFiles().length == 0)
+            } : []
+            if (!marker.exists() && !existingState.empty) {
+                throw new GradleException("Refusing to modify an existing unowned game directory: ${targetDirectory}")
+            }
+            def unexpected = fileTree(new File(targetDirectory, 'mods')) { include '*.jar' }.files
+                    .findAll { !(it.name in expectedNames.get()) }
+            if (!unexpected.empty) {
+                throw new GradleException("Acceptance directory contains unexpected JARs: ${unexpected*.name}")
+            }
+            targetDirectory.mkdirs()
+            marker.setText("Radiance ${project.version} ${groupName}\n", 'UTF-8')
+        }
+    }
+    tasks.named("runManual${groupName}") {
+        dependsOn preparation
+        doFirst {
+            environment.remove('MOD_CLASSES')
+            if (groupName == 'Full') {
+                // Acceptance-only, default-off in ordinary packaged and production launches.
+                environment 'MCVR_DEVICE_LOSS_TRACE', providers.environmentVariable('MCVR_DEVICE_LOSS_TRACE').getOrElse('1')
+            }
+            def actual = fileTree(new File(targetDirectory, 'mods')) { include '*.jar' }.files*.name.toSet()
+            if (actual != expectedNames.get()) {
+                throw new GradleException("Manual ${groupName} dependency set does not match the prepared distribution")
+            }
+        }
+    }
+}
+
+tasks.register('verifyDistributedJar') {
+    description = 'Verifies SERVICE/GAME isolation and hashes in the single distributable JAR.'
+    group = 'verification'
+    dependsOn tasks.named('distributedJar')
+    inputs.file(tasks.named('distributedJar', Jar).flatMap { it.archiveFile })
+    doLast {
+        def outerPath = tasks.named('distributedJar', Jar).get().archiveFile.get().asFile
+        def expectedServices = [
+                'META-INF/services/net.neoforged.neoforgespi.earlywindow.GraphicsBootstrapper':
+                        'com.radiance.bootstrap.RadianceGraphicsBootstrapper',
+                'META-INF/services/net.neoforged.neoforgespi.earlywindow.ImmediateWindowProvider':
+                        'com.radiance.bootstrap.RadianceImmediateWindowProvider',
+                'META-INF/services/net.neoforged.neoforgespi.locating.IModFileCandidateLocator':
+                        'com.radiance.bootstrap.RadianceModFileCandidateLocator'
+        ]
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        new java.util.zip.ZipFile(outerPath).withCloseable { outer ->
+            if (windowsHost) {
+                ['nvngx_dlss', 'nvngx_dlssd', 'nvngx_dlssg', 'sl.interposer', 'sl.common', 'sl.dlss', 'sl.dlss_d', 'sl.dlss_g', 'sl.reflex', 'sl.pcl', 'NvLowLatencyVk'].collect { 'dlss/' + it + '.dll' }.each { path ->
+                    def entry = outer.getEntry(path)
+                    if (entry == null || entry.size < 1024) {
+                        throw new GradleException("Distributed JAR is missing a complete DLSS runtime: ${path}")
+                    }
+                }
+                if (outer.getEntry('dlss/LICENSE.txt') == null) {
+                    throw new GradleException('Distributed JAR is missing the NVIDIA runtime license')
+                }
+            }
+            def distributionScope = outer.getEntry('META-INF/radiance/distribution-scope.properties')
+            if (distributionScope == null) {
+                throw new GradleException('Distributed JAR is missing its distribution-scope marker')
+            }
+            def scopeText = outer.getInputStream(distributionScope).getText('UTF-8')
+            if (!scopeText.contains('scope=local-validation') ||
+                    !scopeText.contains('publicBinaryDistributionApproved=false')) {
+                throw new GradleException('Installable distribution is incorrectly marked for public release')
+            }
+            [
+                    'META-INF/licenses/fml-earlydisplay-LGPL-2.1.txt',
+                    'META-INF/licenses/Monocraft-OFL-1.1.txt',
+                    'META-INF/licenses/radiance-loading-assets-NOTICE.txt'
+            ].each { path ->
+                if (outer.getEntry(path) == null) {
+                    throw new GradleException("Distributed JAR is missing required license ${path}")
+                }
+            }
+            expectedServices.each { path, implementation ->
+                def entry = outer.getEntry(path)
+                if (entry == null) throw new GradleException("Distributed JAR is missing ${path}")
+                def content = outer.getInputStream(entry).getText('UTF-8').trim()
+                if (content != implementation) {
+                    throw new GradleException("Unexpected ${path}: ${content}")
+                }
+            }
+            if (outer.getEntry('META-INF/neoforge.mods.toml') != null) {
+                throw new GradleException('Outer SERVICE JAR must not be a NeoForge mod')
+            }
+            def launcherEntry = outer.getEntry('mcmod.info')
+            if (launcherEntry == null) throw new GradleException('Outer JAR is missing launcher display metadata')
+            def launcherMods = new groovy.json.JsonSlurper().parse(outer.getInputStream(launcherEntry), 'UTF-8')
+            if (launcherMods.size() != 1 || launcherMods[0].modid != modInformation.id
+                    || launcherMods[0].version != modInformation.version
+                    || launcherMods[0].name != modInformation.name
+                    || launcherMods[0].logoFile != modInformation.logo
+                    || outer.getEntry(modInformation.logo) == null) {
+                throw new GradleException('Launcher display metadata does not match the packaged mod')
+            }
+            if (outer.entries().toList().any { it.name.startsWith('com/radiance/client/') }) {
+                throw new GradleException('Outer SERVICE JAR contains GAME classes')
+            }
+            def expectedGamePath = "META-INF/radiance/${gameArchiveName}"
+            def nestedEntry = outer.getEntry(expectedGamePath)
+            def hashEntry = outer.getEntry('META-INF/radiance/game.sha256')
+            def pathEntry = outer.getEntry('META-INF/radiance/game.path')
+            if (nestedEntry == null || hashEntry == null || pathEntry == null) {
+                throw new GradleException('Distributed JAR is missing its nested GAME JAR, hash, or path')
+            }
+            def declaredGamePath = outer.getInputStream(pathEntry).getText('US-ASCII').trim()
+            if (declaredGamePath != expectedGamePath) {
+                throw new GradleException(
+                        "Nested GAME JAR path mismatch: game.path declares ${declaredGamePath}")
+            }
+            digest.reset()
+            outer.getInputStream(nestedEntry).withCloseable { stream ->
+                byte[] buffer = new byte[65536]
+                for (int read; (read = stream.read(buffer)) >= 0;) {
+                    if (read > 0) digest.update(buffer, 0, read)
+                }
+            }
+            def actualHash = digest.digest().encodeHex().toString()
+            def expectedHash = outer.getInputStream(hashEntry).getText('US-ASCII').trim()
+            if (actualHash != expectedHash) {
+                throw new GradleException('Nested GAME JAR does not match game.sha256')
+            }
+
+            boolean foundModMetadata = false
+            boolean foundBootstrapClass = false
+            boolean foundRuntimePayload = false
+            boolean foundAuditImplementation = false
+            outer.getInputStream(nestedEntry).withCloseable { nestedStream ->
+                new java.util.zip.ZipInputStream(nestedStream).withCloseable { nested ->
+                    for (def entry; (entry = nested.nextEntry) != null;) {
+                        foundModMetadata |= entry.name == 'META-INF/neoforge.mods.toml'
+                        foundBootstrapClass |= entry.name.startsWith('com/radiance/bootstrap/')
+                        foundAuditImplementation |= entry.name.startsWith('com/radiance/audit/')
+                                || entry.name.startsWith('com/radiance/client/diagnostics/')
+                        foundRuntimePayload |= entry.name == 'core.dll'
+                                || entry.name.startsWith('shaders/')
+                                || entry.name.startsWith('dlss/')
+                    }
+                }
+            }
+            if (!foundModMetadata) throw new GradleException('Nested GAME JAR has no NeoForge mod metadata')
+            if (foundBootstrapClass) throw new GradleException('Nested GAME JAR contains SERVICE classes')
+            if (foundAuditImplementation) throw new GradleException('Nested GAME JAR contains optional audit implementation')
+            if (foundRuntimePayload) throw new GradleException('Nested GAME JAR duplicates the outer runtime payload')
+        }
+    }
+}
+
+tasks.register('verifyPublicDistributionGate') {
+    description = 'Fails closed until third-party runtime redistribution has explicit project-owner approval.'
+    group = 'verification'
+    dependsOn tasks.named('verifyDistributedJar')
+    doLast {
+        throw new GradleException('Public binary distribution is blocked: NVIDIA runtime redistribution, notices, trademark attribution, and any required release notification have not been approved for this project. Local isolated validation remains available.')
+    }
+}
+
+tasks.register('publicDistributionJar') {
+    description = 'Reserved public installable distribution entry point; currently blocked by third-party runtime approval.'
+    group = 'distribution'
+    dependsOn tasks.named('verifyPublicDistributionGate')
+}
+
+tasks.named('sourcesJar', Jar) {
+    from sourceSets.bootstrap.allSource
+    archiveFileName = "${project.archives_base_name}-${project.version}-neoforge-${project.minecraft_version}-sources.jar"
+}
+
+tasks.named('build') {
+    dependsOn tasks.named('verifyRuntimeResources'), tasks.named('bootstrapTest'),
+            tasks.named('verifyDistributedJar'), 'verifyMavenDevelopmentArtifact'
+}
+
+publishing {
+    publications {
+        create('mavenJava', MavenPublication) {
+            // Developer-facing GAME-layer classes only. Users install distributedJar instead.
+            artifactId = "${project.archives_base_name}-game"
+            from components.java
+            pom {
+                name = 'Radiance GAME development artifact'
+                description = 'Internal GAME-layer artifact for compile-time integration; not an installable mod distribution.'
+            }
+        }
+    }
+}
+
+tasks.register('verifyMavenDevelopmentArtifact') {
+    description = 'Verifies that the Maven GAME artifact stays distinct from the installable distribution.'
+    group = 'verification'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar', Jar).flatMap { it.archiveFile })
+    doLast {
+        def publication = publishing.publications.named('mavenJava').get()
+        if (publication.artifactId != "${project.archives_base_name}-game") {
+            throw new GradleException('The developer Maven artifact must retain its -game identity')
+        }
+        def gamePath = tasks.named('jar', Jar).get().archiveFile.get().asFile
+        new java.util.zip.ZipFile(gamePath).withCloseable { game ->
+            if (game.getEntry('META-INF/neoforge.mods.toml') == null) {
+                throw new GradleException('Maven GAME artifact is missing NeoForge mod metadata')
+            }
+            if (game.entries().toList().any { entry ->
+                entry.name.startsWith('com/radiance/bootstrap/')
+                    || entry.name == 'core.dll'
+                    || entry.name.startsWith('dlss/')
+                    || entry.name.startsWith('shaders/')
+            }) {
+                throw new GradleException('Maven GAME artifact contains installable SERVICE/runtime payload')
+            }
+        }
     }
 }

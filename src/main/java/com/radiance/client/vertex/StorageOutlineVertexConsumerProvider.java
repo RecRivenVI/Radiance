@@ -1,47 +1,129 @@
 package com.radiance.client.vertex;
 
+import com.mojang.blaze3d.vertex.VertexConsumer;
 import java.util.Optional;
-import net.fabricmc.api.EnvType;
-import net.fabricmc.api.Environment;
-import net.minecraft.client.render.RenderLayer;
-import net.minecraft.client.render.VertexConsumer;
-import net.minecraft.client.render.VertexConsumerProvider;
-import net.minecraft.client.render.VertexConsumers;
-import net.minecraft.util.math.ColorHelper;
+import net.minecraft.client.renderer.MultiBufferSource;
+import net.minecraft.client.renderer.RenderType;
+import com.radiance.client.util.ARGB;
 
-@Environment(EnvType.CLIENT)
-public class StorageOutlineVertexConsumerProvider implements VertexConsumerProvider {
+public class StorageOutlineVertexConsumerProvider implements MultiBufferSource {
 
-    private final StorageVertexConsumerProvider parent;
+    /**
+     * Sink for the solid model geometry of an outline render type. The priority pass paints
+     * outline-group geometry as a bright solid, so the silhouette itself must be dropped; only the
+     * merged edge graph emitted into the line delegate is kept.
+     */
+    private static final VertexConsumer DISCARD = new VertexConsumer() {
+        @Override
+        public VertexConsumer addVertex(float x, float y, float z) {
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setColor(int red, int green, int blue, int alpha) {
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv(float u, float v) {
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv1(int u, int v) {
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv2(int u, int v) {
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setNormal(float x, float y, float z) {
+            return this;
+        }
+    };
+
+    private final MultiBufferSource parent;
+    private final MultiBufferSource outlineParent;
     private int red = 255;
     private int green = 255;
     private int blue = 255;
     private int alpha = 255;
 
-    public StorageOutlineVertexConsumerProvider(StorageVertexConsumerProvider parent) {
+    public StorageOutlineVertexConsumerProvider(MultiBufferSource parent,
+        MultiBufferSource outlineParent) {
         this.parent = parent;
+        this.outlineParent = outlineParent;
     }
 
     @Override
-    public VertexConsumer getBuffer(RenderLayer renderLayer) {
+    public VertexConsumer getBuffer(RenderType renderLayer) {
         if (renderLayer.isOutline()) {
-            VertexConsumer vertexConsumer = this.parent.getBuffer(renderLayer);
-            return new OutlineVertexConsumer(vertexConsumer, this.red, this.green, this.blue,
-                this.alpha);
+            // An invisible-but-glowing entity is routed by vanilla to RenderType.outline(), a solid
+            // model silhouette. Drawing that through the priority outline shader would fill the
+            // whole model; re-emit the model's merged edges instead so only the glow is drawn,
+            // exactly like the visible-glow path below.
+            VertexConsumer edgeConsumer = this.outlineParent.getBuffer(RenderType.lines());
+            return new WorldOutlineVertexConsumer(DISCARD, edgeConsumer,
+                ARGB.color(this.alpha, this.red, this.green, this.blue));
         } else {
             VertexConsumer vertexConsumer = this.parent.getBuffer(renderLayer);
-            Optional<RenderLayer> optional = renderLayer.getAffectedOutline();
+            Optional<RenderType> optional = renderLayer.outline();
             if (optional.isPresent()) {
-                VertexConsumer vertexConsumer2 = this.parent.getBuffer(
-                    optional.get());
-                OutlineVertexConsumer
-                    outlineVertexConsumer =
-                    new OutlineVertexConsumer(vertexConsumer2, this.red, this.green, this.blue,
-                        this.alpha);
-                return VertexConsumers.union(outlineVertexConsumer, vertexConsumer);
+                VertexConsumer vertexConsumer2 = this.outlineParent.getBuffer(RenderType.lines());
+                return new WorldOutlineVertexConsumer(vertexConsumer, vertexConsumer2,
+                    ARGB.color(this.alpha, this.red, this.green, this.blue));
             } else {
                 return vertexConsumer;
             }
+        }
+    }
+
+    /**
+     * The ordinary delegate receives the original textured model. ModelPart's target mixin
+     * separately emits a unioned line graph into {@code outlineDelegate}; this avoids copying
+     * every model face into a late silhouette mask.
+     */
+    public record WorldOutlineVertexConsumer(VertexConsumer delegate,
+                                             VertexConsumer outlineDelegate,
+                                             int outlineColor) implements VertexConsumer {
+
+        @Override
+        public VertexConsumer addVertex(float x, float y, float z) {
+            this.delegate.addVertex(x, y, z);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setColor(int red, int green, int blue, int alpha) {
+            this.delegate.setColor(red, green, blue, alpha);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv(float u, float v) {
+            this.delegate.setUv(u, v);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv1(int u, int v) {
+            this.delegate.setUv1(u, v);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setUv2(int u, int v) {
+            this.delegate.setUv2(u, v);
+            return this;
+        }
+
+        @Override
+        public VertexConsumer setNormal(float x, float y, float z) {
+            this.delegate.setNormal(x, y, z);
+            return this;
         }
     }
 
@@ -50,47 +132,5 @@ public class StorageOutlineVertexConsumerProvider implements VertexConsumerProvi
         this.green = green;
         this.blue = blue;
         this.alpha = alpha;
-    }
-
-    @Environment(EnvType.CLIENT)
-    record OutlineVertexConsumer(VertexConsumer delegate, int color) implements VertexConsumer {
-
-        public OutlineVertexConsumer(VertexConsumer delegate, int red, int green, int blue,
-            int alpha) {
-            this(delegate, ColorHelper.getArgb(alpha, red, green, blue));
-        }
-
-        @Override
-        public VertexConsumer vertex(float x, float y, float z) {
-            this.delegate.vertex(x, y, z)
-                .color(this.color);
-            return this;
-        }
-
-        @Override
-        public VertexConsumer color(int red, int green, int blue, int alpha) {
-            return this;
-        }
-
-        @Override
-        public VertexConsumer texture(float u, float v) {
-            this.delegate.texture(u, v);
-            return this;
-        }
-
-        @Override
-        public VertexConsumer overlay(int u, int v) {
-            return this;
-        }
-
-        @Override
-        public VertexConsumer light(int u, int v) {
-            return this;
-        }
-
-        @Override
-        public VertexConsumer normal(float x, float y, float z) {
-            return this;
-        }
     }
 }

@@ -1,5 +1,7 @@
 # User-specific stuff
 .idea/
+.vscode/
+.fleet/
 
 *.iml
 *.ipr
@@ -33,6 +35,8 @@ atlassian-ide-plugin.xml
 
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
+replay_pid*
+*.hprof
 
 *~
 
@@ -115,6 +119,12 @@ gradle-app.setting
 run/
 runs/
 
+# Repository-local diagnostic and compatibility laboratories
+/dev/
+
+# Runtime logs and rotated/compressed log files
+**/logs/
+
 # Avoid ignoring Gradle wrapper jar file (.jar files are usually ignored)
 !gradle-wrapper.jar
 
@@ -125,3 +135,6 @@ libnvidia-ngx-dlss*
 include/
 shaders/
 libxess*
+nvngx_*.dll
+sl.*.dll
+NvLowLatencyVk.dll

@@ -1,0 +1,12 @@
+{
+  "pid": 78260,
+  "started": "2026-09-14T05:32:12.1504874+08:00",
+  "window": "Minecraft NeoForge* 1.21.1",
+  "responding": true,
+  "earlyWindowControl": false,
+  "branch": "1.21.1-neoforge",
+  "committed": false,
+  "isolatedSourceFiles": 17,
+  "backupFiles": 21,
+  "launchLog": "D:/Workspaces/Artifacts/Radiance-EarlyDisplay-Isolation-20260914/client-launch-2.log"
+}

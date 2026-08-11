@@ -60,6 +60,38 @@ public class Options {
     public static int inactivityFpsLimit = 260;
     public static boolean vsync = true;
     public static int dlssMode = 1;
+    public static int dlssSrModel = 0;
+    public static int dlssRrModel = 4;
+    public static int dlssFgModel = 0;
+    public static boolean dlssFrameGeneration = false;
+    public static int reflexMode = 1;
+    public static native void nativeSetReflexMode(int mode);
+    public static void setReflexMode(int mode, boolean write) {
+        if (mode < 0 || mode > 2) throw new IllegalArgumentException("Invalid Reflex mode");
+        nativeSetReflexMode(mode); reflexMode = mode;
+        if (write) overwriteConfig();
+    }
+    public static final java.util.List<Integer> DLSS_SR_MODELS = java.util.List.of(0, 5, 6, 10, 11, 12, 13);
+    public static final java.util.List<Integer> DLSS_RR_MODELS = java.util.List.of(0, 4, 5, 6);
+    public static final java.util.List<Integer> DLSS_FG_MODELS = java.util.List.of(0);
+
+    private static int readDlssModel(Properties props, String key, int fallback, java.util.List<Integer> models) {
+        try {
+            int value = Integer.parseInt(props.getProperty(key, Integer.toString(fallback)));
+            return models.contains(value) ? value : fallback;
+        } catch (NumberFormatException e) { return fallback; }
+    }
+
+    public static void setDlssModels(int sr, int rr, int fg, boolean frameGeneration, boolean write) {
+        if (!DLSS_SR_MODELS.contains(sr) || !DLSS_RR_MODELS.contains(rr) || !DLSS_FG_MODELS.contains(fg))
+            throw new IllegalArgumentException("Unsupported DLSS model selection");
+        nativeSetDlssModels(sr, rr, fg, frameGeneration, write);
+        dlssSrModel = sr; dlssRrModel = rr; dlssFgModel = fg; dlssFrameGeneration = frameGeneration;
+        if (write) overwriteConfig();
+    }
+    public native static boolean nativeIsDlssFrameGenerationAvailable();
+    public native static void nativeSetDlssModels(int sr, int rr, int fg, boolean frameGeneration, boolean write);
+
     public static int upscalerType = 1;
     public static int upscalerQuality = 1;
     public static int denoiserMode = 1;
@@ -95,6 +127,11 @@ public class Options {
         Properties props = new Properties();
         try (InputStream in = Files.newInputStream(path)) {
             props.load(in);
+            setReflexMode(readDlssModel(props, "reflexMode", 1, java.util.List.of(0, 1, 2)), false);
+            setDlssModels(readDlssModel(props, "dlssSrModel", 0, DLSS_SR_MODELS),
+                readDlssModel(props, "dlssRrModel", 4, DLSS_RR_MODELS),
+                readDlssModel(props, "dlssFgModel", 0, DLSS_FG_MODELS),
+                Boolean.parseBoolean(props.getProperty("dlssFrameGeneration", "false")), false);
 
             setMaxFps(Integer.parseInt(props.getProperty("maxFps", String.valueOf(maxFps))), false);
             setInactivityFpsLimit(Integer.parseInt(
@@ -128,7 +165,12 @@ public class Options {
         props.setProperty("maxFps", String.valueOf(maxFps));
         props.setProperty("inactivityFpsLimit", String.valueOf(inactivityFpsLimit));
         props.setProperty("vsync", String.valueOf(vsync));
+        props.setProperty("reflexMode", String.valueOf(reflexMode));
         props.setProperty("dlssMode", String.valueOf(dlssMode));
+        props.setProperty("dlssSrModel", String.valueOf(dlssSrModel));
+        props.setProperty("dlssRrModel", String.valueOf(dlssRrModel));
+        props.setProperty("dlssFgModel", String.valueOf(dlssFgModel));
+        props.setProperty("dlssFrameGeneration", String.valueOf(dlssFrameGeneration));
         props.setProperty("upscalerType", String.valueOf(upscalerType));
         props.setProperty("upscalerQuality", String.valueOf(upscalerQuality));
         props.setProperty("denoiserMode", String.valueOf(denoiserMode));

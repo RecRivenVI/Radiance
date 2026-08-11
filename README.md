@@ -6,8 +6,8 @@
   Radiance
   <br>
 
-  <a href="https://github.com/Minecraft-Radiance/Radiance">
-    <img src="https://img.shields.io/github/stars/Minecraft-Radiance/Radiance?style=flat&logo=github" alt="GitHub Stars">
+  <a href="https://github.com/RecRivenVI/Radiance">
+    <img src="https://img.shields.io/github/stars/RecRivenVI/Radiance?style=flat&logo=github" alt="GitHub Stars">
   </a>
 
   <a href="https://discord.gg/y4Uzf6acqk">
@@ -26,12 +26,12 @@
   <img src="https://img.shields.io/badge/CurseForge-Download-F16436?style=flat&logo=curseforge&logoColor=white" alt="CurseForge">
   </a>
 
-  <a href="https://github.com/Minecraft-Radiance/Radiance/blob/main/LICENCE">
-    <img src="https://img.shields.io/github/license/Minecraft-Radiance/Radiance?style=flat" alt="License">
+  <a href="https://github.com/RecRivenVI/Radiance/blob/develop/LICENCE">
+    <img src="https://img.shields.io/github/license/RecRivenVI/Radiance?style=flat" alt="License">
   </a>
 
-  <a href="https://github.com/Minecraft-Radiance/Radiance/releases">
-    <img src="https://img.shields.io/github/v/release/Minecraft-Radiance/Radiance?include_prereleases&label=Release&style=flat&logo=github&v=1" alt="GitHub Release">
+  <a href="https://github.com/RecRivenVI/Radiance/releases">
+    <img src="https://img.shields.io/github/v/release/RecRivenVI/Radiance?include_prereleases&label=Release&style=flat&logo=github&v=1" alt="GitHub Release">
   </a>
 
   <a href="https://www.youtube.com/@RadianceMod">
@@ -45,13 +45,13 @@
   <br><br>
 </h1>
 
-| English | [简体中文](https://github.com/Minecraft-Radiance/Radiance/blob/main/README-CN.md) |
+| English | [简体中文](README-CN.md) |
 
-> This is the Java part of the Radiance mod. For C++ part, please refer to [Minecraft Vulkan Renderer (MCVR)](https://github.com/Minecraft-Radiance/MCVR)
+> This is the Java part of the Radiance mod. For C++ part, please refer to [Minecraft Vulkan Renderer (MCVR)](https://github.com/RecRivenVI/MCVR)
 
 # Radiance
 
-[Radiance](https://www.minecraft-radiance.com/) is a Minecraft mod that completely replace the vanilla OpenGL renderer with our Vulkan C++ renderer, which supports high performance rendering and hardware-accelerated ray tracing.
+[Radiance](https://www.minecraft-radiance.com/) is a Minecraft 1.21.1 NeoForge mod that completely replaces the vanilla OpenGL renderer with our high-performance Vulkan C++ renderer, which supports hardware-accelerated ray tracing.
 Due to the variety of C++ usage in the modern industrial rendering pipeline, a seamless integration of a modern industrial rendering module (such as DLSS and FSR) into our Vulkan C++ renderer is thus possible.
 
 [Showcase Video (Youtube)](https://www.youtube.com/watch?v=jGIQffPM1Wg)
@@ -70,7 +70,7 @@ We assume that the Minecraft base is installed in `.minecraft` folder. If the in
 
 ## Download and install `.jar` as usual
 
-Download and install the mod jar to the `.minecraft/mods` folder as usual.
+Install NeoForge 21.1.251 for Minecraft 1.21.1, then place the mod jar in the `.minecraft/mods` folder.
 
 ## (Windows Fix) Adjust JDK's runtime libraries
 
@@ -84,57 +84,53 @@ This step aims to remove the JDK's dependency on those libraries.
 Then, install the [latest Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170), with version `Latest supported v14 (for Visual Studio 2017–2026)`.
 This step let JDK depends on the latest system libraries.
 
-## Download and install DLSS runtime libraries
+## DLSS and Streamline runtime libraries
 
-To respect and comply with NVIDIA DLSS SDK licensing terms, this project and its releases do not include or redistribute any NVIDIA DLSS binaries or SDK components (e.g., nvngx_dlss.dll), and we do not auto-download them at runtime.
-If you want to enable the DLSS denoising / upscaling module in this mod, you must follow the **download instructions below** and obtain the appropriate DLSS runtime library yourself from official NVIDIA DLSS repository and place it at `.minecraft/radiance` folder. 
+The Windows distributable includes the signed NVIDIA DLSS 310.9.1 runtime and Streamline 2.14.1,
+together with their license and third-party notices. Radiance verifies and extracts the native
+runtime into `.minecraft/.radiance/runtime` automatically. Do not download DLLs separately or
+create dummy files.
 
-By downloading, installing, or using the NVIDIA DLSS runtime library (e.g., nvngx_dlss.dll), you acknowledge that you have read and agree to comply with the NVIDIA DLSS SDK License Agreement. 
-If you do not agree to the License Agreement, do not download, install, or use the runtime libraries, and use alternative options provided by this mod instead (after the first alpha version).
-
-Currently, if the DLSS runtime libraries are not found, the mod will **cause a crash**. After the first alpha version, DLSS will be disabled and fall back to alternative implementations.
-
-### Download Instructions
-
-Note for AMD Users: If the DLSS runtime is missing, download the DLSS runtime libraries or create a dummy empty file with the same filename to bypass the startup check. This will be fixed in the next update.
-
-#### Windows
-
-Download the files listed below from [here](https://github.com/NVIDIA/DLSS/tree/v310.5.3/lib/Windows_x86_64/rel) to the `.minecraft/radiance` folder (if the folder not exist, create one).
-
-* `nvngx_dlss.dll`
-* `nvngx_dlssd.dll`
-
-#### Linux
-
-Download the files listed below from [here](https://github.com/NVIDIA/DLSS/tree/v310.5.3/lib/Linux_x86_64/rel) to the `.minecraft/radiance` folder (if the folder not exist, create one).
-
-* `libnvidia-ngx-dlss.so.310.5.3`
-* `libnvidia-ngx-dlssd.so.310.5.3`
+The video settings expose DLSS Super Resolution, Ray Reconstruction, 2x Frame Generation, global
+model selection, and NVIDIA Reflex when the installed GPU and driver support them. NRD, FidelityFX
+Super Resolution, and XeSS remain available through the applicable rendering-pipeline presets.
 
 # Build
 
-First, compile Java with `gradle` to generate the JNI native headers.
+Install JDK 21, CMake 3.25 or later, and a supported C++ toolchain. Clone MCVR next to Radiance:
 
 ```
-./gradlew compileJava
+git clone https://github.com/RecRivenVI/MCVR.git ../MCVR
 ```
 
-Then, clone the [Minecraft Vulkan Renderer (MCVR)](https://github.com/Minecraft-Radiance/MCVR) repository.
+Build the Java mod, native renderer, shaders, and packaged runtime with:
 
 ```
-git clone https://github.com/Minecraft-Radiance/MCVR.git
+./gradlew test
+./gradlew prepareRuntime build
 ```
 
-Use `cmake` to build it and install it. Please refer to [this](https://github.com/Minecraft-Radiance/MCVR) for detail.
+On Windows, `prepareRuntime` selects an installed Visual Studio x64 generator. The complete
+FidelityFX-plus-NRD build does not support Ninja. To prepare and start the packaged-client test
+instance, run `./gradlew runPackagedClient`.
 
-Finally, build with `./gradlew build`.
+Use `-Pmcvr.configuration=RelWithDebInfo` for a native build with debugging symbols (default:
+`Release`). The optional Audit collector shares this setting and the `mcvr.root` /
+`mcvr.cmakeGenerator` overrides with the main build.
+
+The `mavenJava` publication is a developer-facing GAME-layer artifact named `Radiance-game`. It is
+intended for compile-time integration and is not installable by itself. User installations must use
+the single JAR produced by `distributedJar`, which includes the SERVICE bootstrap, nested GAME JAR,
+native renderer, shaders, and optional runtime libraries.
+
+Optional diagnostics are maintained as the separate [Radiance Audit module](Modules/RadianceAudit/README.md).
+Build it with `./gradlew :radiance-audit:check :radiance-audit:jar`; it is not bundled into Radiance.
 
 # TODO List
 
 - [ ] port to more versions and mod loaders (WIP, first priority)
 - [x] XESS support
-- [ ] Frame Generation
+- [x] DLSS Frame Generation
 - [ ] HDR
 
 And more...

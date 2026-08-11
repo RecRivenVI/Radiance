@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "target": "1.21.1-neoforge",
+  "profile": "PRIMARY_S1",
+  "resolution": "2560x1440",
+  "officialNeoForgeEarlyWindowVisual": "PASS",
+  "nativeInterceptionVulkanOutput": "PASS",
+  "m3UserAcceptance": "PASS",
+  "m3Complete": true,
+  "acceptedBy": "USER",
+  "commitsCreated": 0
+}

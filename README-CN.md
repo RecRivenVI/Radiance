@@ -1,10 +1,10 @@
-| [English](https://github.com/Minecraft-Radiance/Radiance/blob/main/README.md) | 简体中文 |
+| [English](README.md) | 简体中文 |
 
-> 这里是Radiance mod的Java部分。C++部分请访问[Minecraft Vulkan Renderer (MCVR)](https://github.com/Minecraft-Radiance/MCVR)
+> 这里是Radiance mod的Java部分。C++部分请访问[Minecraft Vulkan Renderer (MCVR)](https://github.com/RecRivenVI/MCVR)
 
 # Radiance
 
-Radiance是一个Minecraft Mod，旨在将原版的OpenGL渲染器完全替换成我们的高性能Vulkan C++渲染器，并且支持硬件加速光线追踪。
+Radiance是一个面向Minecraft 1.21.1 NeoForge的模组，旨在将原版的OpenGL渲染器完全替换成我们的高性能Vulkan C++渲染器，并且支持硬件加速光线追踪。
 由于现代工业界广泛在渲染管线中使用C++，所以我们的Vulkan C++渲染器能够将一个现代工业级的渲染模块（例如DLSS和FSR）无缝集成进来。
 
 [演示视频 (B站)](https://www.bilibili.com/video/BV1NevXBCEPg/)
@@ -23,7 +23,7 @@ Radiance是一个Minecraft Mod，旨在将原版的OpenGL渲染器完全替换�
 
 ## 正常下载和安装模组`.jar`文件
 
-正常下载和安装模组 jar 文件到`.minecraft/mods`文件夹。
+为Minecraft 1.21.1安装NeoForge 21.1.251，然后将模组jar文件放入`.minecraft/mods`文件夹。
 
 ## (Windows修复) 调整JDK的运行库
 
@@ -35,56 +35,45 @@ Radiance是一个Minecraft Mod，旨在将原版的OpenGL渲染器完全替换�
 
 然后，安装[最新的Microsoft Visual C++ Redistributable](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)，使用`Latest supported v14 (for Visual Studio 2017–2026)`版本。这一步的目的是让JDK重新使用最新的系统运行库。
 
-## 下载和安装DLSS运行库
+## DLSS与Streamline运行库
 
-为尊重并遵守 NVIDIA DLSS SDK 的许可条款，本项目仓库与发行物（Release）不包含、也不提供任何 NVIDIA DLSS 的二进制文件或 SDK 组件（例如 nvngx_dlss.dll），亦不会在运行时为你自动下载这些文件。
-若你希望启用本模组中的 DLSS 去噪 & 超分 模块，请你自行按照**下文的下载步骤**从 NVIDIA 官方渠道获取对应版本的 DLSS 运行库，并将其放置到`.minecraft/radiance`文件夹。
+Windows发行包内含签名有效的NVIDIA DLSS 310.9.1运行库和Streamline 2.14.1，以及对应的
+许可证与第三方声明。Radiance会校验并自动将原生运行库解压至
+`.minecraft/.radiance/runtime`，无需另外下载DLL，也不要创建同名空文件。
 
-下载、安装或使用 NVIDIA DLSS 运行库（例如 nvngx_dlss.dll）即表示你已阅读并同意遵守 NVIDIA DLSS/RTX SDK 的许可协议（License Agreement）。若你不同意该许可协议，请勿下载、安装或使用该运行库，并请改用本模组提供的其他替代方案（第一个alpha版本后）。
-
-目前，如果未检测到 DLSS 运行库，本模组会使**游戏崩溃**。第一个alpha版本后，如果检测不到 DLSS 运行库，DLSS 功能会被自动禁用并回退到替代方案（我们到时候应该能够支持 FSR 3 以及自定义 Denoiser 模块）。
-
-### 下载步骤
-
-针对 AMD 用户的提示： 若遇到 “DLSS runtime libraries not found” 错误，可以选择下载 DLSS 运行库，或者直接在相应目录下创建对应的同名空白文件 来绕过启动检查。这一强制依赖将在下个版本中移除。
-
-#### Windows
-
-从[这个](https://github.com/NVIDIA/DLSS/tree/v310.5.3/lib/Windows_x86_64/rel)路径中下载如下列表中的文件到`.minecraft/radiance`文件夹（如果文件夹不存在，请创建一个）。
-
-* `nvngx_dlss.dll`
-* `nvngx_dlssd.dll`
-
-#### Linux
-
-从[这个](https://github.com/NVIDIA/DLSS/tree/v310.5.3/lib/Linux_x86_64/rel)路径中下载如下列表中的文件到`.minecraft/radiance`文件夹（如果文件夹不存在，请创建一个）。
-
-* `libnvidia-ngx-dlss.so.310.5.3`
-* `libnvidia-ngx-dlssd.so.310.5.3`
+当显卡和驱动支持时，视频设置可选择DLSS超分、光线重建、2x帧生成、各功能的全局模型和
+NVIDIA Reflex。NRD、FidelityFX Super Resolution和XeSS仍可通过相应渲染管线预设使用。
 
 # 构建
 
-首先，用`gradle`编译Java来生成JNI头文件。
+安装JDK 21、CMake 3.25或更高版本以及受支持的C++工具链。将MCVR克隆到Radiance相邻目录：
 
 ```
-./gradlew compileJava
+git clone https://github.com/RecRivenVI/MCVR.git ../MCVR
 ```
 
-然后，克隆[Minecraft Vulkan Renderer (MCVR)](https://github.com/Minecraft-Radiance/MCVR)仓库。
+使用以下命令构建Java模组、原生渲染器、着色器和打包运行库：
 
 ```
-git clone https://github.com/Minecraft-Radiance/MCVR.git
+./gradlew test
+./gradlew prepareRuntime build
 ```
 
-使用`cmake`编译和安装。详细信息请参考[这里](https://github.com/Minecraft-Radiance/MCVR)。
+在Windows上，`prepareRuntime`会自动选择已安装的Visual Studio x64生成器；同时启用
+FidelityFX与NRD的完整构建不支持Ninja。运行`./gradlew runPackagedClient`可以准备并
+启动打包客户端测试实例。
 
-最后，用`./gradlew build`构建。
+使用`-Pmcvr.configuration=RelWithDebInfo`可构建带调试符号的原生库（默认为`Release`）。
+可选的Audit采集器与主构建共用此设置，以及`mcvr.root`和`mcvr.cmakeGenerator`覆盖项。
+
+独立诊断模组 [Radiance Audit](Modules/RadianceAudit/README.md) 的源码在本仓库维护。
+使用 `./gradlew :radiance-audit:check :radiance-audit:jar` 构建；它不会内嵌进 Radiance 主体。
 
 # Todo列表
 
 - [ ] 移植到更多版本和mod加载器（WIP，最高优先级)
 - [x] XESS支持
-- [ ] 帧生成
+- [x] DLSS帧生成
 - [ ] HDR
 
 以及更多...

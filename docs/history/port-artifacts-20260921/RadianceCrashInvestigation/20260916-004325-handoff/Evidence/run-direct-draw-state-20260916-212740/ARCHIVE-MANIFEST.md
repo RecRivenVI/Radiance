@@ -1,0 +1,13 @@
+# D-REAL-11 archive manifest
+
+All files below are copies from the Radiance project run directory or the Gradle-generated argument directory. The source run directory is retained separately; no dump or runtime tree was copied here.
+
+| File | Size | SHA-256 |
+|---|---:|---|
+| `direct-launch.stderr.log` | 19197 | `57877D42636D8DDB61D341D0833C3E8A284B46AFB173F223895CA401B26B8362` |
+| `direct-launch.stdout.log` | 32840 | `4440CD9FAA34E76BA7EAB8AFA35925AAEF28B74DFBC820124B2044A3BC11B404` |
+| `draw-state-trace.tsv` | 8950644 | `E4485B5F0B3A960B7D5B28713B496F7206591187103CF296A95C552311D5DD3A` |
+| `hs_err_pid13148.log` | 573571 | `0BC9E4E8C803BB4189873E624C8708D4FA40A17499018EECB02439F0367F4F0E` |
+| `launch-process.json` | 910 | `893C3C66AE3759985E0A9E4E365DBA52C201565948F8C0203DA39E800CDE13B8` |
+| `manualBaseRunProgramArgs.txt` | 423 | `8AD971BD8F010A4FFD171B3509CC7434E527A351AD8A3FCBD521A30D7CF3A722` |
+| `manualBaseRunVmArgs.txt` | 1942 | `AB52C2C0B9F7F223D0C472B328103447EFF8D98498158750CFD1C45B8B5EF355` |

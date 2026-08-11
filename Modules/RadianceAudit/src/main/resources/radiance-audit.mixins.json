@@ -1,0 +1,28 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.radiance.audit.mixin",
+  "plugin": "com.radiance.audit.mixin.AuditMixinPlugin",
+  "compatibilityLevel": "JAVA_21",
+  "client": [
+    "BufferUploaderAuditMixin",
+    "CatnipDepthAuditMixin",
+    "ChunkProxyAuditMixin",
+    "GameRendererScreenEffectAuditMixin",
+    "GuiScreenEffectAuditMixin",
+    "LevelRendererAuditMixin",
+    "LevelRendererAccessor",
+    "MinecraftAuditMixin",
+    "VanillaMinecraftAuditMixin",
+    "RenderTypeAuditMixin",
+    "RendererLifecycleAuditMixin",
+    "RenderSectionAuditMixin",
+    "ScreenEffectRendererAuditMixin",
+    "ShaderProxyAuditMixin",
+    "VertexBufferAuditMixin",
+    "WorldMeshSinkAuditMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

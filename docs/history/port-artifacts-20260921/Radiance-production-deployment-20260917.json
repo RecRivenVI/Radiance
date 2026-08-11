@@ -1,0 +1,85 @@
+{
+  "runtime_id": "c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b",
+  "files": [
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\mods\\Radiance.jar",
+      "sha256": "eb87746428ed649047fbfe61f4b944c7ebf3d1ab1a3fcd3057a800bcb6bd31c1",
+      "size": 146642306,
+      "old_recycled": true
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\.radiance\\runtime\\c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b\\dlss\\LICENSE.txt",
+      "sha256": "21b5daec892b12bea692e66bc8fe45cf5902ccaf3a7b831e78050d8859881c37",
+      "size": 27176,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\radiance\\dlss\\LICENSE.txt",
+      "sha256": "21b5daec892b12bea692e66bc8fe45cf5902ccaf3a7b831e78050d8859881c37",
+      "size": 27176,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\.radiance\\runtime\\c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b\\dlss\\NOTICE.txt",
+      "sha256": "f8d9963b8a978939c291ba27f5ba11966c36748c626c7c69132396a79f42c55d",
+      "size": 503,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\radiance\\dlss\\NOTICE.txt",
+      "sha256": "f8d9963b8a978939c291ba27f5ba11966c36748c626c7c69132396a79f42c55d",
+      "size": 503,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\.radiance\\runtime\\c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b\\dlss\\nvngx_dlss.dll",
+      "sha256": "be6e434a94ca32499515eb62ca0e6c274526055d568d0426e4c652dcdfb6ee6e",
+      "size": 58977904,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\radiance\\dlss\\nvngx_dlss.dll",
+      "sha256": "be6e434a94ca32499515eb62ca0e6c274526055d568d0426e4c652dcdfb6ee6e",
+      "size": 58977904,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\.radiance\\runtime\\c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b\\dlss\\nvngx_dlssd.dll",
+      "sha256": "f4e97624f70fbb769acb11ebd751b512ecc9463d4bd6aef04896d3956e6084a0",
+      "size": 40946800,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\radiance\\dlss\\nvngx_dlssd.dll",
+      "sha256": "f4e97624f70fbb769acb11ebd751b512ecc9463d4bd6aef04896d3956e6084a0",
+      "size": 40946800,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\.radiance\\runtime\\c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b\\dlss\\nvngx_dlssg.dll",
+      "sha256": "135eaf0733c1e37381a8c28abcf7a862404a54132b81787c04e35d09efc5e36f",
+      "size": 7519856,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\radiance\\dlss\\nvngx_dlssg.dll",
+      "sha256": "135eaf0733c1e37381a8c28abcf7a862404a54132b81787c04e35d09efc5e36f",
+      "size": 7519856,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\.radiance\\runtime\\c1b51149ce4fe6eda5386899a845824f22427787bc0587797a89e6e8160d2c3b\\dlss\\runtime-manifest.json",
+      "sha256": "732320d328cd0361263bac7d7904ac1f25c019e5387ac309654e4acd3ef7eab8",
+      "size": 1565,
+      "old_recycled": false
+    },
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance-Crash-A-1.21.1-20260915\\minecraft\\radiance\\dlss\\runtime-manifest.json",
+      "sha256": "732320d328cd0361263bac7d7904ac1f25c019e5387ac309654e4acd3ef7eab8",
+      "size": 1565,
+      "old_recycled": false
+    }
+  ],
+  "build": "Release",
+  "game_started": false
+}

@@ -5,7 +5,18 @@ import org.lwjgl.opengl.GL11;
 
 public class PipelineStateProxy {
 
+    public static class DiagramState {
+
+        public static native void begin(int x, int y, int width, int height);
+
+        public static native void post();
+        public static native void beginTarget(int framebufferId, int width, int height);
+        public static native void postTarget(int framebufferId);
+        public static native void abortTarget();
+    }
+
     public static class ViewportState {
+        public static native int[] getViewport();
 
         public static native void setScissorEnabled(boolean enabled);
 
@@ -143,15 +154,16 @@ public class PipelineStateProxy {
         }
 
         public static void glSetStencilFuncSeparate(int face, int func, int ref, int mask) {
+            int compareOp = VulkanConstants.VkCompareOp.ofGL(func);
             if (face == GL11.GL_FRONT) {
-                vkSetStencilFrontFunc(func, ref, mask);
+                vkSetStencilFrontFunc(compareOp, ref, mask);
             } else {
-                vkSetStencilBackFunc(func, ref, mask);
+                vkSetStencilBackFunc(compareOp, ref, mask);
             }
         }
 
         public static void glSetStencilFunc(int func, int ref, int mask) {
-            vkSetStencilFunc(VulkanConstants.VkStencilOp.ofGL(func), ref, mask);
+            vkSetStencilFunc(VulkanConstants.VkCompareOp.ofGL(func), ref, mask);
         }
 
         public static void glSetStencilOpSeparate(int face, int failOp, int depthFailOp,
@@ -200,11 +212,11 @@ public class PipelineStateProxy {
         }
 
         public static void glSetCullMode(int cullMode) {
-            vkSetCullMode(VulkanConstants.VkCullMode.ofGL(cullMode));
+            com.radiance.client.render.MaterialFaces.cullFace(cullMode);
         }
 
         public static void glSetFrontFace(int frontFace) {
-            vkSetFrontFace(VulkanConstants.VkFrontFace.ofGL(frontFace));
+            com.radiance.client.render.MaterialFaces.frontFace(frontFace);
         }
 
         public static void glSetPolygonOffsetEnable(int polygonMode, boolean enable) {

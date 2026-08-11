@@ -1,8 +1,8 @@
 package com.radiance.client.texture;
 
+import com.mojang.blaze3d.platform.NativeImage;
 import java.util.ArrayList;
 import java.util.List;
-import net.minecraft.client.texture.NativeImage;
 import org.jetbrains.annotations.Nullable;
 
 public final class EmissionRecorder {
@@ -16,6 +16,13 @@ public final class EmissionRecorder {
     public static TileUpdate buildTileUpdate(int textureId, NativeImage albedo,
         @Nullable NativeImage specular, int offsetX, int offsetY, int unpackSkipPixels,
         int unpackSkipRows, int regionWidth, int regionHeight) {
+        return buildTileUpdate(textureId, albedo, specular, offsetX, offsetY, unpackSkipPixels,
+            unpackSkipRows, regionWidth, regionHeight, unpackSkipPixels, unpackSkipRows);
+    }
+
+    public static TileUpdate buildTileUpdate(int textureId, NativeImage albedo,
+        @Nullable NativeImage specular, int offsetX, int offsetY, int unpackSkipPixels,
+        int unpackSkipRows, int regionWidth, int regionHeight, int specularX, int specularY) {
         if (textureId < 0 || textureId >= MAX_TEXTURES || albedo == null) {
             return null;
         }
@@ -27,7 +34,7 @@ public final class EmissionRecorder {
 
         List<EmissionCell> cells = buildRegionCells(albedo, specular, texture.width(),
             texture.height(), offsetX, offsetY, unpackSkipPixels, unpackSkipRows, regionWidth,
-            regionHeight);
+            regionHeight, specularX, specularY);
         return new TileUpdate(textureId, buildTileKey(offsetX, offsetY, regionWidth, regionHeight),
             cells);
     }
@@ -54,7 +61,7 @@ public final class EmissionRecorder {
     private static List<EmissionCell> buildRegionCells(NativeImage albedo,
         @Nullable NativeImage specular, int textureWidth, int textureHeight, int offsetX,
         int offsetY, int unpackSkipPixels, int unpackSkipRows, int regionWidth,
-        int regionHeight) {
+        int regionHeight, int specularX, int specularY) {
         if (specular == null || regionWidth <= 0 || regionHeight <= 0) {
             return new ArrayList<>();
         }
@@ -63,8 +70,8 @@ public final class EmissionRecorder {
         int startY = Math.max(unpackSkipRows, 0);
         int width = Math.min(Math.max(0, albedo.getWidth() - startX), regionWidth);
         int height = Math.min(Math.max(0, albedo.getHeight() - startY), regionHeight);
-        width = Math.min(width, Math.max(0, specular.getWidth() - startX));
-        height = Math.min(height, Math.max(0, specular.getHeight() - startY));
+        width = Math.min(width, Math.max(0, specular.getWidth() - specularX));
+        height = Math.min(height, Math.max(0, specular.getHeight() - specularY));
         if (width <= 0 || height <= 0) {
             return new ArrayList<>();
         }
@@ -95,14 +102,14 @@ public final class EmissionRecorder {
                         int sampleX = startX + localX;
                         int sampleY = startY + localY;
 
-                        int argb = albedo.getColorArgb(sampleX, sampleY);
+                        int argb = albedo.getPixelRGBA(sampleX, sampleY);
                         float alphaCoverage = decodeAlphaCoverage(argb);
                         if (alphaCoverage <= 0.0f) {
                             continue;
                         }
 
                         float emission = decodeLabPbrEmission(
-                            specular.getColorArgb(sampleX, sampleY));
+                            specular.getPixelRGBA(specularX + localX, specularY + localY));
                         if (emission <= 0.0f) {
                             continue;
                         }

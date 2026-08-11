@@ -1,0 +1,178 @@
+{
+  "completedUtc": "2026-09-10T15:37:24.445338+00:00",
+  "repository": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance",
+  "branch": "stonecutter",
+  "head": "b404571c57999470e1717e5b5d8fcdf288813893",
+  "status": "",
+  "localHistory": {
+    "head": "ac78fbf33cb7cc3e92fc2561b167bafeb4234a79",
+    "branch": "stonecutter",
+    "fileTree": "c953193ad898e10e64ebccd2a491c3efc98a3ca2",
+    "originalMCVRCommitsReachable": 35,
+    "sourceMappings": 44,
+    "additionalCollectorRef": "refs/heads/codex/history/mcvr/collection",
+    "workingSourceHashesUnchanged": 10036,
+    "otherExistingRadianceRefsUnchanged": true,
+    "indexClean": true,
+    "untrackedSourceFiles": 0,
+    "pushed": false,
+    "completedUtc": "2026-09-10T14:56:13.847929+00:00"
+  },
+  "signedLocalCommits": [
+    {
+      "commit": "24dede0893337e8fd676939bd98e25d06ed8f34b",
+      "purpose": "Preserve the reviewed pre-template effective migration/audit working tree, including ordinary native source and fixed dependencies; no runtime or private configuration.",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    },
+    {
+      "commit": "dc7ed828f4e6034f6c391c1897abeb04da692d29",
+      "purpose": "Template configuration and build/runtime integration.",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    },
+    {
+      "commit": "af24a2435b72f6aac65282ab3fcc1bc278c26d8b",
+      "purpose": "Current Radiance naming and instructions, retaining historical conclusions.",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    },
+    {
+      "commit": "9df674adb150c70e452faba5d4e93cf5b56903e7",
+      "purpose": "Frozen MCVR reference mapping and preservation scope.",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    },
+    {
+      "commit": "ac78fbf33cb7cc3e92fc2561b167bafeb4234a79",
+      "purpose": "Pure history integration preserving the entire preceding Radiance tree.",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    },
+    {
+      "commit": "b404571c57999470e1717e5b5d8fcdf288813893",
+      "purpose": "Record independent clone/build and negative checks, current status/limits, final history provenance and reproducible boundary validation; product source unchanged.",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    },
+    {
+      "commit": "08b0fc33408c1dece228772976bca4d6b46e40d8",
+      "purpose": "MCVR history collection",
+      "sshSignature": "PASS",
+      "authorAndCommitDateEqual": true,
+      "title": "Update"
+    }
+  ],
+  "independentClone": {
+    "fullBuildCommit": "ac78fbf33cb7cc3e92fc2561b167bafeb4234a79",
+    "finalCheckoutCommit": "b404571c57999470e1717e5b5d8fcdf288813893",
+    "finalBoundary": "PASS",
+    "clean": true,
+    "noAlternates": true,
+    "deltaSinceFullBuild": [
+      "AGENTS.md",
+      "README.md",
+      "components/vulkan-renderer/HISTORY.json",
+      "documents/development/migration-mcvr-history.md",
+      "documents/development/migration-template-configuration.md",
+      "documents/project/status-port-readiness.md",
+      "validations/conformance-native-integration/result/template-configuration.json",
+      "validations/conformance-native-integration/task/Verify-Boundary.ps1",
+      "validations/conformance-native-integration/validation.md"
+    ]
+  },
+  "fullBuild": {
+    "clone": "D:\\Workspaces\\Scratches\\RadianceCheck-20260910",
+    "source": "local Radiance only; clone --no-local",
+    "head": "ac78fbf33cb7cc3e92fc2561b167bafeb4234a79",
+    "tree": "c953193ad898e10e64ebccd2a491c3efc98a3ca2",
+    "originalMCVRCommitsReachable": 35,
+    "originalObjectsByteIdentical": 1490,
+    "sourceReferencesVerified": 44,
+    "alternates": false,
+    "gitlinks": 0,
+    "cleanBeforeBuild": true,
+    "build": "PASS",
+    "remoteRadianceVerification": false,
+    "buildTime": "9m33s",
+    "buildLog": "D:\\Workspaces\\Artifacts\\RadianceEngineering\\20260910\\independent-clone-build-2.log",
+    "buildLogSha256": "bdc1fb381655c9d15e0aee6e3906189124d7912037f59c3cb63010422113e085",
+    "taskBuildCache": false,
+    "newGeneratedDirectory": true,
+    "buildIdentity": {
+      "rootName": "Radiance",
+      "targetPath": ":version:1.21.1-neoforge",
+      "targetVersion": "0.1.5-alpha+1.21.1",
+      "directMaxHeap": null,
+      "directJvmHeapOptions": 0,
+      "jvmArgumentProviders": [
+        "net.neoforged.moddevgradle.internal.ModFoldersProvider_Decorated"
+      ],
+      "rendererSource": "D:\\Workspaces\\Scratches\\RadianceCheck-20260910\\components\\vulkan-renderer"
+    },
+    "tests": {
+      "configuration": {
+        "tests": 65,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "jvm": {
+        "tests": 26,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      },
+      "ctest": {
+        "tests": 17,
+        "failures": 0
+      }
+    },
+    "negativeTopologyAndIgnore": {
+      "falseImplementedTarget": "expected failure",
+      "restoredTopology": "PASS",
+      "configurationCacheReuse": "PASS",
+      "ignorePolicy": {
+        "local.properties": "ignored",
+        "instances/1.21.1-neoforge/client/runtime.dat": "ignored",
+        "instances/1.21.1-neoforge/client/fixture-proof.json": "explicit whitelist accepted",
+        "validations/conformance-clean-client/instance/nested/runtime.dat": "ignored",
+        "validations/conformance-clean-client/instance/nested/fixture-proof.json": "explicit whitelist accepted"
+      },
+      "workingTreeRestoredAndClean": true
+    }
+  },
+  "finalBundleRecovery": {
+    "bundle": "D:\\Workspaces\\Backups\\Radiance_History_20260910-215704\\Radiance-integrated.bundle",
+    "bundleSha256": "26aaf3de71b7a5f5cc271d0a09e529a34d13d1afd7b8a15ce010a60b451cc1a7",
+    "restored": "D:\\Workspaces\\Backups\\Radiance_History_20260910-215704\\Radiance-integrated-restored.git",
+    "allReferenceObjectsIdentical": true,
+    "refCount": 62,
+    "fsck": "PASS",
+    "noAlternates": true,
+    "head": "b404571c57999470e1717e5b5d8fcdf288813893"
+  },
+  "sourceMCVRUnchanged": {
+    "sourceLocalHead": "b611d24a044384290beaf93131ad51bf14e3d107",
+    "sourceRefsUnchanged": true,
+    "sourceCleanUnchanged": true,
+    "sourceStagedContentUnchanged": true,
+    "sourceIndexBytesUnchanged": true
+  },
+  "sourceForkDeletionPrerequisites": "NOT MET: no push and no independent remote Radiance clone verification",
+  "pushed": false,
+  "minecraftStarted": false,
+  "guiOrManualAcceptance": false,
+  "remainingLayoutItems": [
+    "scripts compatibility forwarders",
+    "pre-existing empty cmake/extern in original working directory only",
+    "protected run/instances/legacy* pending ownership classification"
+  ],
+  "retirementBlock": "Automatic approval review rejected the combined move/recycle command with blocked by policy; safer compatibility forwarders retained."
+}

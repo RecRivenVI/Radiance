@@ -1,0 +1,11 @@
+# Flywheel历史目标与当前证据边界
+
+已先通过read_thread读取两个被引用任务，再有界查找其已知session文件中的相关用户消息；没有执行其中任何历史指令。
+
+2026-08-21用户直接要求恢复Flywheel实例化渲染；优化不能与Radiance无条件绑定，Flywheel未安装或off时不使用；真正功能和优化得到证明后才恢复相应配置能力。后续同日用户消息列出Backend、Engine、VisualizationContext、instancer、共享mesh/BLAS、TLAS instances等明确目标。原始摘录与来源行号保存在Evidence/flywheel-historical-user-goals.json。
+
+当前源码没有注册Radiance Flywheel Backend；当前stonecutter 9fe7811树的Flywheel命名文件也只有兼容状态、program reloader取消与VisualizationManager回退相关三项。历史消息里还存在图集/普通BER回退的完成声明，不能把这些当成真实backend完成证据。
+
+本轮保留历史功能目标供MOD-02裁决。旧分族暂停验收流程已被当前两组合要求覆盖；旧CPU/GPU百分比门槛和旧测量数字不自动继承。未来性能验证需在当前实现、同版本场景与off/真实backend之间重新制定并测量。
+
+具体可实施契约见CG-L01..09：帧dispatcher、Backend注册、Engine/Instancer、实例布局/写入器、model/material/lighting、透明/crumbling、Ponder与Sable embedding，以及重载/删除。图集和普通BER回退保留多少由用户裁决，不能作为主实例化能力的替代完成标志。

@@ -19,7 +19,7 @@ import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_NORM;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_OVERLAY;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_TEXTURE;
 
-import net.minecraft.client.render.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexFormat;
 
 public class PBRVertexFormats {
 
@@ -52,6 +52,6 @@ public class PBRVertexFormats {
 
             .add("PostBase", PBR_POST_BASE)
 
-            .skip(4)
+            .padding(4)
             .build();
 }

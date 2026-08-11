@@ -1,0 +1,111 @@
+plugins {
+    id 'net.neoforged.moddev'
+}
+
+version = rootProject.version
+group = rootProject.group
+base { archivesName = 'RadianceAudit' }
+
+repositories { mavenCentral() }
+dependencies {
+    compileOnly project(':')
+    testImplementation project(':')
+    testImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+neoForge {
+    version = rootProject.neo_loader_version
+    accessTransformers.from(file('src/main/resources/META-INF/accesstransformer.cfg'))
+    mods { radianceAudit { sourceSet sourceSets.main } }
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(21)
+    withSourcesJar()
+}
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+}
+tasks.withType(Test).configureEach {
+    useJUnitPlatform()
+    def testDirectory = layout.buildDirectory.dir("test-runtime/${name}")
+    workingDir testDirectory
+    doFirst { testDirectory.get().asFile.mkdirs() }
+}
+sourceSets.test.runtimeClasspath += sourceSets.main.compileClasspath
+sourceSets.test.compileClasspath += sourceSets.main.compileClasspath
+
+def metadata = rootProject.radianceModInformation + [
+    id: 'radiance_audit', name: 'Radiance Audit', minecraft: rootProject.minecraft_version,
+    description: 'Optional rendering diagnostics and coverage ledger for Radiance. Active experiments require explicit opt-in.'
+]
+tasks.named('processResources') {
+    inputs.properties(metadata)
+    filesMatching('META-INF/neoforge.mods.toml') { expand(metadata) }
+    from(rootProject.file('src/main/resources')) { include metadata.logo }
+}
+tasks.named('jar') {
+    from(rootProject.file('LICENCE')) { into 'META-INF/licenses' }
+}
+
+// This first-party collector contains no NVIDIA/Vulkan runtime. Vendor crash tooling remains local.
+def nativeBuild = layout.buildDirectory.dir('native/collector')
+def nativeWindows = System.getProperty('os.name').toLowerCase(Locale.ROOT).contains('windows')
+def nativeJava = javaToolchains.launcherFor { languageVersion = JavaLanguageVersion.of(21) }
+def nativeSettings = rootProject.mcvrNativeBuild
+def nativeConfiguration = nativeSettings.configuration
+tasks.register('configureNativeAudit', Exec) {
+    onlyIf { nativeWindows }
+    environment 'JAVA_HOME', nativeJava.get().metadata.installationPath.asFile.absolutePath
+    doFirst {
+        def generator = nativeSettings.generatorFor(nativeBuild.get().asFile)
+        if (!generator.startsWith('Visual Studio ')) {
+            throw new GradleException("Windows Audit collector requires a Visual Studio generator: ${generator}")
+        }
+        commandLine 'cmake', '-S', file('native/collector'), '-B', nativeBuild.get().asFile,
+            '-G', generator, '-A', 'x64', "-DMCVR_ROOT=${nativeSettings.root.get()}"
+    }
+}
+tasks.register('buildNativeAudit', Exec) {
+    onlyIf { nativeWindows }
+    dependsOn 'configureNativeAudit'
+    commandLine 'cmake', '--build', nativeBuild.get().asFile, '--config', nativeConfiguration.get(), '--parallel', '4'
+}
+tasks.register('testNativeAudit', Exec) {
+    onlyIf { nativeWindows }
+    dependsOn 'buildNativeAudit'
+    commandLine 'ctest', '--test-dir', nativeBuild.get().asFile, '-C', nativeConfiguration.get(), '--output-on-failure'
+}
+tasks.named('processResources') {
+    if (nativeWindows) {
+        dependsOn 'buildNativeAudit'
+        from(nativeBuild.map { it.file("${nativeConfiguration.get()}/radiance-audit-native.dll") }) {
+            into 'META-INF/natives/windows-x86_64'
+        }
+    }
+}
+
+tasks.register('verifyAuditJar') {
+    group = 'verification'
+    dependsOn tasks.named('jar')
+    inputs.file(tasks.named('jar').flatMap { it.archiveFile })
+    doLast {
+        new java.util.zip.ZipFile(tasks.named('jar').get().archiveFile.get().asFile).withCloseable { zip ->
+            ['META-INF/neoforge.mods.toml', 'radiance-audit.mixins.json', metadata.logo,
+             'com/radiance/audit/RadianceAudit.class'].each { path ->
+                if (zip.getEntry(path) == null) throw new GradleException("Audit JAR is missing ${path}")
+            }
+            zip.entries().each { entry ->
+                if (entry.name.startsWith('com/radiance/client/') || entry.name.startsWith('com/radiance/api/')
+                        || (entry.name.endsWith('.dll') && entry.name != 'META-INF/natives/windows-x86_64/radiance-audit-native.dll')
+                        || entry.name.endsWith('.pdb')
+                        || entry.name.startsWith('io/github/recrivenvi/')) {
+                    throw new GradleException("Unexpected Audit payload: ${entry.name}")
+                }
+            }
+        }
+    }
+}
+tasks.named('check') { dependsOn tasks.named('verifyAuditJar'), 'testNativeAudit' }
