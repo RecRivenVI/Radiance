@@ -1,0 +1,42 @@
+[submodule "components/native_renderer/third_party/glfw"]
+    path = components/native_renderer/third_party/glfw
+    url = https://github.com/glfw/glfw.git
+[submodule "components/native_renderer/third_party/volk"]
+    path = components/native_renderer/third_party/volk
+    url = https://github.com/zeux/volk.git
+[submodule "components/native_renderer/third_party/vma"]
+    path = components/native_renderer/third_party/vma
+    url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "components/native_renderer/third_party/glm"]
+    path = components/native_renderer/third_party/glm
+    url = https://github.com/g-truc/glm.git
+[submodule "components/native_renderer/third_party/vulkan_headers"]
+    path = components/native_renderer/third_party/vulkan_headers
+    url = https://github.com/KhronosGroup/Vulkan-Headers.git
+[submodule "components/native_renderer/third_party/stb"]
+    path = components/native_renderer/third_party/stb
+    url = https://github.com/nothings/stb.git
+[submodule "components/native_renderer/third_party/DLSS"]
+    path = components/native_renderer/third_party/DLSS
+    url = https://github.com/NVIDIA/DLSS.git
+[submodule "components/native_renderer/third_party/nrd"]
+    path = components/native_renderer/third_party/nrd
+    url = https://github.com/NVIDIA-RTX/NRD.git
+[submodule "components/native_renderer/third_party/FidelityFX-SDK"]
+    path = components/native_renderer/third_party/FidelityFX-SDK
+    url = https://github.com/Interstellarss/FidelityFX-SDK.git
+[submodule "components/native_renderer/third_party/sharc"]
+    path = components/native_renderer/third_party/sharc
+    url = https://github.com/NVIDIA-RTX/SHARC.git
+[submodule "components/native_renderer/third_party/minizip-ng"]
+    path = components/native_renderer/third_party/minizip-ng
+    url = https://github.com/zlib-ng/minizip-ng.git
+[submodule "components/native_renderer/third_party/json"]
+    path = components/native_renderer/third_party/json
+    url = https://github.com/nlohmann/json.git
+[submodule "components/native_renderer/third_party/xess"]
+    path = components/native_renderer/third_party/xess
+    url = https://github.com/intel/xess.git
+[submodule "components/native_renderer/third_party/tinyexpr"]
+    path = components/native_renderer/third_party/tinyexpr
+    url = https://github.com/Ljiong201108/tinyexpr.git

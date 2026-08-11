@@ -1,0 +1,39 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#include "util/coverage_blend.glsl"
+#include "util/alpha_mode.glsl"
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Results { vec4 rows[]; } result;
+void main() {
+    uint id = gl_GlobalInvocationID.x;
+    float alpha = float(id) / 9.0;
+    vec3 color = vec3(0.0);
+    float remaining = 1.0;
+    accumulateCoverage(color, remaining, vec3(4.0, 0.0, 0.0), alpha);
+    accumulateCoverage(color, remaining, vec3(0.0, 0.0, 2.0), 1.0);
+    result.rows[id * 8u] = vec4(color, remaining);
+
+    color = vec3(0.0); remaining = 1.0;
+    accumulateCoverage(color, remaining, vec3(0.0, 1.0, 0.0), .5);
+    accumulateCoverage(color, remaining, vec3(1.0, 0.0, 0.0), .5);
+    accumulateCoverage(color, remaining, vec3(0.0, 0.0, 1.0), 1.0);
+    result.rows[id * 8u + 1u] = vec4(color, remaining);
+
+    float source = resolveSourceAlpha(.8, .5, .5, ALPHA_COVERAGE, 0u);
+    float discarded = resolveSourceAlpha(1.0, .05, 1.0, ALPHA_COVERAGE, SOURCE_ALPHA_POST_LOW);
+    result.rows[id * 8u + 2u] = vec4(source, discarded,
+        float(isCoverageAlphaMode(ALPHA_TRANSMISSION)), float(isCoverageAlphaMode(ALPHA_ADDITIVE)));
+
+    color = vec3(0.0); remaining = 1.0;
+    for (int layer = 0; layer < coverageDeterministicLayers; ++layer)
+        accumulateCoverage(color, remaining, vec3(1.0, 0.0, 0.0), .25);
+    float tail = remaining;
+    accumulateCoverage(color, remaining, vec3(0.0, 0.0, 3.0), 1.0);
+    result.rows[id * 8u + 3u] = vec4(color, tail);
+    vec3 direct, indirect, specular, emission;
+    coverageForegroundChannels(vec3(6, 4, 2), vec3(1, 2, 0), vec3(2, 0, 1), id % 2u == 0u, alpha,
+        direct, indirect, specular, emission);
+    result.rows[id * 8u + 4u] = vec4(direct + indirect + specular + emission, 0);
+    result.rows[id * 8u + 5u] = vec4(emission, 0);
+
+}

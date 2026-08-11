@@ -1,0 +1,91 @@
+#version 460
+#extension GL_EXT_ray_query : require
+#extension GL_GOOGLE_include_directive : require
+#define gl_LaunchIDEXT gl_GlobalInvocationID
+#define gl_LaunchSizeEXT gl_NumWorkGroups
+const float INF_DISTANCE=10000.0;
+#include "util/ray.glsl"
+layout(local_size_x=1) in;
+layout(set=0,binding=0) uniform accelerationStructureEXT topLevelAS;
+layout(set=0,binding=1,std430) buffer Results { uint result[]; };
+struct World { mat4 cameraProjMat; uint seed; uint isFirstPerson; };
+World worldUBO;
+MainRay mainRay;
+uint mode, eventCount;
+MaterialInfo testMaterial(MainRay ray) {
+    MaterialInfo m; m.albedoValue=vec4(1); m.metallic=0; m.f0=vec3(.04); m.roughness=0; m.transmission=1; m.ior=1.333; m.emission=0;
+    return m;
+}
+// This injected closest-hit seam reports controlled coverage/refraction/reflection
+// events after real ray-query traversal. The production loop and state helpers run unchanged.
+void testTrace(accelerationStructureEXT scene,uint flags,uint mask,uint offset,uint stride,uint miss,
+               vec3 origin,float nearT,vec3 direction,float farT,int payload) {
+    rayQueryEXT q;
+    rayQueryInitializeEXT(q,scene,flags,mask,origin,nearT,direction,farT);
+    while(rayQueryProceedEXT(q)) rayQueryConfirmIntersectionEXT(q);
+    mainRay.hitT=rayQueryGetIntersectionTypeEXT(q,true)==gl_RayQueryCommittedIntersectionTriangleEXT
+        ? rayQueryGetIntersectionTEXT(q,true) : INF_DISTANCE;
+    if(mainRay.hitT==INF_DISTANCE) { raySetStop(mainRay,true);return; }
+    uint owner=rayQueryGetIntersectionInstanceCustomIndexEXT(q,true);
+    if((mainRay.stateBits&rayPriorityCaptureBit)!=0u) {mainRay.throughput=vec3(1);return;}
+    if(owner==4u || owner==5u) {
+        mainRay.origin=origin+direction*(mainRay.hitT+.0001);
+        uint lobe=mode==1u?0u:2u;
+        if((owner==4u && (mode==2u || mode==3u)) || (owner==5u && mode==5u && eventCount==1u))
+            lobe=mode==3u?0u:1u;
+        raySetLobeType(mainRay,lobe);
+        raySetContinue(mainRay,mode==1u);
+        ++eventCount;
+        return;
+    }
+    mainRay.radiance=vec3(float(owner),rayDirectImage(mainRay)?1.0:0.0,0);
+    raySetStop(mainRay,true);
+}
+#define PRIORITY_IMAGE_EXTERNAL_PAYLOAD
+#define traceRayEXT testTrace
+#define rayLoadMaterial testMaterial
+#define VPT_NUM_RAY_BOUNCES 16
+#include "util/priority_image.glsl"
+#undef traceRayEXT
+#undef rayLoadMaterial
+float DielectricFresnel(float cosTheta,float eta) { return .04; }
+bool vptShouldCaptureIndirectVolumetricCloud(uint lobe,float roughness) { return false; }
+#define USE_SHARC 0
+#define SHARC_QUERY 0
+// PRODUCTION_INIT
+
+void traceTransparent(inout MainRay ray,int bounce,int hand,out bool second,out float distance) {
+    rayAdvanceQuery(ray);
+    mainRay=ray;
+    testTrace(topLevelAS,0u,queryMask(rayQueryPurpose(ray),worldUBO.isFirstPerson>0),1u,1u,1u,
+              ray.origin,0.0,ray.direction,4.0,0);
+    ray=mainRay;
+    second=ray.hitT!=INF_DISTANCE;distance=ray.hitT;
+}
+bool splitDispatch(bool firstPerson) {
+    initPriorityQuery(vec3(60,0,0),vec3(0,0,-1),0u,42u);
+    worldUBO.isFirstPerson=firstPerson?1u:0u;
+    MaterialInfo firstHitMat=testMaterial(mainRay);
+    vec3 firstHitIncomingDirection=vec3(0,0,-1),firstHitNormal=vec3(0,0,1),firstHitWorldPos=vec3(60,0,0);
+    vec3 transparentReflectionRadiance=vec3(0),transparentRefractionRadiance=vec3(0);
+    bool hasTransparentReflection=false,hasTransparentRefraction=false,hasTransparentReflectionSecondHit=false;
+    float transparentReflectionSecondHitDistance=0;
+    bool useTransparentSplit=true;
+    int startBounce=1,isHand=0;
+    // PRODUCTION_SPLIT
+    return hasTransparentReflection && hasTransparentRefraction
+        && transparentReflectionRadiance.x==2.0 && transparentReflectionRadiance.y==0.0
+        && transparentRefractionRadiance.x==(firstPerson?6.0:2.0)
+        && transparentRefractionRadiance.y==1.0;
+}
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    worldUBO.cameraProjMat=mat4(1);worldUBO.seed=123u;worldUBO.isFirstPerson=1u;
+    mode=i%8u;eventCount=0u;
+    float depth;vec3 previous;bool hasPrevious;PrioritySurfaceData firstSurface;
+    vec4 colour=tracePriorityLayer(vec3(40,0,2),vec3(0,0,-1),123u,depth,previous,hasPrevious,firstSurface);
+    bool transport=mode==2u || mode==3u || mode==5u;
+    bool passed=colour.x==(transport?2.0:6.0) && colour.y==(transport?0.0:1.0) && depth==2.0;
+    passed=passed && splitDispatch(true) && splitDispatch(false);
+    result[i]=passed?1u:0u;
+}

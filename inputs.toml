@@ -1,0 +1,47 @@
+[create]
+version = "6.0.10"
+description = "create 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/LNytGWDc/versions/UjX6dr61/create-1.21.1-6.0.10.jar"
+sha256 = ["ef87fe5709f1ba1f5b8bb20a2925b5afb4669e178fd6d8bf10c167759eefe37a"]
+
+[sable]
+version = "2.0.6"
+description = "sable 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/T9PomCSv/versions/fg9dTRz9/sable-neoforge-1.21.1-2.0.6.jar"
+sha256 = ["9c199157843bf953a47dff625fc5bb41c01a90538d35ad18e6996bbcb8a617c2"]
+
+[aeronautics_bundled]
+version = "1.3.2"
+description = "aeronautics_bundled 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/oWaK0Q19/versions/44pLdPGg/create-aeronautics-bundled-1.21.1-1.3.2.jar"
+sha256 = ["a3f330d4757640f8715d991a43eedb826e4d0e51558d859c843ae6693bd35f1e"]
+
+[newport_city_snapshot]
+version = "3955"
+description = "使用者授权复制的 Newport City 世界及原设置；版本为 level.dat DataVersion，仅用于区块加载诊断"
+source = "使用者最近一次 Prism 手工运行，2026-10-15 只读快照；不修改原世界"
+sha256 = ["5e0f1d38256b0e831b10aacad504e866cfe825d0ff508166b374430fdf80e395"]
+
+[nsight_aftermath_sdk]
+version = "2026.3.26197.2318"
+description = "已安装 Nsight Graphics 附带的 NsightAftermathSDK 私有 ZIP 输入，仅构建项目内 JVM 诊断代理，不进入发行包"
+source = "https://docs.nvidia.com/nsight-aftermath/SDK/index.html"
+sha256 = ["5586ad39ef37f18542cf6940d8702ea338d3827b911b00ceb1d80326f244ada1"]
+
+[customskinloader-bootstrap]
+version = "15.1"
+description = "customskinloader 手工验收实例辅助模组，不是产品依赖或兼容声明"
+source = "https://cdn.modrinth.com/data/idMHQ4n2/versions/yyYvYfZI/CustomSkinLoader_Universal-15.1.jar"
+sha256 = ["c8769a38b3cc1da2a7b2f5827d1a53a24cd1ef6d0784b1eb545569f5882a2ffb"]
+
+[zume]
+version = "1.2.2"
+description = "zume 手工验收实例辅助模组，不是产品依赖或兼容声明"
+source = "https://cdn.modrinth.com/data/o6qsdrrQ/versions/Rh2ImJ86/zume-1.2.2.jar"
+sha256 = ["c33b99e8976dfeb0aeb1afcc2ad8e65c7310532ae5ccc38c75317d672dc95e6f"]
+
+[voxy]
+version = "0.2.20-beta+1.21.1-neoforge"
+description = "voxy 本地移植构建，供 Radiance 可选远景 PT 后端编译与项目内功能验证"
+source = "https://github.com/RecRivenVI/voxy；本地 build/libs 构建，Manifest Voxy-Commit 为 11a3799，使用者确认与当前 Voxy 工作区源码一致"
+sha256 = ["182d4a19c06cdc769cf371a361c8e83c8741764313fedb3b5dd36546cbc86932"]

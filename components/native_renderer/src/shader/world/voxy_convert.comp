@@ -1,0 +1,23 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+#include "common/shared.hpp"
+#include "voxy_quad.glsl"
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Quads { uint64_t quads[]; };
+layout(set = 0, binding = 1, std430) readonly buffer Models { VoxyModel models[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer Positions { PositionVertex positions[]; };
+layout(set = 0, binding = 3, std430) writeonly buffer Indices { uint indices[]; };
+layout(push_constant) uniform Parameters { uint count; uint level; } params;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= params.count) return;
+    uint64_t q = quads[i];
+    VoxyModel model = models[voxyModelId(q)];
+    for (uint corner = 0u; corner < 4u; corner++) {
+        positions[i * 4u + corner].pos = voxyPosition(q, model, corner, params.level);
+        positions[i * 4u + corner].pad0 = 0u;
+    }
+    const uint pattern[6] = uint[6](1u, 2u, 0u, 1u, 3u, 2u);
+    for (uint t = 0u; t < 6u; t++) indices[i * 6u + t] = i * 4u + pattern[t];
+}

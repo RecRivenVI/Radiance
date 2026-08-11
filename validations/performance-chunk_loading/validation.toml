@@ -1,0 +1,11 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+world-input = "newport_city_snapshot"
+
+[instances.client]
+memory-max = "8G"
+width = 1920
+height = 1080
+mods = ["create", "sable", "aeronautics_bundled"]
+jvm-args = ["-Dradiance.audit.experiments=true", "-Dradiance.audit.correctnessOnly=true", "-Dradiance.audit.benchmark=true", "-Dradiance.audit.benchmark.version=1.21.1-neoforge", "-Dradiance.audit.unattended=true", "-Dradiance.audit.chunkLoading=true", "-Dradiance.audit.chunkLoading.rebuild=false", "-Dradiance.audit.chunkLoading.stopSeconds=115", "-Dradiance.audit.profileSeconds=120", "-Dradiance.audit.profileDelaySeconds=0", "-XX:StartFlightRecording=name=chunk_loading,settings=profile,dumponexit=true,maxsize=128m,filename=chunk-loading.jfr", "-XX:FlightRecorderOptions=stackdepth=128", "-javaagent:../../../../../components/render_diagnostics/build/benchmark-support/radiance-benchmark-agent.jar"]
+game-args = ["--quickPlaySingleplayer", "Newport City"]
