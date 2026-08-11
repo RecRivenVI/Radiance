@@ -1,0 +1,10 @@
+# Experiment: skip identical ordinary texture bindings
+Single change: UIModule::bindTexture returns under existing mutex when index exists, FrameAlias is None, and sampler/image shared pointers match. Actual changes and alias-to-normal transitions still invalidate all frames. No changes to bindFrameAlias, descriptor layout, resource lifetime, synchronization, or diagnostics.
+Trace disabled for runtime test. Use same packaged-client instance, Java 21, and existing cache. Capture actual loaded cache filename; preserve prior baseline cache file for comparison. No automatic world entry or arbitrary play-time acceptance. No commit/push.
+Rollback source: before/ui_module.cpp. Rollback resources: before/core.dll and core.lib; before/Radiance.jar is the exact previously tested diagnostic distribution. Repackage after source rollback as appropriate; do not reset repositories.
+
+Build PASS (exit 0); incremental build recompiled only ui_module.cpp. Diff versus saved pre-experiment source is exactly 6 added lines. git diff --check PASS. All six trace variables removed from launch shell. Launch command: gradlew.bat runPackagedClient --no-daemon --console=plain.
+
+Result: FAIL / original signature reproduced. PID51628, Java elapsed 25.460958 seconds; EXCEPTION_ACCESS_VIOLATION 0xc0000005 in nvoglv64.dll+0xf1c729 reading 0xffffffffffffffff; ShaderProxy.draw under TitleScreen. Java trace entries=0; native trace path unset. Actual loaded DLL from .radiance/runtime/247453d6681e2af29234b7aa1a52b4f9fdc4eda9879dcd534af6fbac7960367a/core.dll has SHA256 9419D4146B92006FDC3278295B388FEEDACA676D9C3541A9ED13904A04C7D4F6, matching newly built/deployed DLL. Loaded pipeline cache b619145f5e691836, same as preceding trace-off control.
+
+Interpretation: skipping identical ordinary bindings is insufficient to prevent the crash. This does not exclude descriptor lifetime/refresh defects generally, and without counting skipped binds it does not prove their frequency in the failing frame. No claim of a fix or startup success. Six-line change remains uncommitted, with explicit patch and rollback source. No other experiments in this run.

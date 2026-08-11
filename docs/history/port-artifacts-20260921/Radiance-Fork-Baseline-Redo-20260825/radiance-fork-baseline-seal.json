@@ -1,0 +1,59 @@
+{
+  "capturedAt": "2026-08-25T03:19:03.7444455+08:00",
+  "repository": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance",
+  "branch": "stonecutter",
+  "remote": "origin/stonecutter",
+  "head": "cd67362ebb5d9f49c7e23e53f51d35d25409e6a2",
+  "tree": "05091a9853a3f1dff8f8c67ec36f36aae2e2ea45",
+  "remoteHead": "cd67362ebb5d9f49c7e23e53f51d35d25409e6a2",
+  "remoteTree": "05091a9853a3f1dff8f8c67ec36f36aae2e2ea45",
+  "status": null,
+  "trackedFileCount": 593,
+  "javaFileCount": 217,
+  "testFileCount": 13,
+  "versionAuthoredFileCount": 43,
+  "sourceRoots": [
+    "src/main/java",
+    "src/main/resources",
+    "src/test/java",
+    "versions/1.21.1-neoforge/src"
+  ],
+  "stonecutter": "0.10-alpha.5",
+  "gradle": "9.7.0",
+  "nodes": [
+    "1.21.1-neoforge"
+  ],
+  "businessNodes": [
+    "1.21.1-neoforge"
+  ],
+  "modId": "radiance",
+  "group": "com.radiance",
+  "packageRoot": "com.radiance",
+  "artifactBase": "Radiance",
+  "runtimeLayout": "run/1.21.1-neoforge/client",
+  "mcvr": {
+    "head": "b611d24a044384290beaf93131ad51bf14e3d107",
+    "tree": "03cb37efc7a4768fa3f16b6725983b5439c1b4c0",
+    "tracked": 413,
+    "cpp": 70,
+    "headers": 60,
+    "shaders": 211,
+    "cmake": 24,
+    "tests": 18,
+    "submodules": 14,
+    "dependency": "../MCVR via runtime.mcvrRoot",
+    "jniMiddleware": 18
+  },
+  "capabilities": [
+    "NeoForge 1.21.1 client entry and official early-window handoff to a GLFW_NO_API Vulkan window",
+    "Minecraft world/chunk/entity/block-entity/hand/particle/weather/debug geometry capture",
+    "Vulkan UI and OpenGL-state/shader/texture/buffer emulation",
+    "PBR textures, LabPBR auxiliaries, emission, transparency, glint and world text",
+    "Ray tracing pipelines vanilla-pt and advanced",
+    "NRD, DLSS Ray Reconstruction/SR, FSR3 upscaler, XeSS, SVGF, temporal accumulation and tone mapping",
+    "Create/Flywheel/Ponder compatibility hooks",
+    "Sable/Veil/Simulated/Aeronautics compatibility hooks",
+    "JNI/native manifest/shader staging contract",
+    "Resource reload, GPU diagnostics and borrowed-window lifecycle protections"
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "newHistoryBoundaryInNormalClone": "PASS",
+  "wrongRecordedMergeTree": "EXPECTED FAILURE",
+  "cloneRestoredClean": true,
+  "boundarySha256": "31e04397e2cdc90dfc633e785c390d2ea8e54d20dc28036e75f9753fcea4887e"
+}

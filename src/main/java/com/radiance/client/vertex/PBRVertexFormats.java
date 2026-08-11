@@ -10,6 +10,7 @@ import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_NORM;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_OVERLAY_UV;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_POS;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_POST_BASE;
+import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_PACKED_MODES;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_TEXTURE_ID;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_TEXTURE_UV;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_COLOR_LAYER;
@@ -19,7 +20,7 @@ import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_NORM;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_OVERLAY;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_USE_TEXTURE;
 
-import net.minecraft.client.render.VertexFormat;
+import com.mojang.blaze3d.vertex.VertexFormat;
 
 public class PBRVertexFormats {
 
@@ -52,6 +53,22 @@ public class PBRVertexFormats {
 
             .add("PostBase", PBR_POST_BASE)
 
-            .skip(4)
+            .padding(4)
+            .build();
+
+    public static final VertexFormat PBR_COMPACT_V1 =
+        VertexFormat.builder()
+            .add("Pos", PBR_POS)
+            .add("Norm", PBR_NORM)
+            .add("ColorLayer", PBR_COLOR_LAYER)
+            .add("TextureUV", PBR_TEXTURE_UV)
+            .add("OverlayUV", PBR_OVERLAY_UV)
+            .add("TextureID", PBR_TEXTURE_ID)
+            .add("GlintUV", PBR_GLINT_UV)
+            .add("GlintTexture", PBR_GLINT_TEXTURE)
+            .add("LightUV", PBR_LIGHT_UV)
+            .add("AlbedoEmission", PBR_ALBEDO_EMISSION)
+            .add("PostBase", PBR_POST_BASE)
+            .add("PackedModes", PBR_PACKED_MODES)
             .build();
 }

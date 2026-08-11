@@ -1,0 +1,81 @@
+{
+  "time": "2026-09-18T18:24:54.5101005+08:00",
+  "source": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance\\build\\libs\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar",
+  "sha256": "CD6B6476469AAE2AA3534066555CEBE8829CDE1D928DFC1CE5140B467BFE94E8",
+  "embedded": [
+    {
+      "name": "core.dll",
+      "sha256": "BD0FC527A69CA2F04A47894F6F1D362FFFB9C3768D6F85509BC6B873DC4CE726",
+      "bytes": 31058944
+    },
+    {
+      "name": "dlss/NvLowLatencyVk.dll",
+      "sha256": "2A77DC3E1C724B7EEA5755BE0AE7423752E79A2459FAE72181A9F00E3507E5D6",
+      "bytes": 57840
+    },
+    {
+      "name": "dlss/nvngx_dlss.dll",
+      "sha256": "3975567B8943C53ACCE397F2B72380092F84F162D00B0D2C7D08A1025C563983",
+      "bytes": 58956912
+    },
+    {
+      "name": "dlss/nvngx_dlssd.dll",
+      "sha256": "4BC7EA5FCB2F32CF86BC2CB072E8D2860914A0BE511CBDCB2FC206C1D9D83B80",
+      "bytes": 48343664
+    },
+    {
+      "name": "dlss/nvngx_dlssg.dll",
+      "sha256": "FF6E90EB78B827927DFF5B4ECC6B1C870C2E9BCA29ED9F48C7D348CC9E170B82",
+      "bytes": 7460976
+    },
+    {
+      "name": "dlss/sl.common.dll",
+      "sha256": "82924A8954DD671E09351C5DE0EB87AD0EB25B944CC9F9AB955CA1D9950DE15D",
+      "bytes": 843392
+    },
+    {
+      "name": "dlss/sl.dlss.dll",
+      "sha256": "73BF52C0CFAA5900A8F3F4A91306E4625E7CCA696DFB305AAE44C9F97B582E1F",
+      "bytes": 422016
+    },
+    {
+      "name": "dlss/sl.dlss_d.dll",
+      "sha256": "026B9F4F9EA848F2F5AA0E2024FC6B1C885F57EEA5D41078124DBA14F873B86B",
+      "bytes": 437376
+    },
+    {
+      "name": "dlss/sl.dlss_g.dll",
+      "sha256": "F4A6B2B14DCC0B1485989E430D3B4E3A44AC1800B92BA1AD74F476E64FB2B09C",
+      "bytes": 636032
+    },
+    {
+      "name": "dlss/sl.interposer.dll",
+      "sha256": "8C87C9499461DA561EDD529AA9BF7831D67D7B94EBB1C1A5ED54EF4934E1EA4C",
+      "bytes": 652928
+    },
+    {
+      "name": "dlss/sl.pcl.dll",
+      "sha256": "F13D51CFA05F4CD514DF2026049E2DB8ADF359221713170AD386FD499915B582",
+      "bytes": 360064
+    },
+    {
+      "name": "dlss/sl.reflex.dll",
+      "sha256": "0CE9725E3E03EA9E7F81D008B57F33EE365973D2E349131C8B1C3E3378FE2DB0",
+      "bytes": 388736
+    }
+  ],
+  "instances": [
+    {
+      "path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance Test\\minecraft\\mods\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar",
+      "before": "64862BDD6EC66797170D9F08D03ABCB85FD150E9A9E571F15E43C5688C9F239A",
+      "after": "CD6B6476469AAE2AA3534066555CEBE8829CDE1D928DFC1CE5140B467BFE94E8",
+      "backup": "D:\\Workspaces\\Artifacts\\RadianceUpgrade\\20260918\\streamline-implementation\\deployment-backup-20260918-182453\\instance-0-before.jar"
+    },
+    {
+      "path": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance\\run\\ponder-readback-20260918-144319\\full\\mods\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar",
+      "before": "64862BDD6EC66797170D9F08D03ABCB85FD150E9A9E571F15E43C5688C9F239A",
+      "after": "CD6B6476469AAE2AA3534066555CEBE8829CDE1D928DFC1CE5140B467BFE94E8",
+      "backup": "D:\\Workspaces\\Artifacts\\RadianceUpgrade\\20260918\\streamline-implementation\\deployment-backup-20260918-182453\\instance-1-before.jar"
+    }
+  ]
+}

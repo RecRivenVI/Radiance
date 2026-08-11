@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "target": "1.21.1-neoforge",
+  "profile": "PRIMARY_S1",
+  "CLEAR_COLOR_VISIBLE": "PASS",
+  "EARLY_WINDOW_HANDOFF": "PASS",
+  "VULKAN_SWAPCHAIN_PRESENT": "PASS",
+  "RESIZE_MAXIMIZE_CRASH_BLOCKER": "RESOLVED",
+  "MINECRAFT_WORLD_UI_ABSENT": "EXPECTED",
+  "GAME_INTERACTION_ABSENT": "EXPECTED",
+  "USER_ACCEPTANCE_M1": "PASS",
+  "M1": "COMPLETE",
+  "scopeBoundary": "Early Vulkan lifecycle only; no world, UI, shader, resource, DLSS or Reflex acceptance",
+  "commitsCreated": 0
+}

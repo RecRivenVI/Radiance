@@ -1,0 +1,5 @@
+CreateValueBoxMixins.java: TARGET com/simibubi/create/foundation/blockEntity/behaviour/ValueBox MISSING INVOKE com/simibubi/create/foundation/gui/AllIcons.render( (methods=[])
+CreateValueBoxMixins.java: TARGET com/simibubi/create/foundation/blockEntity/behaviour/ValueBox MISSING INVOKE com/simibubi/create/foundation/blockEntity/behaviour/ValueBox.renderContents( (methods=[])
+SableFlywheelEmbeddingMixins.java: TARGET CLASS NOT FOUND: com/radiance/compatibility/flywheel/RadianceFlywheelEngine$Embedding
+SimulatedGroupVisualizationAccessor.java: TARGET dev/engine_room/flywheel/impl/visualization/VisualizationManagerImpl MISSING ACCESSOR FIELD sable$drawingDiagram
+VeilDynamicShaderBlockMixins.java: TARGET foundry/veil/impl/client/render/shader/block/DynamicShaderBlockImpl SHADOW METHOD ONLY INHERITED getValue

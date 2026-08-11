@@ -34,15 +34,20 @@ public abstract class RenderSystemMixins {
         cir.setReturnValue(maxImageSize);
     }
 
-    @Redirect(method = "flipFrame(JLnet/minecraft/client/util/tracy/TracyFrameCapturer;)V",
+    @Inject(method = "getCapsString()Ljava/lang/String;", at = @At("HEAD"),
+        cancellable = true, remap = false)
+    private static void describeVulkanCapabilities(CallbackInfoReturnable<String> cir) {
+        cir.setReturnValue("Using Vulkan ray tracing with a GLFW_NO_API window");
+    }
+
+    @Inject(method = "flipFrame(J)V", at = @At("HEAD"))
+    private static void prepareNextInputFrame(long window, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        com.radiance.client.proxy.vulkan.RendererProxy.streamlineFrameEvent(0);
+    }
+    @Redirect(method = "flipFrame(J)V",
         at = @At(value = "INVOKE", target = "Lorg/lwjgl/glfw/GLFW;glfwSwapBuffers(J)V", remap = false))
     private static void cancelSwapBuffers(long window) {
 
     }
 
-    @Redirect(method = "renderCrosshair(I)V", at = @At(value = "INVOKE", target = "Lcom/mojang/blaze3d/platform/GLX;_renderCrosshair(IZZZ)V"))
-    private static void cancelDrawCrossAirForNow(int size, boolean drawX, boolean drawY,
-        boolean drawZ) {
-
-    }
 }

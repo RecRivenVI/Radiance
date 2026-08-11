@@ -1,0 +1,13 @@
+{
+  "jar": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance\\build\\libs\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar",
+  "sha256": "c9359425ee00db23934d75fbadc343ed013600e8cddf4b12bbf1330ce2b510ed",
+  "compiledShaders": 73,
+  "packaging": "PASS",
+  "java": {
+    "tests": 26,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "javaSuites": 13
+}

@@ -1,7 +1,7 @@
 package com.radiance.mixin_related.extensions.vanilla_resource_tracker;
 
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.util.Identifier;
+import com.mojang.blaze3d.platform.NativeImage;
+import net.minecraft.resources.ResourceLocation;
 
 public interface INativeImageExt {
 
@@ -9,9 +9,13 @@ public interface INativeImageExt {
 
     void radiance$setTargetID(int id);
 
-    Identifier radiance$getIdentifier();
+    com.radiance.client.texture.TextureTasks.Owner radiance$getTargetOwner();
 
-    void radiance$setIdentifier(Identifier id);
+    void radiance$setTargetOwner(com.radiance.client.texture.TextureTasks.Owner owner);
+
+    ResourceLocation radiance$getIdentifier();
+
+    void radiance$setIdentifier(ResourceLocation id);
 
     NativeImage radiance$getSpecularNativeImage();
 

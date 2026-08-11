@@ -1,9 +1,14 @@
 pluginManagement {
     repositories {
-        maven {
-            name = 'Fabric'
-            url = 'https://maven.fabricmc.net/'
-        }
         gradlePluginPortal()
+        mavenCentral()
+        maven {
+            name = 'NeoForged'
+            url = 'https://maven.neoforged.net/releases/'
+        }
     }
 }
+
+rootProject.name = 'Radiance'
+include ':radiance-audit'
+project(':radiance-audit').projectDir = file('Modules/RadianceAudit')

@@ -1,0 +1,106 @@
+{
+  "TECH_STACK_CHANGED": true,
+  "TECH_STACK_CHANGE": "Authorized internalization and clean-break identity; renderer remains Pure Vulkan",
+  "COMPATIBILITY_TARGET_POLICY_CHANGED": false,
+  "REQUIRED_TEST_MOD_BASELINE_CHANGED": true,
+  "REQUIRED_TEST_MODS": [
+    "CustomSkinLoader 15.0.1-Universal",
+    "Zume 1.2.2"
+  ],
+  "PRODUCT_DEPENDENCY_CHANGED": false,
+  "FUNCTIONAL_CAPABILITY_LOSS": 0,
+  "PURE_VULKAN_POLICY_PRESERVED": true,
+  "OFFICIAL_EARLY_WINDOW_PRESERVED": true,
+  "capabilities": [
+    {
+      "BaselineBehavior": "NeoForge client entry and platform bridge",
+      "BaselineImplementation": "versions/1.21.1-neoforge platform sources",
+      "FinalImplementation": "src/main/java/io/github/recrivenvi/radiance/platform",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Official NeoForge early-window lifecycle followed by Vulkan handoff",
+      "BaselineImplementation": "NeoForgeVulkanWindowHandoff and Window mixin",
+      "FinalImplementation": "src/main/java/io/github/recrivenvi/radiance/platform/neoforge plus native borrowed-window contract",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "GLFW_NO_API pure Vulkan main renderer",
+      "BaselineImplementation": "Radiance Java proxies plus sibling MCVR",
+      "FinalImplementation": "Radiance Java proxies plus internal src/main/native",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Chunk geometry compilation and persistent BLAS",
+      "BaselineImplementation": "ChunkProxy plus MCVR chunks/render/vulkan",
+      "FinalImplementation": "root ChunkProxy plus native render/chunks and vulkan",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Entity, block entity, hand, text, particle, weather and debug geometry capture",
+      "BaselineImplementation": "EntityProxy and renderer mixins plus MCVR entities",
+      "FinalImplementation": "root world proxies/mixins plus native render/entities",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Vulkan UI and legacy GL state/shader/texture/buffer translation",
+      "BaselineImplementation": "Java Vulkan proxy/mixins plus MCVR UI module",
+      "FinalImplementation": "root Java proxy/mixins plus native bridge/jni and render/modules/ui_module",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "PBR/LabPBR, emission, transparency, glint and text semantics",
+      "BaselineImplementation": "Java vertex/texture layer plus MCVR ray tracing shaders",
+      "FinalImplementation": "root Java vertex/texture layer plus native shader tree",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "vanilla-pt and advanced ray-tracing packs",
+      "BaselineImplementation": "MCVR src/shader",
+      "FinalImplementation": "src/main/native/shader",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "NRD, DLSS, FSR3, XeSS, SVGF, temporal and tone mapping modules",
+      "BaselineImplementation": "Sibling MCVR modules and extern",
+      "FinalImplementation": "src/main/native/render/modules with root extern pins",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Create/Flywheel/Ponder compatibility",
+      "BaselineImplementation": "com.radiance compatibility and mixins",
+      "FinalImplementation": "io.github.recrivenvi.radiance compatibility and isolated create-family fixture",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Sable/sable-companion/Veil compatibility",
+      "BaselineImplementation": "com.radiance compatibility and mixins",
+      "FinalImplementation": "io.github.recrivenvi.radiance compatibility and isolated sable-family fixture",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Aeronautics/Offroad/Simulated compatibility",
+      "BaselineImplementation": "com.radiance compatibility and mixins",
+      "FinalImplementation": "io.github.recrivenvi.radiance compatibility and isolated aeronautics-family fixture",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Resource reload and GPU/native diagnostics",
+      "BaselineImplementation": "Radiance coordinators plus MCVR diagnostics",
+      "FinalImplementation": "root Java coordinators plus native vulkan/render diagnostics",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "JNI/native/shader manifest staging and package verification",
+      "BaselineImplementation": "External ../MCVR prepareRuntime chain",
+      "FinalImplementation": "Internal CMake configure/build/install/CTest/stage/JAR chain",
+      "Status": "PRESERVED"
+    },
+    {
+      "BaselineBehavior": "Client-only runtime role",
+      "BaselineImplementation": "1.21.1-neoforge runClient",
+      "FinalImplementation": "External S1/S2 project-profile runClient tasks",
+      "Status": "PRESERVED"
+    }
+  ]
+}

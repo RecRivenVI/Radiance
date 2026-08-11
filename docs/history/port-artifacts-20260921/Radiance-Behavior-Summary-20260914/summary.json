@@ -1,0 +1,841 @@
+[
+  {
+    "id": "P01",
+    "topic": "单目标 NeoForge 移植",
+    "change": "Fabric 1.21.4 的入口、metadata、Yarn/API 调整为 NeoForge 1.21.1/Mojmap；保持 com.radiance 与原目录。",
+    "category": "必要移植",
+    "recommendation": "保留；建立最小移植基线时属于基础层。",
+    "verification": "构建、当前单机运行有证据；不等于全部功能一致。",
+    "evidence": [
+      "Radiance/build.gradle:93",
+      "Radiance/src/main/java/com/radiance/platform/neoforge/RadianceNeoForge.java:8"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "P02",
+    "topic": "无 OpenGL 上下文的窗口与基础 API",
+    "change": "主游戏窗口仍使用 GLFW_NO_API；窗口 hint、GL capability 等调用走 Vulkan 适配。",
+    "category": "必要移植/后端适配",
+    "recommendation": "保留必要窗口路径；不要恢复与 Vulkan 冲突的 OpenGL 初始化。",
+    "verification": "本轮客户端已实际运行。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/WindowMixins.java:91"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "P03",
+    "topic": "GPU 计时与 F3 后端信息",
+    "change": "新增 JNI GPU 计时接口被 TimerQuery/FrameProfile Mixin 调用，替代原 OpenGL query；硬件信息由 Vulkan 后端提供。",
+    "category": "后端适配/诊断基础",
+    "recommendation": "保留可达的计时和后端信息；不能直接把它称作新增玩家功能。",
+    "verification": "静态接线明确；尚无逐项计时精度验收。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/TimerQueryMixins.java:17",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/TimerQueryFrameProfileMixins.java:23",
+      "Radiance/src/main/java/com/radiance/client/proxy/vulkan/RendererProxy.java:75"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "P04",
+    "topic": "原有画质菜单/光影包/管线配置",
+    "change": "上游已具有模块化管线、两套内置包、外部包选择、配置保存和多数画质选项；当前大部分 UI 差异为 API 适配。",
+    "category": "上游行为保留",
+    "recommendation": "保留；不要误记为我们新增的整套系统。",
+    "verification": "对照上游源码；局部管线错误处理另列。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/pipeline/Pipeline.java:614",
+      "Radiance/src/main/java/com/radiance/client/gui/ShaderPackScreen.java:32"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "P05",
+    "topic": "非活动帧率设置的 UI 缩减",
+    "change": "上游菜单的 AFK/MINIMIZED 选项在目标版本适配时移除；当前窗口设置列表仅剩最大帧率、VSync、全屏。",
+    "category": "移植伴随的行为/界面缩减",
+    "recommendation": "倾向补回相应用户控制；与原生帧率实现分开确认，不能当作必然需要删除的功能。",
+    "verification": "移除由 diff 确认；节能/失焦效果未专项验收。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_options/VideoOptionsScreenMixins.java:183"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "P06",
+    "topic": "Early Display",
+    "change": "17 个相关源文件、两处注入及构建接线现已隔离；测试实例 earlyWindowControl=false。",
+    "category": "已隔离实验/加载适配",
+    "recommendation": "按当前决定继续隔离；后续作为独立工作评估。",
+    "verification": "配置、日志与客户端启动已核实。",
+    "evidence": [
+      "Radiance/run/client/config/fml.toml:2"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "P07",
+    "topic": "构建、依赖与测试",
+    "change": "保留单项目构建和独立 MCVR；SDK 10 个指针随 port 更新；补齐开发运行 SnakeYAML；新增测试。",
+    "category": "工程支持",
+    "recommendation": "保留必要构建/测试；依赖升级单列审阅，不与画面改动混为一体。",
+    "verification": "此前构建26 Java/16 CTest及当前运行有证据。",
+    "evidence": [
+      "Radiance/build.gradle:104",
+      "MCVR/.gitmodules:1",
+      "MCVR/CMakeLists.txt:1"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C01",
+    "sourceId": "C01",
+    "topic": "Create ValueBox",
+    "change": "新增捕获图标/内容的多层几何并送入世界队列，是真实但范围有限的桥接。",
+    "category": "第三方兼容：实质渲染",
+    "recommendation": "保留；按 ValueBox 图标、内容、嵌套调用分别验收。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/compatibility/create/CreateValueBoxMixins.java:12-49",
+      "src/main/java/com/radiance/compatibility/create/CreateValueBoxWorldGeometry.java:22-65",
+      "src/main/resources/radiance.mixins.json:13-17"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C02",
+    "sourceId": "C02",
+    "topic": "Ponder / Catnip",
+    "change": "Ponder FBO 初始化被取消；另有 Sable/Catnip bulk consumer 精确绕过，二者不是同一种支持。",
+    "category": "第三方兼容：防护/数据通路",
+    "recommendation": "保留数据通路修复；FBO 取消作为临时防护，Ponder 完整画面仍需补证。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/compatibility/ponder/PonderUIRenderHelperMixins.java:9-17",
+      "src/main/java/com/radiance/compatibility/sable/SableVertexConsumerCompat.java:16-32",
+      "src/main/java/com/radiance/mixins/vulkan_render_integration/BlockModelRendererMixins.java:83-99"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C03",
+    "sourceId": "C03",
+    "topic": "Flywheel",
+    "change": "变换方块实体捕获时关闭 visualization 以走普通 renderer；另无条件跳过 program reload。",
+    "category": "第三方兼容：fallback",
+    "recommendation": "保留窄 fallback；资源重载取消范围需单独收窄验证。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/compatibility/flywheel/FlywheelVisualizationManagerMixins.java:12-24",
+      "src/main/java/com/radiance/mixins/compatibility/flywheel/FlywheelProgramsReloaderMixins.java:9-18",
+      "src/main/java/com/radiance/client/proxy/world/EntityProxy.java:833-879"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C04",
+    "sourceId": "S01",
+    "topic": "Sable 外部区块",
+    "change": "新增外部 slot、负索引、变换、重建和释放，并进入 native TLAS；限定已识别的 chunked render-data 类型。",
+    "category": "第三方兼容：实质渲染",
+    "recommendation": "重点保留；这是已有兼容投入的核心，需真实 sublevel 生命周期验收。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/sable/SableRenderSectionCompatibility.java:15-34",
+      "src/main/java/com/radiance/client/proxy/world/ChunkProxy.java:195-240",
+      "D:/Workspaces/Repositories/GitHub/RecRivenVI/MCVR/src/core/render/chunks.cpp:1542-1586"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C05",
+    "sourceId": "S02",
+    "topic": "Sable 单块/实体/方块实体/轮廓",
+    "change": "捕获单块及子世界实体/方块实体，应用 sublevel 姿态、相机和选中轮廓变换；未知类型仍可能跳过。",
+    "category": "第三方兼容：实质渲染",
+    "recommendation": "重点保留；分别验收移动、旋转、乘客、方块实体和交互。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/sable/SableSubLevelBridge.java:113-160",
+      "src/main/java/com/radiance/compatibility/sable/SableSubLevelBridge.java:211-300",
+      "src/main/java/com/radiance/client/proxy/world/EntityProxy.java:833-876"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C06",
+    "sourceId": "S03",
+    "topic": "Sable 诊断日志",
+    "change": "新增约1秒一次的 frameSummary；缺少 Sable 时也可输出0，源码没有诊断开关。",
+    "category": "检测/本地日志",
+    "recommendation": "兼容逻辑保留；建议诊断增加开关并默认静默，变化/错误时按需记录。",
+    "verification": "源码与此前无第三方客户端日志均确认；这是诊断，不是兼容验证。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/sable/SableSubLevelDiagnostics.java:24-65",
+      "src/main/java/com/radiance/compatibility/sable/SableSubLevelDiagnostics.java:169-200",
+      "src/main/java/com/radiance/mixins/vulkan_render_integration/WorldRendererMixins.java:139-171"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C07",
+    "sourceId": "A01",
+    "topic": "Aeronautics Levitite 层",
+    "change": "注册 levitite/ghost 层并同步 NeoForge chunk-layer 缓存，解决进入编译/阶段路径的前置条件。",
+    "category": "第三方兼容：层注册",
+    "recommendation": "保留；不是整个 Aeronautics 材质、物理或画面的兼容证明。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/compatibility/aeronautics/AeronauticsNeoForgeClientSetupMixins.java:20-52",
+      "src/main/resources/radiance.mixins.json:13-18",
+      "build.gradle:134-141"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C08",
+    "sourceId": "M01",
+    "topic": "Simulated 弹簧/绳索/Shader fallback",
+    "change": "针对 spring 的 stress/alpha 语义、rope 相机相对坐标及 diagram 内 Veil shader 近似替代。",
+    "category": "第三方兼容：定向支持",
+    "recommendation": "保留材质/坐标修正；把 shader 近似效果单列对照。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/simulated/SimulatedVertexCompatibility.java:17-51",
+      "src/main/java/com/radiance/client/proxy/world/EntityProxy.java:312-315",
+      "src/main/java/com/radiance/mixins/compatibility/simulated/SimulatedVeilRenderSystemMixins.java:24-50"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C09",
+    "sourceId": "M02",
+    "topic": "Simulated 图纸与便签",
+    "change": "替代原 Veil FBO 路径，重建相机、投影和几何队列；FBO 空操作需与 Vulkan replacement 成套看待。",
+    "category": "第三方兼容：实质替代",
+    "recommendation": "重点保留替代路径；图纸、便签、选择/箭头与资源生命周期分别验收。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/simulated/SimulatedDiagramCompatibility.java:153-220",
+      "src/main/java/com/radiance/mixins/compatibility/simulated/SimulatedDiagramScreenMixins.java:34-89",
+      "src/main/java/com/radiance/mixins/compatibility/simulated/SimulatedDiagramStickyNoteMixins.java:43-93"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C10",
+    "sourceId": "M03",
+    "topic": "Simulated plunger 第一人称",
+    "change": "绕过重复逆旋转，避免已处于相机局部空间的 focus point 再被变换。",
+    "category": "第三方兼容：定向修补",
+    "recommendation": "保留；只按对应实体和视角判断，不推广成全实体兼容。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/compatibility/simulated/SimulatedLaunchedPlungerEntityRendererMixins.java:11-25"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C11",
+    "sourceId": "V01",
+    "topic": "Veil 生命周期/后处理/能力查询",
+    "change": "多处 init/frame/post/deferred light/clear/reload/event 被取消，能力查询返回 false；缺少完整 Veil renderer 替代。",
+    "category": "第三方兼容：防护/功能降级",
+    "recommendation": "保留必要 GL 隔离，复核并收窄广泛取消；明确哪些 Veil 功能仍不支持。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/compatibility/veil/VeilRenderSystemMixins.java:22-90",
+      "src/main/java/com/radiance/mixins/compatibility/veil/VeilForgeClientMixins.java:16-41",
+      "src/main/java/com/radiance/mixins/compatibility/veil/VeilForgeRenderTypeStageHandlerMixins.java:14-18"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C12",
+    "sourceId": "V02",
+    "topic": "Veil 注入方法/动态 buffer/F3",
+    "change": "按目标类和方法白名单清空 GL handler；跳过 DynamicBufferShard；关闭 VeilDebug、保留原 F3 列表。",
+    "category": "第三方兼容：精确防护",
+    "recommendation": "保留精确规则，升级 Veil 时逐项复核；不要只凭 marker Mixin 判断完成。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/veil/VeilMixinCompatibility.java:16-69",
+      "src/main/java/com/radiance/mixins/vulkan_render_integration/RenderPhaseMixins.java:37-43",
+      "src/main/java/com/radiance/mixins/compatibility/veil/VeilDebugMixins.java:13-25"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C13",
+    "sourceId": "N01",
+    "topic": "NeoForge 维度效果/渲染阶段事件",
+    "change": "回调会执行并进入捕获作用域，但 world/dimension 的普通 MeshData 绘制仍被丢弃；可能只剩回调没有内容。",
+    "category": "第三方兼容：有边界缺口",
+    "recommendation": "保留 hooks；补真实几何桥后才能承诺自定义维度/阶段画面。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/compatibility/neoforge/DimensionSpecialEffectsCompatibility.java:23-33",
+      "src/main/java/com/radiance/client/render/RenderCaptureContract.java:64-82",
+      "src/main/java/com/radiance/mixins/vulkan_render_integration/BufferRendererMixins.java:22-32"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "C14",
+    "sourceId": "G01",
+    "topic": "通用 OpenGL FBO / MeshData",
+    "change": "取消不支持的操作，返回 synthetic ID 或 FRAMEBUFFER_COMPLETE 以继续流程；只有明确GUI/镜头域进入Vulkan UI。",
+    "category": "兼容防护：存在伪成功风险",
+    "recommendation": "不要整块删除保护；单独审查空操作和成功返回，不能把它们当作绘制完成。",
+    "verification": "源码/调用链已确认；当前无对应第三方组合验收。",
+    "evidence": [
+      "src/main/java/com/radiance/mixins/vulkan_render_integration/OpenGlFramebufferCompatibilityMixins.java:24-108",
+      "src/main/java/com/radiance/client/render/RenderCaptureContract.java:93-113",
+      "src/main/java/com/radiance/mixins/compatibility/simulated/SimulatedDiagramScreenMixins.java:34-69"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J01",
+    "topic": "第一人称水/火/方块/自定义流体遮罩",
+    "change": "上游已有第一人称遮罩；现改用目标版本 ScreenEffectRenderer，重建状态并保留 NeoForge 钩子及调用条件。",
+    "category": "移植/兼容与正确性",
+    "recommendation": "保留；优先保持原有顺序、可见条件和自定义流体钩子。",
+    "verification": "条件有单测；并非逐种遮罩视觉验收。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/render/CameraOverlayRenderer.java:39",
+      "Radiance/src/main/java/com/radiance/client/render/CameraOverlayRenderer.java:84",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/GameRendererMixins.java:226"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J02",
+    "topic": "手持方块物品材质判定",
+    "change": "新增根据世界模型 RenderTypes 判定手持方块的传输材质，而非只按物品层统一处理。",
+    "category": "材质正确性/兼容支持",
+    "recommendation": "倾向保留；与玻璃/流体/第三方模型一同做视觉对照。",
+    "verification": "存在单测和调用；不能保证任意 ModelData 模型覆盖。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/render/HandItemMaterialResolver.java:20",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/HandItemMaterialMixins.java:26"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J03",
+    "topic": "发光物品展示框",
+    "change": "将 1.21.1 发光框 lightmap 语义转成 PBR emission，框体使用5/15，内容按 packed light 换算。",
+    "category": "效果补齐/主动材质适配",
+    "recommendation": "倾向保留；亮度外观应对照确认。",
+    "verification": "数值转换有单测，视觉效果未完整验收。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/render/GlowItemFrameEmission.java:6",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/GlowItemFrameRendererMixins.java:41"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J04",
+    "topic": "名字牌背景固定透明度",
+    "change": "名字牌背景被拆成独立几何，且 alpha 强制设为128；这不仅是类名/API 替换。",
+    "category": "明确外观变化",
+    "recommendation": "按保留上游的偏好，优先恢复尊重原背景透明度；若喜欢固定半透明，可单独保留为选项。",
+    "verification": "常量及调用确定，最终观感由你决定。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/render/NameTagBackgroundStyle.java:5",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/EntityRendererMixins.java:42"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J05",
+    "topic": "白灰粒子特殊外观丢失",
+    "change": "上游 BillboardParticleMixins 对 WhiteAsh 使用 +/-1/8 顶点和光照0；该特殊覆盖在当前源树中没有对应实现。",
+    "category": "上游行为遗漏/取舍",
+    "recommendation": "倾向作为恢复上游候选，独立决定；不要把整个粒子管线回退。",
+    "verification": "上游提交源码与当前删除核实；尚无专门画面对照。",
+    "evidence": [
+      "Radiance@414d8e3:src/main/java/com/radiance/mixins/vulkan_render_integration/BillboardParticleMixins.java:24",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/ParticleMixins.java:9"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J06",
+    "topic": "动态图形 Shader 注册与缓存",
+    "change": "上游已有 Shader 转换/本地文件缓存；现按 Shader+绘制模式缓存并同步访问，适配1.21.1 ShaderInstance与布局。",
+    "category": "移植/正确性支持",
+    "recommendation": "保留必要布局和缓存修正；本地 shader 文件不是遥测。",
+    "verification": "静态对照和 Shader 测试；非任意第三方 GLSL 兼容保证。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/shader/ShaderRegistry.java:40",
+      "Radiance/src/main/java/com/radiance/client/shader/ShaderRegistry.java:248"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J07",
+    "topic": "CloudProxy 云几何承接",
+    "change": "1.21.4 的 CloudRenderer Mixin 在1.21.1改由 CloudProxy 自行生成云单元几何，保留关闭/快速/精美模式、颜色/高度和 WORLD_CLOUD 分类，并丢弃透明像素。",
+    "category": "移植承接/几何实现替换",
+    "recommendation": "保留承接能力；不要把旧 Mixin 删除误判为云功能被删，阴影/遮挡/外观另做对照。",
+    "verification": "源码和 WorldRenderer 调用确认；未做云场景逐项视觉一致性测试。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/proxy/world/CloudProxy.java:23-47",
+      "Radiance/src/main/java/com/radiance/client/proxy/world/CloudProxy.java:64-100",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/WorldRendererMixins.java:315-324"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "J08",
+    "topic": "完整方块边线与实体发光轮廓",
+    "change": "方块轮廓按完整 VoxelShape 边绘制；上游实体 outline 捕获曾留 TODO，当前实际捕获发光/自定义轮廓并送入 priority 路径。",
+    "category": "效果补齐/第三方轮廓支持",
+    "recommendation": "倾向保留可用轮廓及自定义事件入口；颜色、遮挡与线宽另作对照。",
+    "verification": "几何/可见性有单测；并非所有实体、方块形状都已人工验收。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/render/WorldOutlineGeometry.java:15-25",
+      "Radiance/src/main/java/com/radiance/client/proxy/world/EntityProxy.java:1272",
+      "Radiance/src/main/java/com/radiance/client/proxy/world/EntityProxy.java:326-340"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "N01",
+    "topic": "天空、End 天空与星场",
+    "change": "基线 skyType=2 miss 直接停止且星场走 post-render；当前 miss shader 增加 End 六面天空、日出渐变、黑暗天空门控和 starBrightness 控制的稳定程序化星场。",
+    "category": "天空补齐/视觉变化",
+    "recommendation": "末地/日出效果补齐倾向保留；程序化星场与取消原星空参数单独对照取舍。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/shader/world/ray_tracing/internal/vanilla-pt/common/world_miss_eval_impl.glsl:107-249",
+      "src/shader/world/ray_tracing/internal/advanced/common/world_miss_eval.glsl:107-248",
+      "src/common/shared.hpp:268-273"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N02",
+    "topic": "priority 几何合成",
+    "change": "bit 4 从 FISHING_BOBBER_MASK 改为 PRIORITY_MASK；当前加入 priority background/geometry/composite RT/compute pass，主相机排除 priority，次级光线与阴影纳入。",
+    "category": "渲染机制重写",
+    "recommendation": "倾向保留可读文字、名字牌和实体轮廓；priority 实现与第三方几何共用，不宜整块回退。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/common/mapping.hpp:28-36",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/configs.json:381-390",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/configs.json:588-594",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/priority/priority.rgen:26-44",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/priority/composite.comp:9-18"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N03",
+    "topic": "非全屏内容迁移",
+    "change": "移除内置 post_render particle/weather/text/name_tag/star execution；粒子天气进入 world RT mask，文本/name tag 进入 priority，PostRender parser 不再接受 NameTag/Star。",
+    "category": "渲染路由/旧光影包契约",
+    "recommendation": "单独处理旧光影包契约；保留必要路由，补兼容或明确迁移，不能只按画面正常判断。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/modules/world/post_render/post_render_module.cpp:273-289",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/configs.json:588-594",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/world.rgen:471-484"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N04",
+    "topic": "alpha 与透明材质",
+    "change": "新增低阈值 cutout、coverage、additive、显式 transmission；packed alpha 从 4 bit 扩为 5 bit，coverage 使用随机 any-hit，additive 不减少后续通量。",
+    "category": "材质语义变化",
+    "recommendation": "保留支撑第三方材质的分类和编码；玻璃、coverage、additive 的实际外观分别对照。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/shader/util/alpha_mode.glsl:4-45",
+      "src/shader/util/vertex.glsl:12-95",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/default.rahit:81-96",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/transparent_only.rchit:113-134"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N05",
+    "topic": "文本材质与 glyph coverage",
+    "change": "文本 mode 移到 12..19；world text 禁用 PBR normal/specular/parallax，glyph coverage 走 text any-hit，并由 priority route 合成。",
+    "category": "文字材质重写",
+    "recommendation": "保留文字材质分离和覆盖处理；具体遮挡/透视规则及背景样式另作选择。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/shader/util/text_mode.glsl:4-44",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/default.rchit:157-184",
+      "src/shader/world/ray_tracing/internal/advanced/common/surface_eval.glsl:113-140",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/text.rahit:65-78"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N06",
+    "topic": "glint 与 color-layer mix",
+    "change": "新增 color-layer mix、glint mode 和 item UV 缩放；glint 从 tint 相加改为影响 F0/roughness 并输出独立 coating radiance，受 glintStrength 控制。",
+    "category": "附魔外观变化",
+    "recommendation": "属于明显外观调整；对照上游后决定，尤其 UV 比例、粗糙度与高光强度。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/vulkan/vertex.cpp:5-17",
+      "src/shader/util/vertex.glsl:12-77",
+      "src/shader/util/glint_material.glsl:4-20",
+      "src/common/shared.hpp:238-243"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N07",
+    "topic": "实体发光与 eyes overlay",
+    "change": "语义 group 写入 albedoEmission；相同位置/UV/拓扑的 eyes layer 并入 base 的 emissiveOverlayTextureID，单独 eyes 几何被移除。",
+    "category": "实体发光变化",
+    "recommendation": "倾向保留眼睛/发光层语义与重复几何处理；亮度和混合规则按实体分别对照。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/entities.cpp:27-140",
+      "src/core/render/entities.cpp:517-547",
+      "src/core/render/entities.cpp:1135-1161",
+      "src/shader/util/emissive_overlay.glsl:4-10",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/default.rchit:974-983"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N08",
+    "topic": "RT normal transform",
+    "change": "基线使用 transpose(gl_WorldToObject3x4EXT)，当前多个 hit shader 改为不转置 mat3(...)；部分 object transform builtin 也变化。",
+    "category": "法线差异：风险待确认",
+    "recommendation": "高优先级待确认项；先验证非均匀缩放/法线约定，不直接自动回退，避免伤及 Sable 变换。",
+    "verification": "明确存在去掉 transpose 的差异；尚不能据此定为 bug，也未有非均匀缩放对照。",
+    "evidence": [
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/default.rchit:871-874",
+      "src/shader/world/ray_tracing/internal/vanilla-pt/world/transparent_only.rchit:127-129",
+      "src/shader/world/ray_tracing/internal/advanced/primary/default.rchit:132-135",
+      "D:/Workspaces/Artifacts/Radiance-Behavior-Summary-20260914/references/MCVR-9905c81/src/shader/world/ray_tracing/internal/vanilla-pt/world/default.rchit:842-844"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N09",
+    "topic": "external chunk transform",
+    "change": "新增 external chunk 分配、释放、任意 custom transform 和 transform history，使外部几何参与运动向量。",
+    "category": "第三方兼容共享基础",
+    "recommendation": "重点保留；它是 Sable 等移动结构兼容的共享基础。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/chunks.hpp:189-219",
+      "src/core/render/chunks.cpp:1542-1584",
+      "src/core/render/modules/world/ray_tracing/submodules/world_prepare.cpp:326-409"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N10",
+    "topic": "geometry 输入安全",
+    "change": "支持 TRIANGLES；无效线宽、DEBUG_LINE_STRIP 零 alpha 分隔段、空 entity batch 和越界 chunk build 会被跳过或清理；chunk fence/reset/submit 错误被记录。",
+    "category": "输入检查/几何支持",
+    "recommendation": "保留有边界的输入检查和几何补齐；不要把它们同日志一起删除。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/entities.cpp:244-283",
+      "src/core/render/entities.cpp:861-889",
+      "src/core/render/entities.cpp:986-1016",
+      "src/core/render/chunks.cpp:812-856",
+      "src/core/render/chunks.cpp:1497-1500"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N11",
+    "topic": "resource reload transaction",
+    "change": "begin/end reload 在 GPU idle 边界 flush/collect upload、延迟保留旧 image/sampler、统一 bind descriptor，并广播 WorldModule::onResourceReload。",
+    "category": "资源生命周期防护",
+    "recommendation": "倾向保留资源重载事务；失败/反复重载另行测量，不视为所有崩溃已解决。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/textures.cpp:58-220",
+      "src/core/render/pipeline.cpp:184-186",
+      "src/core/render/pipeline.cpp:495-496",
+      "src/core/render/modules/world/world_module.hpp:46-51"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N12",
+    "topic": "资源重载后的去噪/缩放历史重置",
+    "change": "新增 reload 广播：DLSS 请求历史重置，NRD 重置帧/折射历史，FSR/XeSS 重置首帧，Temporal 下一帧 alpha=1，SHARC 清空历史。这些模块本身原本就有。",
+    "category": "重载正确性",
+    "recommendation": "保留 history reset；DLSS 结果检查中的新回归另列 R01，不能随“修复代码”原样认可。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/modules/world/dlss/dlss_wrapper.cpp:468-475",
+      "src/core/render/modules/world/dlss/dlss_module.cpp:329-330",
+      "src/core/render/modules/world/nrd/nrd_module.cpp:306-309",
+      "src/core/render/modules/world/fsr_upscaler/fsr_upscaler_module.cpp:349-351",
+      "src/core/render/modules/world/xess_upscaler/xess_sr_module.cpp:345-347",
+      "src/core/render/modules/world/temporal_accumulation/temporal_accumulation_module.cpp:100-101",
+      "src/core/render/modules/world/ray_tracing/ray_tracing_module.cpp:777-801",
+      "D:/Workspaces/Artifacts/Radiance-Behavior-Summary-20260914/references/MCVR-9905c81/src/core/render/modules/world/dlss/dlss_wrapper.cpp:419-420"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N13",
+    "topic": "纹理上传、读回与基础释放",
+    "change": "上传 batch 保留目标 image 至 fence 完成；读回检查 mip/extent/字节数并 invalidate host memory；按 ID 释放资源并支持 fallback。",
+    "category": "纹理数据与释放防护",
+    "recommendation": "保留上传/读回和实际释放检查；auxiliary 级联释放缺口另列 R02。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/textures.cpp:299-376",
+      "src/core/render/textures.cpp:422-569",
+      "src/core/render/textures.cpp:58-90",
+      "src/core/render/textures.cpp:609-626",
+      "src/core/middleware/com_radiance_client_proxy_vulkan_TextureProxy.cpp:16-26",
+      "src/core/middleware/com_radiance_client_proxy_vulkan_TextureProxy.cpp:87-97"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N14",
+    "topic": "旁观者 creeper/spider/invert 后处理",
+    "change": "新增三个 Vulkan 全屏效果与蜘蛛模糊路径，Java按三个内置资源路径选择；其它自定义 post effect 发警告并跳过。diagram 基础另见 C09。",
+    "category": "原版效果补齐",
+    "recommendation": "倾向保留三个已识别的旁观者效果；其它自定义后处理仍未接入，需明确边界。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/modules/ui_module.cpp:27-37",
+      "src/core/render/modules/ui_module.cpp:366-387",
+      "src/core/render/modules/ui_module.cpp:649-691",
+      "src/core/render/modules/ui_module.cpp:1413-1526",
+      "src/core/render/modules/ui_module.cpp:1664-2045",
+      "src/shader/overlay/post/spider.frag:42-73",
+      "src/core/middleware/com_radiance_client_proxy_vulkan_PipelineStateProxy_DiagramState.cpp:19-31",
+      "Radiance/src/main/java/com/radiance/mixins/vulkan_render_integration/GameRendererMixins.java:91-127"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N15",
+    "topic": "post-render target 与 shader 资源卫生",
+    "change": "动态 render pass 支持单一配置 color target、可选 depth attachment 和 extent guard；NameTag/Star target 删除；CMake 清理 stale SPIR-V、打包 priority；NRD 使用本地 GLSL compatibility subset。",
+    "category": "Shader编译/动态输出扩展",
+    "recommendation": "保留必要 Shader/CMake 适配；动态输出扩展与旧 pack 的相容性单独检查。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/modules/world/post_render/post_render_module.cpp:778-916",
+      "src/core/render/modules/world/post_render/post_render_module.cpp:1645-1779",
+      "src/shader/CMakeLists.txt:21-58",
+      "src/shader/CMakeLists.txt:95-113",
+      "src/shader/world/nrd/nrd_glsl_compat.glsl:1-99"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N16",
+    "topic": "Vulkan frame sync、错误状态与 pacing",
+    "change": "acquire/submit/present/recreate 等改为 VkResult，处理 OUT_OF_DATE/SUBOPTIMAL、fence/profile、atomic running/closed；CommandBuffer submit 传播错误；新增 timestamp/checkpoint backend 适配。maxFps limit 逻辑未改变。",
+    "category": "同步/错误防护",
+    "recommendation": "保留错误状态、交换链和同步防护；计时属于后端适配，不能夸大为新功能。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/render/render_framework.cpp:216-397",
+      "src/core/render/render_framework.cpp:440-633",
+      "src/core/vulkan/command.cpp:98",
+      "src/core/vulkan/command.cpp:277-316",
+      "src/core/render/render_framework.cpp:401-435"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N17",
+    "topic": "JNI 错误边界与 ABI",
+    "change": "C++ exception 通过 invoke* 转 Java IllegalStateException；frame lifecycle、screenshot、reload 等改为带 VkResult 的 *Native 方法，并增加 backend/failure 查询。",
+    "category": "JNI错误边界",
+    "recommendation": "保留明确的跨 JNI 错误传播；这些防护与详细诊断打印可以拆开。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/middleware/jni_exception.hpp:10-40",
+      "src/core/middleware/com_radiance_client_proxy_vulkan_RendererProxy.cpp:122-216",
+      "src/core/middleware/com_radiance_client_proxy_vulkan_RendererProxy.cpp:290-340",
+      "src/core/middleware/com_radiance_client_proxy_world_EntityProxy.cpp:7-63"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "N18",
+    "topic": "Vulkan allocation、image 与 borrowed window",
+    "change": "buffer allocation failure 转异常并清理 staging；image/swapchain destructor 对 null handle 和全部 views 做 guard；borrowed GLFW window 拒绝 null/non-NO_API 且不终止宿主，surface 由 Window 销毁。",
+    "category": "资源/窗口安全",
+    "recommendation": "保留空句柄、分配失败和 borrowed-window 生命周期防护。",
+    "verification": "源码差异和调用已确认；已有整体构建/单机运行证据，细项视觉、错误路径及组合仍待验收。",
+    "evidence": [
+      "src/core/vulkan/buffer.cpp:22-27",
+      "src/core/vulkan/buffer.cpp:226-235",
+      "src/core/vulkan/buffer.cpp:319-328",
+      "src/core/vulkan/image.cpp:66-69",
+      "src/core/vulkan/image.cpp:487-495",
+      "src/core/vulkan/window.cpp:30-51",
+      "src/core/all_extern.hpp:30-60"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "R01",
+    "topic": "DLSS 结果检查的已确认代码回归",
+    "change": "port 新增局部 result 后又传入同名变量的 NGX_RETURN_ON_FAIL 宏，宏内初始化遮蔽造成未初始化读取；上游原调用没有这一结构。",
+    "category": "port 引入的缺陷",
+    "recommendation": "优先单独修正；保留历史 reset 和真实错误检查，去掉错误的宏用法。",
+    "verification": "当前源码展开可确认，并有此前 MSVC C4700 编译告警；未证明是某次运行故障的根因。",
+    "evidence": [
+      "MCVR/src/core/render/modules/world/dlss/dlss_wrapper.cpp:94-99",
+      "MCVR/src/core/render/modules/world/dlss/dlss_wrapper.cpp:470-473"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "R02",
+    "topic": "辅助纹理级联释放缺口",
+    "change": "当前 base texture release 先删 _s/_n/_f 映射，再只向 native 释放 base ID；这条路径没有成组释放 auxiliary ID。上游原先连 base clearGlId 都取消，不能简单归类为新增完整泄漏修复。",
+    "category": "释放改进尚不完整",
+    "recommendation": "保留有效释放/上传防护，单独补齐辅助纹理生命周期；不整块回退到上游不释放的策略。",
+    "verification": "主任务已核对 Java映射/native释放路径；是否累计、数量和内存增长需循环运行测量。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/proxy/vulkan/TextureProxy.java:38-44",
+      "Radiance/src/main/java/com/radiance/client/texture/TextureTracker.java:17-26",
+      "MCVR/src/core/render/textures.cpp:609-626"
+    ],
+    "defaultRepo": "MCVR"
+  },
+  {
+    "id": "D01",
+    "topic": "Vulkan 重型故障诊断",
+    "change": "新增检查点、GPU 对象命名、地址绑定追踪和故障关联；MCVR_VULKAN_DIAGNOSTICS 默认开启，可设0/false关闭。",
+    "category": "检测/本地诊断",
+    "recommendation": "保留能力，倾向默认关闭重型追踪；保留实际错误返回检查。实际性能成本未测。",
+    "verification": "开关与调用链确定；无远程发送实现。",
+    "evidence": [
+      "MCVR/src/core/vulkan/instance.cpp:17",
+      "MCVR/src/core/vulkan/device.cpp:406",
+      "MCVR/src/core/vulkan/address_binding_tracker.hpp:52"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D02",
+    "topic": "设备丢失本地报告",
+    "change": "首次 device lost 收集队列/故障地址/厂商信息，输出stderr；有厂商二进制时写 mcvr-device-fault.bin。",
+    "category": "本地故障报告",
+    "recommendation": "保留错误诊断入口；详细地址和二进制落盘可作为调试选项。",
+    "verification": "明确本地日志/文件写入；不是设备自动恢复。",
+    "evidence": [
+      "MCVR/src/core/vulkan/device.cpp:538",
+      "MCVR/src/core/vulkan/device.cpp:608",
+      "MCVR/src/core/vulkan/device.cpp:653"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D03",
+    "topic": "Vulkan validation",
+    "change": "Release 默认关闭；MCVR_VULKAN_VALIDATION 非0值可开启；DEBUG 构建强制请求，层不可用会提示。",
+    "category": "开发检测",
+    "recommendation": "保留为开发开关；普通运行维持关闭。",
+    "verification": "开关与层可用性检查确定。",
+    "evidence": [
+      "MCVR/src/core/vulkan/instance.cpp:23",
+      "MCVR/src/core/vulkan/instance.cpp:208"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D04",
+    "topic": "NGX/DLSS 详细日志",
+    "change": "port 将原先未接入的 NGX callback 启用，输出带level/feature日志；新资源/视图还记录句柄、尺寸、格式和layout。",
+    "category": "本地SDK诊断",
+    "recommendation": "保留错误，详细回调/资源打印倾向默认关闭或按需开启；与 DLSS 功能分离。",
+    "verification": "自己的回调写stderr，资源打印写stdout；SDK内部网络行为未审计。",
+    "evidence": [
+      "MCVR/src/core/render/modules/world/dlss/dlss_wrapper.cpp:122",
+      "MCVR/src/core/render/modules/world/dlss/dlss_wrapper.cpp:153",
+      "MCVR/src/core/render/modules/world/dlss/dlss_wrapper.cpp:406"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D05",
+    "topic": "显存预算监测",
+    "change": "新增每帧入口调用预算采集，普通30秒输出一次，使用率>=80%时5秒，分配失败时强制输出。",
+    "category": "运行诊断",
+    "recommendation": "保留分配失败检查；周期日志可默认关闭/降级，必要时保留数据采集。",
+    "verification": "调用/间隔阈值确认；未测性能影响。",
+    "evidence": [
+      "MCVR/src/core/vulkan/vma.cpp:77",
+      "MCVR/src/core/render/render_framework.cpp:290",
+      "MCVR/src/core/vulkan/buffer.cpp:22"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D06",
+    "topic": "不支持绘制的丢弃报告",
+    "change": "RenderCaptureContract 按操作/作用域去重警告；世界 MeshData 或直接GL/FBO可能被拒绝/丢弃。",
+    "category": "兼容边界检测",
+    "recommendation": "保留诚实提示与资源清理；可调整日志级别，不能把关闭日志当成修复兼容。",
+    "verification": "静态分流确定，部分字符串/作用域单测存在。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/render/RenderCaptureContract.java:64",
+      "Radiance/src/main/java/com/radiance/client/render/RenderCaptureContract.java:106"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D07",
+    "topic": "粒子 CrashReport",
+    "change": "捕获粒子渲染异常，附加粒子/类型并抛出 Minecraft ReportedException；这种本地崩溃报告原本就存在于上游。",
+    "category": "上游错误报告保留",
+    "recommendation": "保留；不要仅因为含 report 字样就移除。",
+    "verification": "与上游对照确认，不含上传调用。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/proxy/world/EntityProxy.java:1055",
+      "Radiance/src/main/java/com/radiance/client/proxy/world/EntityProxy.java:1120"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D08",
+    "topic": "旧 OpenGL 信息捕获残留",
+    "change": "RendererDiagnostics.captureOpenGlStrings 当前未找到调用；backendString 仍被使用并回退到真实 Vulkan 信息。",
+    "category": "残留入口/有效后端诊断混合",
+    "recommendation": "保留有效后端查询；捕获缓存和旧说明可后续单独收敛。",
+    "verification": "全项目调用搜索确认；不是上报通道。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/proxy/vulkan/RendererDiagnostics.java:17",
+      "Radiance/src/main/java/com/radiance/client/proxy/vulkan/RendererDiagnostics.java:29"
+    ],
+    "defaultRepo": "Radiance"
+  },
+  {
+    "id": "D09",
+    "topic": "远程自动上报排查",
+    "change": "当前自己的 Java/C++ 未找到 HTTP/Socket/自定义网络包发送日志链；URL连接是JAR资源读取，metadata为网站链接，shader/config写入为本地文件。",
+    "category": "静态范围结论",
+    "recommendation": "目前按本地诊断治理；不将 SDK 闭源实现或 Minecraft/Loader 正常网络活动包括在无上传结论中。",
+    "verification": "扫描源码API并回读命中；没有进行网络抓包。",
+    "evidence": [
+      "Radiance/src/main/java/com/radiance/client/RadianceClient.java:150",
+      "Radiance/src/main/java/com/radiance/client/pipeline/ModuleEntry.java:57",
+      "Radiance/src/main/resources/META-INF/neoforge.mods.toml:4"
+    ],
+    "defaultRepo": "Radiance"
+  }
+]

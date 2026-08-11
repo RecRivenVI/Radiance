@@ -4,7 +4,9 @@ import com.mojang.blaze3d.platform.TextureUtil;
 import com.radiance.client.constant.VulkanConstants;
 import com.radiance.client.proxy.vulkan.TextureProxy;
 import com.radiance.mixin_related.extensions.vulkan_render_integration.IAbstractTextureExt;
-import net.minecraft.client.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.AbstractTexture;
+import net.minecraft.client.renderer.texture.MissingTextureAtlasSprite;
+import com.mojang.blaze3d.systems.RenderSystem;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.injection.At;
@@ -16,16 +18,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class AbstractTextureMixins implements IAbstractTextureExt {
 
     @Shadow
-    protected int glId;
+    protected int id;
 
-    @Inject(method = "bindTexture()V", at = @At(value = "HEAD"), cancellable = true)
-    public void cancelBindTexture(CallbackInfo ci) {
-        ci.cancel();
-    }
-
-    @Inject(method = "setFilter(ZZ)V", at = @At(value = "HEAD"), cancellable = true)
+    @Inject(method = "setFilter(ZZ)V",
+        at = @At(value = "INVOKE",
+            target = "Lnet/minecraft/client/renderer/texture/AbstractTexture;bind()V",
+            shift = At.Shift.AFTER),
+        cancellable = true)
     public void redirectSetFilter(boolean bilinear, boolean mipmap, CallbackInfo ci) {
-        TextureProxy.setFilter(glId,
+        TextureProxy.setFilter(id,
             (bilinear ? VulkanConstants.VkFilter.VK_FILTER_LINEAR :
                 VulkanConstants.VkFilter.VK_FILTER_NEAREST).getValue(),
             mipmap ? (bilinear
@@ -35,37 +36,36 @@ public class AbstractTextureMixins implements IAbstractTextureExt {
         ci.cancel();
     }
 
-    @Inject(method = "setClamp(Z)V", at = @At(value = "HEAD"), cancellable = true)
-    public void redirectSetClamp(boolean clamp, CallbackInfo ci) {
-        TextureProxy.setClamp(glId,
-            clamp
-                ? VulkanConstants.VkSamplerAddressMode.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE.getValue()
-                :
-                    VulkanConstants.VkSamplerAddressMode.VK_SAMPLER_ADDRESS_MODE_REPEAT.getValue());
-        ci.cancel();
-    }
-
-    @Inject(method = "clearGlId()V", at = @At(value = "HEAD"), cancellable = true)
-    public void cancelClearGlId(CallbackInfo ci) {
+    @Inject(method = "releaseId", at = @At(value = "HEAD"), cancellable = true)
+    public void releaseVulkanTextureId(CallbackInfo ci) {
+        synchronized (TextureProxy.class) {
+            var owner = TextureProxy.TASKS.owner(this.id);
+            this.id = -1;
+            TextureProxy.TASKS.submit(owner, false, work -> {
+                if (RenderSystem.isOnRenderThread()) work.run();
+                else RenderSystem.recordRenderCall(work::run);
+            }, () -> TextureProxy.releaseTextureId(owner, MissingTextureAtlasSprite.getTexture().getId()),
+                () -> {});
+        }
         ci.cancel();
     }
 
     @Override
     public int radiance$getGlIDUnsafe() {
-        if (this.glId < 0) {
-            throw new IllegalStateException("glId is not initialized");
+        if (this.id < 0) {
+            throw new IllegalStateException("Texture id is not initialized");
         }
-        return this.glId;
+        return this.id;
     }
 
-    @Inject(method = "Lnet/minecraft/client/texture/AbstractTexture;getGlId()I", at = @At(value = "HEAD"), cancellable = true)
-    public void redirectGetGlId(CallbackInfoReturnable<Integer> cir) {
-        synchronized (AbstractTextureMixins.class) {
-            if (this.glId == -1) {
-                this.glId = TextureUtil.generateTextureId();
+    @Inject(method = "getId", at = @At(value = "HEAD"), cancellable = true)
+    public void redirectGetId(CallbackInfoReturnable<Integer> cir) {
+        synchronized (TextureProxy.class) {
+            if (this.id == -1) {
+                this.id = TextureUtil.generateTextureId();
             }
 
-            cir.setReturnValue(this.glId);
+            cir.setReturnValue(this.id);
         }
     }
 }

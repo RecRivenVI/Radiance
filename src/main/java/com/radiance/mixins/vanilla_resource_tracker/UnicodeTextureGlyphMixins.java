@@ -1,15 +1,16 @@
 package com.radiance.mixins.vanilla_resource_tracker;
 
+import com.mojang.blaze3d.font.SheetGlyphInfo;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
 import com.radiance.client.proxy.vulkan.TextureProxy;
+import com.radiance.client.texture.AuxiliaryTextures;
 import com.radiance.mixin_related.extensions.vanilla_resource_tracker.IRenderableGlyphExt;
 import java.nio.IntBuffer;
 import java.util.function.Consumer;
 import java.util.function.Function;
-import net.minecraft.client.font.BakedGlyph;
-import net.minecraft.client.font.RenderableGlyph;
-import net.minecraft.client.font.UnihexFont;
-import net.minecraft.client.texture.NativeImage;
+import net.minecraft.client.gui.font.glyphs.BakedGlyph;
+import net.minecraft.client.gui.font.providers.UnihexProvider;
 import org.lwjgl.system.MemoryUtil;
 import org.spongepowered.asm.mixin.Final;
 import org.spongepowered.asm.mixin.Mixin;
@@ -17,12 +18,12 @@ import org.spongepowered.asm.mixin.Overwrite;
 import org.spongepowered.asm.mixin.Shadow;
 import org.spongepowered.asm.mixin.Unique;
 
-@Mixin(UnihexFont.UnicodeTextureGlyph.class)
+@Mixin(UnihexProvider.Glyph.class)
 public abstract class UnicodeTextureGlyphMixins {
 
     @Final
     @Shadow
-    public UnihexFont.BitmapGlyph contents;
+    public UnihexProvider.LineData contents;
 
     @Final
     @Shadow
@@ -62,6 +63,7 @@ public abstract class UnicodeTextureGlyphMixins {
             assert level == 0;
             TextureProxy.queueUpload(srcPointer, srcSizeInBytes, srcRowPixels, id, srcOffsetX,
                 srcOffsetY, offsetX, offsetY, width, height, 0);
+            AuxiliaryTextures.clearDynamicRegion(id, offsetX, offsetY, width, height);
         } finally {
             closer.accept(pixels);
         }
@@ -76,17 +78,17 @@ public abstract class UnicodeTextureGlyphMixins {
      * @reason to pass image targetID
      */
     @Overwrite
-    public BakedGlyph bake(Function<RenderableGlyph, BakedGlyph> function) {
+    public BakedGlyph bake(Function<SheetGlyphInfo, BakedGlyph> function) {
         return function.apply(new IRenderableGlyphExt() {
             public float getOversample() {
                 return 2.0F;
             }
 
-            public int getWidth() {
+            public int getPixelWidth() {
                 return width();
             }
 
-            public int getHeight() {
+            public int getPixelHeight() {
                 return 16;
             }
 
@@ -96,8 +98,10 @@ public abstract class UnicodeTextureGlyphMixins {
 
             @Override
             public void upload(int id, int u, int v) {
+                var owner = TextureProxy.TASKS.owner(id);
+                if (owner == null) throw new IllegalArgumentException("Target texture is not owned: " + id);
                 IntBuffer intBuffer = MemoryUtil.memAllocInt(width() * 16);
-                UnihexFont.addGlyphPixels(intBuffer, contents, left, right);
+                UnihexProvider.unpackBitsToBytes(intBuffer, contents, left, right);
                 intBuffer.rewind();
 
                 if (id < 0) {
@@ -115,16 +119,14 @@ public abstract class UnicodeTextureGlyphMixins {
                 IntBuffer pixels = intBuffer;
                 Consumer<IntBuffer> closer = MemoryUtil::memFree;
 
-                if (!RenderSystem.isOnRenderThreadOrInit()) {
-                    RenderSystem.recordRenderCall(
-                        () -> _upload(id, level, offsetX, offsetY, width, height, format, pixels,
-                            closer));
-                } else {
-                    _upload(id, level, offsetX, offsetY, width, height, format, pixels, closer);
-                }
+                TextureProxy.TASKS.submit(owner, true, work -> {
+                    if (RenderSystem.isOnRenderThreadOrInit()) work.run();
+                    else RenderSystem.recordRenderCall(work::run);
+                }, () -> _upload(id, level, offsetX, offsetY, width, height, format, pixels,
+                    ignored -> {}), () -> closer.accept(pixels));
             }
 
-            public boolean hasColor() {
+            public boolean isColored() {
                 return true;
             }
         });

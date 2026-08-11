@@ -1,0 +1,17 @@
+[
+  {
+    "Algorithm": "SHA256",
+    "Hash": "14507A23D2B0762AEABF9F9E8589C801F0337B275B3077DD2C7ABEB019B5AA6A",
+    "Path": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance\\build\\libs\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "14507A23D2B0762AEABF9F9E8589C801F0337B275B3077DD2C7ABEB019B5AA6A",
+    "Path": "E:\\Minecraft\\PrismLauncherDev\\instances\\Radiance Test\\minecraft\\mods\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar"
+  },
+  {
+    "Algorithm": "SHA256",
+    "Hash": "14507A23D2B0762AEABF9F9E8589C801F0337B275B3077DD2C7ABEB019B5AA6A",
+    "Path": "D:\\Workspaces\\Repositories\\GitHub\\RecRivenVI\\Radiance\\run\\ponder-readback-20260918-144319\\full\\mods\\Radiance-0.1.5-alpha-neoforge-1.21.1.jar"
+  }
+]

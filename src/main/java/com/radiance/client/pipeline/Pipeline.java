@@ -5,8 +5,6 @@ import com.radiance.client.constant.VulkanConstants;
 import com.radiance.client.option.Options;
 import com.radiance.client.pipeline.config.AttributeConfig;
 import com.radiance.client.pipeline.config.ImageConfig;
-import net.minecraft.client.MinecraftClient;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.ByteBuffer;
@@ -25,7 +23,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
-
+import net.minecraft.client.Minecraft;
 import org.lwjgl.system.MemoryUtil;
 import org.yaml.snakeyaml.DumperOptions;
 import org.yaml.snakeyaml.LoaderOptions;
@@ -47,6 +45,7 @@ public class Pipeline {
     private static final String SHADER_PACK_MANIFEST_KEY = "radiance";
     private static final String SHADER_PACK_MANIFEST_TYPE_KEY = "shader_pack";
     private static final String SHADER_PACK_MANIFEST_DISPLAY_NAME_KEY = "display_name";
+    private static final String DLSS_SR_MODULE_NAME = "render_pipeline.module.dlss_sr.name";
     private static final String DLSS_MODULE_NAME = "render_pipeline.module.dlss.name";
     private static final String NRD_MODULE_NAME = "render_pipeline.module.nrd.name";
     private static final String TEMPORAL_ACCUMULATION_MODULE_NAME = "render_pipeline.module.temporal_accumulation.name";
@@ -150,6 +149,10 @@ public class Pipeline {
                     POST_RENDER_MODULE_NAME);
         }
 
+        if (Objects.equals(presetName, Presets.RT_NRD_DLSS.key)) {
+            return areModulesAvailable(RAY_TRACING_MODULE_NAME, NRD_MODULE_NAME, DLSS_SR_MODULE_NAME,
+                TONE_MAPPING_MODULE_NAME, POST_RENDER_MODULE_NAME);
+        }
         if (Objects.equals(presetName, Presets.RT_NRD_FSR.key)) {
             return areModulesAvailable(
                     RAY_TRACING_MODULE_NAME,
@@ -194,7 +197,7 @@ public class Pipeline {
         }
 
         if (reason != null && !reason.isEmpty()) {
-            RadianceClient.LOGGER.warn(reason + " Fallback preset: " + fallbackPresetName);
+            RadianceClient.LOGGER.warn("{} Fallback preset: {}", reason, fallbackPresetName);
         }
         assemblePresetByKeyInternal(fallbackPresetName);
     }
@@ -320,12 +323,12 @@ public class Pipeline {
     }
 
     private static Path getMinecraftShaderPackDirectory() {
-        MinecraftClient client = MinecraftClient.getInstance();
-        if (client == null || client.runDirectory == null) {
+        Minecraft client = Minecraft.getInstance();
+        if (client == null || client.gameDirectory == null) {
             return null;
         }
 
-        Path shaderPackDirectory = client.runDirectory.toPath().resolve(MINECRAFT_SHADER_PACK_DIRECTORY);
+        Path shaderPackDirectory = client.gameDirectory.toPath().resolve(MINECRAFT_SHADER_PACK_DIRECTORY);
         try {
             Files.createDirectories(shaderPackDirectory);
         } catch (IOException e) {
@@ -660,6 +663,10 @@ public class Pipeline {
     }
 
     public static void build() {
+        build(true);
+    }
+
+    private static void build(boolean saveOnSuccess) {
         boolean built = false;
         try {
             buildInternal();
@@ -668,9 +675,14 @@ public class Pipeline {
             RadianceClient.LOGGER.error("Failed to build render pipeline.", e);
             if (isPipelineCompatibilityFailure(e) && tryRebuildCompatiblePipeline(e)) {
                 built = true;
+            } else {
+                if (e instanceof RuntimeException runtimeException) {
+                    throw runtimeException;
+                }
+                throw new RuntimeException("Failed to build render pipeline", e);
             }
         } finally {
-            if (built) {
+            if (built && saveOnSuccess) {
                 savePipeline();
             }
         }
@@ -1153,6 +1165,109 @@ public class Pipeline {
         connectOutput(postRenderModule.getOutputImageConfig("post_rendered"));
     }
 
+    private static void assembleNRDDLSSInternal() {
+        clear();
+
+        Module rayTracingModule = addModule(RAY_TRACING_MODULE_NAME);
+
+        Module denoiserModule = addModule(NRD_MODULE_NAME);
+
+        Module upscalerModule = addModule(DLSS_SR_MODULE_NAME);
+
+        Module toneMappingModule = addModule(TONE_MAPPING_MODULE_NAME);
+
+        Module postRenderModule = addModule(POST_RENDER_MODULE_NAME);
+
+        rayTracingModule.x = 100;
+        rayTracingModule.y = 220;
+        denoiserModule.x = 380;
+        denoiserModule.y = 120;
+        upscalerModule.x = 660;
+        upscalerModule.y = 220;
+        toneMappingModule.x = 940;
+        toneMappingModule.y = 120;
+        postRenderModule.x = 940;
+        postRenderModule.y = 300;
+
+        INSTANCE.activePresetName = Presets.RT_NRD_DLSS.key;
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_diffuse_indirect_light"),
+                denoiserModule.getInputImageConfig("diffuse_radiance"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_specular"),
+                denoiserModule.getInputImageConfig("specular_radiance"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_diffuse_direct_light"),
+                denoiserModule.getInputImageConfig("direct_radiance"));
+
+        connect(rayTracingModule.getOutputImageConfig("diffuse_albedo_metallic"),
+                denoiserModule.getInputImageConfig("diffuse_albedo"));
+
+        connect(rayTracingModule.getOutputImageConfig("specular_albedo"),
+                denoiserModule.getInputImageConfig("specular_albedo"));
+
+        connect(rayTracingModule.getOutputImageConfig("normal_roughness"),
+                denoiserModule.getInputImageConfig("normal_roughness"));
+
+        connect(rayTracingModule.getOutputImageConfig("motion_vector"),
+                denoiserModule.getInputImageConfig("motion_vector"));
+
+        connect(rayTracingModule.getOutputImageConfig("linear_depth"),
+                denoiserModule.getInputImageConfig("linear_depth"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_depth"),
+                denoiserModule.getInputImageConfig("diffuseHitDepthImage"));
+
+        connect(rayTracingModule.getOutputImageConfig("specular_hit_depth"),
+                denoiserModule.getInputImageConfig("specularHitDepthImage"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_clear"),
+                denoiserModule.getInputImageConfig("first_hit_clear"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_base_emission"),
+                denoiserModule.getInputImageConfig("first_hit_base_emission"));
+
+        connect(rayTracingModule.getOutputImageConfig("fog_image"),
+                denoiserModule.getInputImageConfig("fog_image"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_refraction"),
+                denoiserModule.getInputImageConfig("first_hit_refraction"));
+
+        for (String guide : java.util.List.of("diffuse_albedo_metallic", "specular_albedo", "specular_hit_depth")) {
+            connect(rayTracingModule.getOutputImageConfig(guide), upscalerModule.getInputImageConfig(guide));
+        }
+
+        connect(denoiserModule.getOutputImageConfig("denoised_radiance"),
+                upscalerModule.getInputImageConfig("radiance"));
+
+        connect(rayTracingModule.getOutputImageConfig("linear_depth"),
+                upscalerModule.getInputImageConfig("linear_depth"));
+
+        connect(rayTracingModule.getOutputImageConfig("first_hit_depth"),
+                upscalerModule.getInputImageConfig("first_hit_depth"));
+
+        connect(rayTracingModule.getOutputImageConfig("motion_vector"),
+                upscalerModule.getInputImageConfig("motion_vector"));
+        connect(rayTracingModule.getOutputImageConfig("normal_roughness"),
+                upscalerModule.getInputImageConfig("normal_roughness"));
+
+        connect(upscalerModule.getOutputImageConfig("processed"),
+                toneMappingModule.getInputImageConfig("denoised_radiance"));
+        connect(upscalerModule.getOutputImageConfig("processed"),
+                postRenderModule.getInputImageConfig("hdr_input"));
+        connect(upscalerModule.getOutputImageConfig("upscaled_first_hit_depth"),
+                postRenderModule.getInputImageConfig("first_hit_depth"));
+        connect(upscalerModule.getOutputImageConfig("upscaled_motion_vector"),
+                postRenderModule.getInputImageConfig("motion_vector"));
+        connect(upscalerModule.getOutputImageConfig("upscaled_normal_roughness"),
+                postRenderModule.getInputImageConfig("normal_roughness"));
+
+        connect(toneMappingModule.getOutputImageConfig("mapped_output"),
+                postRenderModule.getInputImageConfig("ldr_input"));
+
+        connectOutput(postRenderModule.getOutputImageConfig("post_rendered"));
+    }
+
     private static void assembleNRDXESSInternal() {
         clear();
 
@@ -1366,6 +1481,10 @@ public class Pipeline {
             return;
         }
 
+        if (Objects.equals(presetName, Presets.RT_NRD_DLSS.key)) {
+            assembleNRDDLSSInternal();
+            return;
+        }
         if (Objects.equals(presetName, Presets.RT_NRD_FSR.key)) {
             assembleNRDFSRInternal();
             return;
@@ -1390,17 +1509,17 @@ public class Pipeline {
     public static native boolean isNativeRebuildActive();
 
     private static String getCurrentLanguageCode() {
-        MinecraftClient client = MinecraftClient.getInstance();
+        Minecraft client = Minecraft.getInstance();
         if (client != null) {
             var languageManager = client.getLanguageManager();
             if (languageManager != null) {
-                String language = languageManager.getLanguage();
+                String language = languageManager.getSelected();
                 if (language != null && !language.isBlank()) {
                     return language.toLowerCase(Locale.ROOT);
                 }
             }
-            if (client.options != null && client.options.language != null && !client.options.language.isBlank()) {
-                return client.options.language.toLowerCase(Locale.ROOT);
+            if (client.options != null && client.options.languageCode != null && !client.options.languageCode.isBlank()) {
+                return client.options.languageCode.toLowerCase(Locale.ROOT);
             }
         }
 
@@ -1699,6 +1818,7 @@ public class Pipeline {
 
         if (!Objects.equals(requestedPresetName, Presets.RT_DLSSRR.key)
                 && !Objects.equals(requestedPresetName, Presets.RT_NRD.key)
+                && !Objects.equals(requestedPresetName, Presets.RT_NRD_DLSS.key)
                 && !Objects.equals(requestedPresetName, Presets.RT_NRD_FSR.key)
                 && !Objects.equals(requestedPresetName, Presets.RT_NRD_XESS.key)) {
             requestedPresetName = Presets.RT_DLSSRR.key;

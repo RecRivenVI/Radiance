@@ -1,0 +1,18 @@
+[
+  {
+    "repo": "Radiance",
+    "path": "D:/Workspaces/Repositories/GitHub/RecRivenVI/Radiance",
+    "baseline": "414d8e330a2fc6cb1e8630cc95f2302b2b97a0e8",
+    "source": "9fe7811cf8b27f97b8b77307e982e3cc3942aee5",
+    "head": "414d8e330a2fc6cb1e8630cc95f2302b2b97a0e8",
+    "branch": "1.21.1-neoforge"
+  },
+  {
+    "repo": "MCVR",
+    "path": "D:/Workspaces/Repositories/GitHub/RecRivenVI/MCVR",
+    "baseline": "9905c81b1999f5845bf66d13501d371c16adf561",
+    "source": "b611d24a044384290beaf93131ad51bf14e3d107",
+    "head": "9905c81b1999f5845bf66d13501d371c16adf561",
+    "branch": "develop"
+  }
+]

@@ -1,0 +1,45 @@
+{
+  "status": "REJECTED_IMPLEMENTATION",
+  "userObservation": {
+    "guiFrameRate": "FAIL_APPROX_1_FPS",
+    "guiVisualCorrectness": "FAIL_WIDESPREAD_ARTIFACTS",
+    "nativeTranslationCorrectness": "UNTRUSTED_REQUALIFICATION_REQUIRED",
+    "m4UserAcceptance": "FAIL",
+    "m4Complete": false
+  },
+  "runtime": {
+    "pid": 21744,
+    "target": "1.21.1-neoforge",
+    "loader": "NeoForge 21.1.248",
+    "role": "PRIMARY",
+    "profile": "S1",
+    "resolution": "2560x1440",
+    "startedLocal": "2026-08-24T12:08:46+08:00",
+    "workingSetBytesBeforeStop": 1551970304,
+    "cpuSecondsBeforeStop": 683.109375,
+    "stoppedAfterOwnershipAudit": true
+  },
+  "frameSamples": [
+    {"frame": 128, "timestampUtc": "2026-08-24T04:10:23.005566700Z"},
+    {"frame": 256, "timestampUtc": "2026-08-24T04:12:03.597396000Z", "intervalFps": 1.272469},
+    {"frame": 512, "timestampUtc": "2026-08-24T04:15:24.356528200Z", "intervalFps": 1.275161}
+  ],
+  "minimumObservedCounts": {
+    "nativeImageBaseUploads": 131072,
+    "nativeImageMipMetadataCalls": 524288,
+    "bufferUploaderDrawCalls": 16384,
+    "bindTextureCalls": 65536,
+    "presentedFrames": 512
+  },
+  "architectureFindings": {
+    "cpuRasterResidual": true,
+    "vulkanGraphicsPipelineForM4": false,
+    "fullFrameCpuUpload": true,
+    "normalFrameDeviceWaitIdle": true,
+    "reflectivePerCallBridge": true,
+    "synchronousNativeLogOpenPerEvent": true,
+    "validationLayerInstrumented": false
+  },
+  "commitsCreated": 0
+}
+

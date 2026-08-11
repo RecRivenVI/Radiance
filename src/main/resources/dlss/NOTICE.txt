@@ -1,0 +1,4 @@
+NVIDIA DLSS SDK v310.9.1 Windows x86-64 release runtime.
+Source: https://github.com/NVIDIA/DLSS/tree/374959484e79a640feaba44c93ac8cfb0a03f5b5/lib/Windows_x86_64/rel
+Distributed under the accompanying NVIDIA LICENSE.txt.
+Hashes, signer and source URLs are recorded in runtime-manifest.json.

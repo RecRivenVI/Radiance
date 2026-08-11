@@ -1,10 +1,10 @@
 package com.radiance.mixins.vanilla_resource_tracker;
 
 import com.llamalad7.mixinextras.sugar.Local;
+import com.mojang.blaze3d.platform.NativeImage;
 import com.radiance.mixin_related.extensions.vanilla_resource_tracker.INativeImageExt;
 import com.radiance.mixin_related.extensions.vanilla_resource_tracker.ISpriteContentsExt;
-import net.minecraft.client.texture.NativeImage;
-import net.minecraft.client.texture.SpriteContents;
+import net.minecraft.client.renderer.texture.SpriteContents;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.Unique;
 import org.spongepowered.asm.mixin.injection.At;
@@ -17,6 +17,9 @@ public class SpriteContentsMixins implements ISpriteContentsExt {
     @Unique
     private int targetID;
 
+    @Unique
+    private com.radiance.client.texture.TextureTasks.Owner targetOwner;
+
     @Override
     public int radiance$getTargetID() {
         return targetID;
@@ -25,10 +28,16 @@ public class SpriteContentsMixins implements ISpriteContentsExt {
     @Override
     public void radiance$setTargetID(int targetID) {
         this.targetID = targetID;
+        this.targetOwner = com.radiance.client.proxy.vulkan.TextureProxy.TASKS.owner(targetID);
     }
 
-    @Inject(method = "upload(IIII[Lnet/minecraft/client/texture/NativeImage;)V",
-        at = @At(value = "INVOKE", target = "Lnet/minecraft/client/texture/NativeImage;upload(IIIIIIIZ)V"))
+    @Inject(
+        method = "upload(IIII[Lcom/mojang/blaze3d/platform/NativeImage;)V",
+        at = @At(
+            value = "INVOKE",
+            target = "Lcom/mojang/blaze3d/platform/NativeImage;upload(IIIIIIIZZ)V"
+        )
+    )
     public void setImageTargetIDBeforeUpload(int x,
         int y,
         int unpackSkipPixels,
@@ -36,6 +45,6 @@ public class SpriteContentsMixins implements ISpriteContentsExt {
         NativeImage[] images,
         CallbackInfo ci,
         @Local(index = 6) int i) {
-        ((INativeImageExt) (Object) images[i]).radiance$setTargetID(this.targetID);
+        ((INativeImageExt) (Object) images[i]).radiance$setTargetOwner(this.targetOwner);
     }
 }

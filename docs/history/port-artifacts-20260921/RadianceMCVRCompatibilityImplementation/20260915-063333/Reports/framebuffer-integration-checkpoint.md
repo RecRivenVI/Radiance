@@ -1,0 +1,19 @@
+# 公共Framebuffer集成检查点（未完成）
+
+根负责Java/JNI和UIModule接入；Sol正在实现资源层，拥有framebuffers.hpp/cpp、textures.hpp/cpp、renderer.hpp/cpp及直接测试，勿并发修改这些文件。hpp已落盘，含Framebuffers::Snapshot/ResolvedAttachment、drawBuffers/readBuffer。
+
+已写Java FramebufferProxy native声明（尚待JNI实现）；OpenGlFramebufferCompatibilityMixins由synthetic/reject改调用这些真实API；RadianceClient.GAME_NATIVE_OWNERS新增FramebufferProxy。当前不要把声明接线当成功，必须实现全部native后再构建验收。
+
+资源层0/default返回UNDEFINED，由根JNI/UI从实际context默认图像填Snapshot；不得无条件COMPLETE。纹理0已由Sol保留作无绑定，分配从1起，与现有JavaPBR判断一致。专用attachment storage可创建color/depth/stencil，depth采样默认view与combined附件view分开；当前单采样，纯S8与多采样暂明确不支持，需后续按消费者补齐，不报成功。
+
+待根实现：
+1. 新com_radiance_client_proxy_vulkan_FramebufferProxy.cpp，异常经jni::invokeVoid传播，registry未初始化不可返回0伪成功。FramebufferProxy Java签名以文件为准。create/delete/bind/attach/status/drawBuffers/readBuffer/storage可直接用新Framebuffers。
+2. UIModule动态目标：新FRAMEBUFFER_DRAW模式、当前Snapshot及RenderPass/Framebuffer；bind/delete/attach前结束活跃pass；target key包含真实attachment view/generation、formats、draw slots。dynamic shader持有已编译shaders和vertex layout，按pass兼容key创建pipeline变体；不能沿用默认RGBA16F pass去画RGBA8附件。
+3. draw/clear都使用实际target extent/attachments与draw slots；scissor、viewport、blend/depth/stencil需要按target正确应用。渲染后转sample/transfer布局并retain image/pass/framebuffer到本帧完成。
+4. blit/readback需结束pass、正确barrier/region/filter/aspect和生命周期。default/main读取需真实world+UI表示，不能把空overlay冒充主画面。
+5. RenderTarget原版createBuffers会直接_texParameter/_texImage2D，目前尚无完整拦截；需真实attachment allocation，先storage后sampler，恢复Ponder init消费链后才移除取消Mixin。OutputStateShard空操作也只在target安全后移除。
+6. MainTarget当前由Unsafe构造且clearChannels未初始化，bind/resize/clear/blit被跳过；需要实际默认目标别名/合法构造与texture/depth访问。尚未整改，不能声称MainTarget完整。
+
+后续直接GL（Veil等）须按实际源码消费者接同一资源/状态能力，不引入假GL context；当前仅GlStateManager路线。
+
+已读：RenderTarget1.21.1源码、UIModule::registerOverlayDrawShader/switchOverlayDraw/clear/draw/end、Textures::initializeTexture。World/Dimension MeshData设计由Luna decision_loader_create负责，根不重复其调查。
