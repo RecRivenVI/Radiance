@@ -270,6 +270,13 @@ public class EntityProxy {
         boolean post,
         EntityRenderDataList entityRenderDataList) {
         Map<RenderType, VertexConsumer> layerBuffers = storageVertexConsumerProvider.getLayers();
+        var rigidDraws = storageVertexConsumerProvider.takeRigidModels();
+        for (var draw : rigidDraws) {
+            if (post || prebuiltBLAS >= 0 || contentNameResolver != null)
+                throw new IllegalStateException("Rigid model reached a non-world consumer");
+            draw.locate(entityPosX, entityPosY, entityPosZ, rayTracingFlag, reflect, rigidDraws.size());
+            entityRenderDataList.rigidDraws.add(draw);
+        }
         EntityRenderData
             entityRenderData =
             new EntityRenderData(hashCode, entityPosX, entityPosY,
@@ -339,6 +346,7 @@ public class EntityProxy {
                 .tickRateManager();
 
         List<StorageVertexConsumerProvider> entityStorageVertexConsumerProviders = new ArrayList<>();
+        com.radiance.client.vertex.RigidModelCapture.beginFrame(client.level);
         EntityRenderDataList entityRenderDataList = new EntityRenderDataList();
         List<StorageVertexConsumerProvider> debugLineStorageVertexConsumerProviders = new ArrayList<>();
         EntityRenderDataList debugLineRenderDataList = new EntityRenderDataList();
@@ -353,6 +361,7 @@ public class EntityProxy {
             StorageVertexConsumerProvider entityStorageVertexConsumerProvider = new StorageVertexConsumerProvider(
                 786432);
             entityStorageVertexConsumerProviders.add(entityStorageVertexConsumerProvider);
+            entityStorageVertexConsumerProvider.enableRigidModels(entity.getId());
             StorageVertexConsumerProvider cameraRelativeStorageVertexConsumerProvider =
                 new StorageVertexConsumerProvider(16384);
 
@@ -1781,10 +1790,9 @@ public class EntityProxy {
             textureManager =
             Minecraft.getInstance()
                 .getTextureManager();
-        List<ByteBuffer> geometryGroupNameBuffers = new ArrayList<>(
-            entityRenderDataList.getTotalLayersCount());
-        List<ByteBuffer> geometryContentNameBuffers = new ArrayList<>(
-            entityRenderDataList.getTotalLayersCount());
+        // Native queueBuild copies names before returning. Reuse equal strings only within
+        // this submission; a later frame/reload or nested call owns a separate table.
+        SubmissionStrings submissionStrings = new SubmissionStrings();
         ByteBuffer entityHashCodeBB = null;
         ByteBuffer entityPosXBB = null;
         ByteBuffer entityPosYBB = null;
@@ -1806,6 +1814,7 @@ public class EntityProxy {
 
         try {
             int entityHashCodeSize = entityRenderDataList.getTotalEntityCount() * Integer.BYTES;
+            for (var draw : entityRenderDataList.rigidDraws) draw.submit();
             entityHashCodeBB = MemoryUtil.memAlloc(entityHashCodeSize);
             long entityHashCodeAddr = memAddress(entityHashCodeBB);
             int entityHashCodeBaseAddr = 0;
@@ -1969,16 +1978,12 @@ public class EntityProxy {
                         PBRVertexConsumer.normalizeTextLayerName(renderLayer.name);
                     String geometryGroupName = geometryGroupName(
                         entityRenderLayer.contentName(), normalizedLayerName);
-                    ByteBuffer geometryGroupNameBuffer = MemoryUtil.memUTF8(geometryGroupName, true);
-                    geometryGroupNameBuffers.add(geometryGroupNameBuffer);
-                    geometryGroupNameBB.putLong(geometryGroupNameBaseAddr, memAddress(geometryGroupNameBuffer));
+                    geometryGroupNameBB.putLong(geometryGroupNameBaseAddr,
+                        submissionStrings.address(geometryGroupName));
                     geometryGroupNameBaseAddr += Long.BYTES;
 
-                    ByteBuffer geometryContentNameBuffer = MemoryUtil.memUTF8(
-                        entityRenderLayer.contentName(), true);
-                    geometryContentNameBuffers.add(geometryContentNameBuffer);
                     geometryContentNameBB.putLong(geometryContentNameBaseAddr,
-                        memAddress(geometryContentNameBuffer));
+                        submissionStrings.address(entityRenderLayer.contentName()));
                     geometryContentNameBaseAddr += Long.BYTES;
 
                     geometryTextureBB.putInt(geometryTextureBaseAddr, geometryTextureID);
@@ -2041,12 +2046,7 @@ public class EntityProxy {
             freeDirectBuffer(indexFormatBB);
             freeDirectBuffer(vertexCountBB);
             freeDirectBuffer(verticesBB);
-            for (ByteBuffer geometryGroupNameBuffer : geometryGroupNameBuffers) {
-                MemoryUtil.memFree(geometryGroupNameBuffer);
-            }
-            for (ByteBuffer geometryContentNameBuffer : geometryContentNameBuffers) {
-                MemoryUtil.memFree(geometryContentNameBuffer);
-            }
+            submissionStrings.close();
 
             if (closeAfterBuild) {
                 closeBuiltBuffers(entityRenderDataList);
@@ -2315,6 +2315,7 @@ public class EntityProxy {
     }
 
     public static class EntityRenderDataList extends ArrayList<EntityRenderData> {
+        final java.util.List<com.radiance.client.vertex.RigidModelCapture.Draw> rigidDraws = new ArrayList<>();
 
         private int totalLayersCount;
 
@@ -2332,4 +2333,7 @@ public class EntityProxy {
             return this.size();
         }
     }
+
+    public static native void queueRigidModel(long model, long instance, int geometryType, int texture,
+        long vertices, int vertexCount, double x, double y, double z, int mask, long matrix, long group);
 }

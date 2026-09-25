@@ -1,7 +1,30 @@
 #include <utility>
 #include "collector.hpp"
+#include "profile_collector.hpp"
 #include <jni.h>
 #include <windows.h>
+
+static McvrProfileFrame profileFrame = nullptr;
+extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_audit_NativeDiagnostics_installProfile(JNIEnv *, jclass) {
+    HMODULE core = GetModuleHandleW(L"core.dll");
+    if (!core) return JNI_FALSE;
+    auto install = reinterpret_cast<McvrInstallProfileSink>(GetProcAddress(core, "mcvrInstallProfileSink"));
+    auto frame = reinterpret_cast<McvrProfileFrame>(GetProcAddress(core, "mcvrProfileFrame"));
+    if (!install || !frame) return JNI_FALSE;
+    static const McvrProfileSink sink{MCVR_PROFILE_ABI, sizeof(McvrProfileSink), radiance::audit::profile::sample};
+    if (!install(&sink)) return JNI_FALSE;
+    profileFrame = frame;
+    return JNI_TRUE;
+}
+extern "C" JNIEXPORT void JNICALL Java_com_radiance_audit_NativeDiagnostics_profileFrame(JNIEnv *, jclass, jlong frame, jboolean active) {
+    if (profileFrame) profileFrame(static_cast<uint64_t>(frame), active);
+}
+extern "C" JNIEXPORT jstring JNICALL Java_com_radiance_audit_NativeDiagnostics_drainProfile(JNIEnv *env, jclass) {
+    try {
+        auto text = radiance::audit::profile::queue().drain();
+        return text.empty() ? nullptr : env->NewStringUTF(text.c_str());
+    } catch (...) { ++mcvr::diag::dropped; return nullptr; }
+}
 
 extern "C" JNIEXPORT jboolean JNICALL Java_com_radiance_audit_NativeDiagnostics_install(
     JNIEnv *, jclass, jint flags) {

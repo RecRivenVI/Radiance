@@ -40,6 +40,14 @@ import org.joml.Vector3f;
 import org.lwjgl.system.MemoryUtil;
 
 public class PBRVertexConsumer implements VertexConsumer {
+    StorageVertexConsumerProvider rigidOwner;
+    RenderType rigidLayer;
+    int rigidTexture() { return textureID; }
+    boolean rigidEligible() {
+        return building && baseX == 0 && baseY == 0 && baseZ == 0 && defaultAlbedoEmission == 0
+            && PBRMaterialContext.albedoEmission() == 0 && !PBRMaterialContext.entityTransmissionActive()
+            && !PBRMaterialContext.blockTransmissionActive() && !textPolygonOffsetLayer;
+    }
 
     private static final boolean LITTLE_ENDIAN = ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN;
     private static final int ALPHA_MODE_OPAQUE = 0;

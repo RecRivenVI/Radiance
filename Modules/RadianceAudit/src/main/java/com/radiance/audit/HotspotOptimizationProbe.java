@@ -24,6 +24,7 @@ public final class HotspotOptimizationProbe {
     private static BlockPos testPosition;
     private static BlockState original;
     private static CompletableFuture<?> operation;
+    private static volatile java.util.UUID sublevelId;
 
     public static boolean poll(Minecraft mc) {
         if (!ENABLED) return false;
@@ -43,6 +44,7 @@ public final class HotspotOptimizationProbe {
             if (operation != null) { operation.join(); operation = null; }
             switch (step++) {
                 case 0 -> {
+                    MaterialStateProbe.run(mc, "initial");
                     verifyIndex(mc, "initial", false);
                     var server = mc.getSingleplayerServer();
                     if (server == null) throw new IllegalStateException("Requires isolated integrated server");
@@ -53,6 +55,8 @@ public final class HotspotOptimizationProbe {
                         if (level.getBlockEntity(testPosition) != null)
                             throw new IllegalStateException("Fixture must not overwrite a block entity");
                         level.setBlock(testPosition, Blocks.CHEST.defaultBlockState(), 3);
+                        if ("1".equals(ExperimentAccess.getenv("RADIANCE_REGRESSION_SABLE")))
+                            assembleSublevel(level, testPosition.above(8));
                     }, server);
                     next = now + 10_000_000_000L;
                 }
@@ -70,6 +74,7 @@ public final class HotspotOptimizationProbe {
                     next = now + 20_000_000_000L;
                 }
                 case 3 -> {
+                    MaterialStateProbe.run(mc, "after-reload");
                     verifyIndex(mc, "after-F3+T", false);
                     mc.levelRenderer.allChanged();
                     LOG.info("HOTSPOT_REGRESSION F3+A requested");
@@ -87,6 +92,7 @@ public final class HotspotOptimizationProbe {
                     next = now + 10_000_000_000L;
                 }
                 case 6 -> {
+                    MaterialStateProbe.run(mc, "final");
                     verifyIndex(mc, "final", false);
                     LOG.info("HOTSPOT_REGRESSION PASS elapsed={} stages=7; no visual approval",
                         (now - entered) / 1e9);
@@ -101,7 +107,38 @@ public final class HotspotOptimizationProbe {
         return true;
     }
 
+    private static void assembleSublevel(net.minecraft.server.level.ServerLevel level, BlockPos origin) {
+        try {
+            var blocks = List.of(origin, origin.offset(1, 0, 0), origin.offset(2, 0, 0));
+            for (var pos : blocks)
+                if (!level.getBlockState(pos).isAir()) throw new IllegalStateException("Sable fixture area occupied " + pos);
+            level.setBlock(blocks.get(0), Blocks.IRON_BLOCK.defaultBlockState(), 3);
+            level.setBlock(blocks.get(1), Blocks.OAK_LEAVES.defaultBlockState()
+                .setValue(net.minecraft.world.level.block.LeavesBlock.PERSISTENT, true), 3);
+            level.setBlock(blocks.get(2), Blocks.RED_STAINED_GLASS.defaultBlockState(), 3);
+            Object bounds = Class.forName("dev.ryanhcode.sable.companion.math.BoundingBox3i")
+                .getConstructor(int.class, int.class, int.class, int.class, int.class, int.class)
+                .newInstance(origin.getX(), origin.getY(), origin.getZ(), origin.getX()+2, origin.getY(), origin.getZ());
+            Object sublevel = Class.forName("dev.ryanhcode.sable.api.SubLevelAssemblyHelper")
+                .getMethod("assembleBlocks", net.minecraft.server.level.ServerLevel.class,
+                    BlockPos.class, Iterable.class, Class.forName("dev.ryanhcode.sable.companion.math.BoundingBox3ic"))
+                .invoke(null, level, origin, blocks, bounds);
+            sublevelId = (java.util.UUID) sublevel.getClass().getMethod("getUniqueId").invoke(sublevel);
+            LOG.info("HOTSPOT_REGRESSION assembled Sable id={} origin={} mixedMaterials=3", sublevelId, origin);
+        } catch (ReflectiveOperationException failure) { throw new IllegalStateException("Sable fixture assembly", failure); }
+    }
+
     private static void verifyIndex(Minecraft mc, String stage, boolean expectChest) throws Exception {
+        if (sublevelId != null) {
+            Object container = Class.forName("dev.ryanhcode.sable.api.sublevel.SubLevelContainer")
+                .getMethod("getContainer", net.minecraft.world.level.Level.class).invoke(null, mc.level);
+            var sublevels = (java.util.Collection<?>) container.getClass().getMethod("getAllSubLevels").invoke(container);
+            boolean found = false;
+            for (Object sublevel : sublevels)
+                found |= sublevelId.equals(sublevel.getClass().getMethod("getUniqueId").invoke(sublevel));
+            if (!found) throw new IllegalStateException("Sable fixture not delivered to client");
+            LOG.info("HOTSPOT_REGRESSION Sable delivered stage={} id={}", stage, sublevelId);
+        }
         var area = ((LevelRendererAccessor) mc.levelRenderer).radianceAudit$getViewArea();
         var field = ChunkProxy.class.getDeclaredField("blockEntitySections"); field.setAccessible(true);
         Object index = field.get(null);
@@ -132,6 +169,10 @@ public final class HotspotOptimizationProbe {
                     + actual.size() + " chest=" + chest + " expectedChest=" + expectChest);
             LOG.info("HOTSPOT_REGRESSION index-match stage={} fullSlots={} active={} chest={}",
                 stage, area.sections.length, actual.size(), chest);
+        }
+        if ("1".equals(ExperimentAccess.getenv("RADIANCE_REGRESSION_SCREENSHOTS"))) {
+            net.minecraft.client.Screenshot.grab(mc.gameDirectory, "regression-" + stage + ".png",
+                mc.getMainRenderTarget(), result -> LOG.info("HOTSPOT_REGRESSION screenshot={}", result.getString()));
         }
     }
 }

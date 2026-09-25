@@ -17,6 +17,13 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(ItemRenderer.class)
 public class ItemRendererMixins {
+    @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "renderModelLists")
+    private void radiance$rigidModel(net.minecraft.client.resources.model.BakedModel model,
+        net.minecraft.world.item.ItemStack item, int light, int overlay, PoseStack pose, VertexConsumer consumer,
+        com.llamalad7.mixinextras.injector.wrapoperation.Operation<Void> original) {
+        com.radiance.client.vertex.RigidModelCapture.render(model, pose.last(), consumer,
+            target -> original.call(model, item, light, overlay, pose, target));
+    }
 
     @Inject(method =
         "getArmorFoilBuffer(Lnet/minecraft/client/renderer/MultiBufferSource;Lnet/minecraft/client/renderer/RenderType;"

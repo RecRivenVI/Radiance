@@ -2646,6 +2646,1317 @@ No product/native code, tests, settings or deployed files changed in this record
 client was launched and no Git staging, commit/amend or push occurred. Existing worktree and
 runtime evidence remain intact.
 
+## 2026-09-24: Optional frame-stage profiler with correlated Java, native and GPU samples
+
+Status: implemented; automated-verified; bounded runtime-observed; deployed as recorded below.
+Evidence: static, build, automated, GPU/client observation, artifact identity; no new visual acceptance.
+Applies to Radiance worktree above `6e9b97a53049fad833e673da647ac517efde5fe3` and MCVR worktree above
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`. Existing uncommitted diagram corrections are preserved.
+
+### Requested behavior and implementation
+
+The user requested attribution of rendered-frame duration. The formal optional Audit mod now provides
+`/radianceaudit profile start 30` and `stop`, disabled until explicitly requested (or the documented
+bounded automation property). Exception-safe Java method scopes partition render-thread wall time
+into exclusive stages. Nested JNI/native CPU scopes separate conversion/copy, packing, command
+recording, waits, submission/present and pacing. Worker activity is separate. An independent optional
+native profile ABI correlates these with monotonic Java frame IDs; clocks are not subtracted across
+JNI. GPU queries have per-context ownership, reuse only after the existing fence, availability reads
+without a new wait, explicit readback invalidation and bounded slots. Pipeline modules and main
+command buffers are timed separately. Acquisition at Java frame end prepares the next frame, so GPU
+ownership is assigned at submission, not at acquisition.
+
+All aggregation, raw CSV, quantiles, human-readable reports, controls and bounded asynchronous writing
+live in Audit. MCVR contains the necessary inactive observer/timestamp hooks only. No per-vertex timer,
+OpenGL context, permanent idle, renderer optimization, settings override or vendor DLL was introduced.
+The native sink remains process-lived/pinned. Queue/slot/output/sample limits and measurement caveats
+are documented in [Audit's profiling guide](../Modules/RadianceAudit/README.md#frame-profiling).
+
+### Tests and actual observation
+
+- `:radiance-audit:check`: 15 JUnit tests, zero failures; two collector CTests passed. Six new Java
+  tests cover nesting/self sums, exception/duplicate close, recursive stages, report arithmetic,
+  backpressure, and late prior-capture GPU samples. Native collector concurrency/drop bounds tested.
+- MCVR RelWithDebInfo full build/install and CTest **58/58 passed**. New production-helper tests cover
+  nested/worker/exception scopes and query allocation/reuse, unavailable reads, no WAIT flag and
+  partial-frame invalidation. Existing GPU fixtures passed; these remain distinct from client evidence.
+- `verifyDistributedJar` and `verifyAuditJar` passed. Product GAME/bootstrap sources were unchanged
+  by this profiling batch; their earlier unit results were not rerun or relabeled as new results.
+- Isolated cloned `Test` world, Create 6.0.10 + Sable 2.0.5 + Aeronautics 1.3.2, NeoForge 21.1.251,
+  1280x720, six-chunk view, DLSS RR balanced/preset pipeline, Reflex 1, FG off; settings preserved in
+  the manifest. PID 99568: 12-second delay, 30-second capture, **2,124 frames**, zero queue/output
+  drops, 50-second world observation then normal save/exit (process 85.35 s, exit 0).
+- Its frame-body wall mean/p50/p95/p99: **13.956/12.817/18.149/20.500 ms**. Exclusive shares:
+  submit/present 34.68%, world-render remainder 19.37%, geometry marshal 17.50%, entities 11.00%,
+  tick 4.67%, frame remainder 4.13%, auxiliary textures 3.52%, acquire 2.38%; other stages smaller.
+  GPU main-queue mean **3.742 ms**, with world-module intervals PT 1.943 and DLSS 1.319 ms.
+  These overlap CPU and cannot be added to it. Native PT-module CPU time means recording/preparation,
+  not GPU tracing. Entity capture is not isolated vertex arithmetic. These are scene observations,
+  not a controlled speedup, universal bottleneck or instrumentation-overhead estimate.
+- PID 58284: fresh copy, capture at world entry for 15 s, **930 frames**, zero drops; 1,519 Java
+  worker compilation calls and 1,189 native chunk-copy samples verify the background route. Normal
+  world save/exit after 22 s in world (process 56.99 s, exit 0). Worker elapsed sums overlap frames.
+  All focus flags in both captures were true and SDK generated-frame counters zero.
+
+Evidence (ignored, retained): `run/frame-profile-20260924/{smoke,loading,evidence}/`.
+`evidence/MANIFEST.json` identifies every tracked/nonignored untracked source, native dependencies,
+raw/UTF-8-LF hashes, source ZIPs, commands, settings, mod hashes, matched PDB and loaded DLLs. Source
+file-list hashes, before this documentation entry: Radiance
+`288A3B79939933A175C09D7973737AB5B76BD4BB1A135E86E01F1840EFF775C4`, MCVR
+`B8C6BC9148EA72A5711A8EA0F94370B1812EAF267AE50DD8CCB0F7E68F3E1FE1`.
+These snapshots pin the first tested pair. The device-error propagation follow-up below has its own
+final DLL and runtime evidence; the first pair is not silently relabeled. Prior evidence was not removed.
+
+### Initial profiling artifact and remaining acceptance
+
+- Radiance JAR: `BBC7F6A37DB00F4B3EC76FD086BD55323D3FF1B5D5982672FA9DEE99FE155ACD`.
+- Audit JAR: `D03E8B1D69C54DDD9626820C5F26F78968FAD8CB28963668B3E335CE66079DDC`.
+- core.dll: `8F7772C3547A9B800C13D210474B30DC1ECD0250F210DB191459DC079380098A`.
+
+Build, installed resource, embedded DLL, extracted runtime and both actual loaded paths agree.
+This initial profiling pair was used only in the two isolated cases above. Manual delivery uses
+the final follow-up pair below; no worlds/settings/other mods were changed.
+
+The user will prepare a slow **eight-chunk** scene in Prism. Capture standing still and normal movement
+separately with unchanged settings; user input/visual acceptance and representative bottleneck results
+remain pending. GPU query completion windows do not measure separate chunk queues, archived UI-PT
+commands, or SDK-internal FG submissions. Profiling overhead has not been isolated by a matched A/B;
+Windows ThreadMXBean per-frame quantiles are coarse. Fault root cause, rendering defects, diagram
+visual issues and redistribution licensing keep their independent preceding states. No Git staging,
+commit/amend, push, tag, or public binary release occurred.
+
+### Same-day follow-up: propagate real device errors from optional queries; final delivery
+
+The query observer must not classify a real `VK_ERROR_DEVICE_LOST` as an ordinary unavailable
+sample. `GpuFrame` now preserves its result; Framework passes this result through the existing
+fatal/device-close boundary if query creation or reading detects device loss first. Other optional
+query failures remain explicitly missing samples. A substitute-only regression verifies preservation
+of `VK_ERROR_DEVICE_LOST`; no real device-loss injection or GPU reset was performed.
+
+After this limited change: matched RelWithDebInfo rebuild/install and `verifyDistributedJar` passed;
+`frame-profile`, `gpu-profile`, `audit-sink`, and `failure-state-contract` CTests **4/4 passed**.
+The preceding 58-test run belongs to the initial pair, not a second full rerun. Audit Java/collector
+code and its 15+2 passing tests/artifact were unchanged. The subsequent locked-invalidation
+follow-up below has its own delivered identity; these results remain pinned to this candidate.
+
+PID **86080** used the final pair without experiment opt-in or an isolated experiment marker:
+ordinary late attachment logged native observer **flags=0**, profile `native=true`. Automatic
+read-only profiling ran 10 seconds after a two-second world delay: **680 frames**, no writer/native/
+output-cap drops, real GPU samples. The external case runner requested normal window close only
+after the report finished; all dimensions saved and process exited 0 after **46.60 seconds**. This
+verifies that passive installation can attach the profiler without enabling world-mutating probes.
+It does not replace the user's actual slow-scene sampling or dynamic visual acceptance.
+
+Final paired artifacts, deployed only to the authorized Prism `minecraft/mods`:
+
+- Radiance JAR: `957B30FEA9CAC254987E225D489226BD0817C9B941974BFB81F27C3E75BDBA7D`.
+- Audit JAR: `D03E8B1D69C54DDD9626820C5F26F78968FAD8CB28963668B3E335CE66079DDC` (unchanged).
+- core.dll: `5D4E0AD4C194F9DF8DCBF6B6F3EF33EE82FE2DD4039013AA4FBAD51105939915`.
+
+`run/frame-profile-20260924/final/` retains that distinct run. `evidence/final/MANIFEST.json`, source
+ZIPs, `core.pdb`, build/test logs and `DEPLOYMENT.json` retain the final chain and copied-JAR hashes.
+DLL build/installed/embedded/extracted/actual-load identities match; the loaded first-party collector
+also matches its extracted hash. Normalized source file-list hashes before this appended follow-up:
+Radiance `17062461567BA4CA84DF89C5CCA38F2AD378FA7FA4EC36965280CA7F27C6303C`; MCVR
+`B5E9268B13DF6EC1D2D2010B2C7C506E0338C0B650E93392DE92D6D9B7E5227A`.
+The first pair and its reports remain historical evidence, not deleted or silently reassigned.
+
+### Final delivery identity after locking the readback invalidation hook
+
+The optional readback-profile invalidation was moved under the existing recreation mutex, after
+current-context validation; the observer must not add an unprotected context access. This is the
+last native source adjustment. Incremental RelWithDebInfo install/package verification passed;
+profile/query/audit/failure/readback contract CTests **5/5 passed**. Audit JAR remained unchanged.
+
+Final delivery, superseding the two preceding candidate Radiance/core identities:
+
+- Radiance JAR: `9C2C343B1B6E9E0D482C9C558EBCF5B7B380FA4932D9DB83EFAB53EEE25CBCA3`.
+- Audit JAR: `D03E8B1D69C54DDD9626820C5F26F78968FAD8CB28963668B3E335CE66079DDC`.
+- core.dll: `1913C869934F63399EDF17F41D25A7FA67DAC60CEA917ABC403E56B1430A832B`.
+
+PID **79228**, no experiment opt-in, captured **685 frames / 10 s**, zero writer/native/output-cap
+drops, then normal window close saved all dimensions and exited 0 (process 46.65 s). Build, embedded,
+extracted and loaded DLL identity agree. No new visual, device-loss or broad stability claim.
+
+`run/frame-profile-20260924/{delivery,evidence/delivery}/` retains the final case, source ZIPs,
+manifest, matching PDB, five-test/build logs and verified two-JAR Prism deployment. Source-list hashes
+before this documentation append: Radiance `4EB8AC704792C1225D9612AB961AFEBD9DA78A08CDE8C3363ED58E707AB48941`;
+MCVR `D760F21F5A728A748DB217D7F5E076F0658F61635819E01B5445BE9D621943EC`.
+Only these final paired JARs are the current manual handoff. No further product changes, staging,
+commit/amend or push occurred. The user's eight-chunk scene is still pending.
+
+## 2026-09-24: Static Prism profile and detailed preparation timing
+
+Status: representative static runtime-observed; finer diagnostic stages implemented, build-verified,
+automated-verified and isolated-runtime-observed. No rendering optimization or GPU migration yet.
+Evidence: user-operated capture, raw frame-correlated CSV, source tracing, tests and paired loading.
+Applies to worktrees above Radiance `6e9b97a53049fad833e673da647ac517efde5fe3` and MCVR
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`; all preceding diagram/profiling work is preserved.
+
+### Representative observation and direction
+
+User reported a static capture, PID 73276, 2026-09-24 13:05:16-13:05:46 +08. Its 1,381 frames were
+2560x1440/eight chunks, all focused, no failed frames and SDK-generated FPS always zero. The first
+705 frames had no screen; the remaining 676 had ChatScreen. Their frame-wall means (21.47/21.32 ms)
+were close; do not describe the whole sample as an invariant HUD-only view. Recorded wall mean was
+21.398 ms, frame-start interval mean 21.739 ms (about 46 real FPS), p95/p99 25.512/27.693 ms using
+linear interpolation over raw intervals. GPU main-queue mean was 11.072 ms across 1,379 available
+frames; the absent tail is not zero. No writer/native/output-cap loss was reported.
+
+Host self costs: submission/recording 8.81 ms (including PT-module CPU 6.82 ms), geometry marshaling
+4.21 ms, world-other 3.03 ms, block entities 1.45 ms and entities 1.22 ms. GPU PT/DLSS intervals were
+8.33/2.15 ms, overlapping host work. Thirty-six background section compilations totaled 32.23 ms;
+frame-fence wait averaged 0.0015 ms. These support a host preparation bottleneck in this capture,
+not an all-world conclusion or proof that pure vertex transforms dominate. Config files last written
+before capture select DLSS balanced, FG off, Reflex mode 2; per-frame telemetry confirms FG/focus/size.
+
+Original deployed Radiance JAR `9C2C343B1B6E9E0D482C9C558EBCF5B7B380FA4932D9DB83EFAB53EEE25CBCA3`,
+Audit `D03E8B1D69C54DDD9626820C5F26F78968FAD8CB28963668B3E335CE66079DDC`, and actually loaded core
+`1913C869934F63399EDF17F41D25A7FA67DAC60CEA917ABC403E56B1430A832B` matched the prior delivery.
+The raw capture, settings and log copy are retained at `run/frame-profile-detail-20260924/evidence/prism-static-baseline/`.
+Its original non-portable location is the authorized Prism game directory's
+`radiance-audit/profiles/2026-09-24T05-05-16.685276800Z-pid73276/`.
+
+User direction is to investigate moving suitable CPU computations to GPU. The immediate change is
+measurement only: distinguish arithmetic/packing from scene management, driver recording, allocation
+and waits before choosing migration targets. GPU time, memory and real frame distributions must be
+measured after any future offload; it must preserve current material and lifetime contracts.
+
+### Detailed observer implementation and checks
+
+Audit wrappers split LevelRenderer from its outer GameRenderer, picking/world uniforms, level/light
+setup, Flywheel, Sable, NeoForge callbacks, clouds, texture mapping and world-mesh closure. Logical
+server/worker calls cannot become render-owner spans. Nested geometry durations remain exclusive.
+MCVR's optional observer splits PT metadata/history, locks, BLAS/TLAS command preparation, SBT,
+descriptor binding, allocation/copy/upload and pass recording. No GPU commands, scene selection or
+production rendering semantics were intentionally changed. No per-vertex timer was introduced.
+The report now shows native CPU ms per recorded Java frame separately from per-invocation means.
+
+- Audit **17 Java tests + 2 native collector tests passed**. New behavior tests cover nested world
+  stages and several native invocations in one frame without counting concurrent worker time.
+- MCVR RelWithDebInfo build/install and **3/3 targeted CTests** passed; phase scopes exercise nesting,
+  failure unwinding and inactive observation. Full historical CTest/GAME counts are not new results.
+- Paired distribution verification passed. Initial diagnostic candidate PID 1236 captured 634 frames
+  and exited normally; its Audit JAR was `32FD5DCD0D1DF0026D391188E956DDA283AE35E2D5CCDCFF00741A628D566992`.
+  The final Audit adds outer/inner world attribution and was separately exercised by PID 51976:
+  **633 frames / 10 s**, zero drops, all new Java/native scope families observed, all dimensions saved,
+  process exit 0 after 70.14 s including startup. Both used the same final core.dll below.
+- These 1280x720/six-chunk isolated runs prove capture plumbing, not an improvement over the user's
+  eight-chunk scene. Instrumentation overhead lacks a matched on/off measurement. The original
+  GPU-fault, visual, spring/diagram and public DLL licensing boundaries remain unchanged.
+
+### Final identity and manual handoff
+
+Final matched Radiance JAR: `0BC8AA0BEE31E7927B51650F1D41B81B302137F45D4038D1CED7CA17122C84DE`.
+Final Audit JAR: `049754B8250437B09641DCFA706AB489D2798047EBEE4920E2664E181877F246`.
+core.dll: `3A09E358A5BE8C7636469D29ECAC17748A7B6612469A31CAE7046DC3F5D69025`, matching build,
+installed resource, outer JAR, extracted and loaded isolated-client module.
+
+Evidence and complete tracked/nonignored source snapshots, build inputs and matching PDB are indexed
+by `run/frame-profile-detail-20260924/evidence/MANIFEST.json`; final runtime is in `final/`.
+Two-JAR-only deployment to the authorized Prism instance is recorded by `evidence/DEPLOYMENT.json`.
+No world/settings changes, computer-use, staging, commit, amend or push are part of this handoff.
+User next action: start Prism, keep the same scene/view/settings, let loading settle, run
+`/radianceaudit profile start 30`, close chat and remain still/focused. Normal movement can be captured
+separately afterward. The agent reads outputs and decides what the finer measurements support.
+
+## 2026-09-24: Sixteen-chunk stationary profile identifies recurring host scene work
+
+Status: runtime-observed; investigating optimization targets. Evidence: raw correlated timings,
+loaded artifact identity and direct source tracing; no product change or new build/test run.
+Applies to the detailed profiler delivery above; the deployed Radiance/Audit/core hashes are unchanged.
+
+User PID 102228 captured 478 frames over 30 seconds, 13:35:13-13:35:43 +08, at **3840x2054,
+16 chunks**. All frames were focused, in-world and non-failed; SDK-generated FPS was zero. Only
+25 frames had no screen; 453 had ChatScreen. Settings saved before capture select DLSS balanced,
+FG off, Reflex 2, four bounces, SHARC/jitter enabled. F3+A preceded capture by approximately 43 s;
+no background section compilation/worker work was recorded during the sample. No writer/native/
+output-cap loss was reported. This differs from the eight-chunk sample in resolution, scene,
+observer detail and screen distribution; it is not a controlled scaling or observer-overhead test.
+
+Frame-start intervals averaged **62.761 ms** (about 15.93 real FPS), p50/p95/p99
+62.251/68.599/72.738 ms, linearly interpolated from 477 positive raw intervals. Measured runTick
+wall averaged 62.026 ms. Main-queue GPU completion intervals averaged **20.004 ms** across 476
+available GPU frames, including PT 14.021 ms and DLSS 4.335 ms. CPU and GPU overlap; these figures
+cannot be summed or converted into a guaranteed post-optimization FPS.
+
+The exclusive Java partition attributes 24.110 ms to submission/recording, 14.109 ms to geometry
+marshaling, 6.640 ms to world orchestration, 6.424 ms to entities and 2.112 ms to block entities.
+Nested native measurements identify chunk metadata **10.441 ms**, BLAS command recording 2.935 ms,
+entity metadata 1.739 ms, native conversion/copy/enqueue **4.831 ms**, and entity batch construction
+**5.866 ms inclusive**, including vertex packing **3.172 ms**. PT host work totals 18.184 ms
+inclusive, already within submission. Chunk metadata has two consecutive scopes per frame, not
+evidence of two full scans. Frame-fence waits average 0.0017 ms and measured locks about 0.0005 ms;
+waiting and ongoing section compilation do not explain the dominant cost in this sample.
+
+Attribution correction to the previous conversational interpretation: `Entities::queueBuild` is
+inside Java geometry marshaling, but `EntityProxy.build()` runs from GameRenderer's world-render
+tail. Its native batch construction and vertex packing belong to **WORLD_RENDER_OTHER**, not
+GEOMETRY_MARSHAL. Their nested durations must not be counted in both categories. The remaining
+marshaling cost is not yet isolated into pure Java arithmetic, allocation and JNI transfer.
+
+Static follow-up found `shaderMaterialFlags` calling `faces::uniform(model)` for each geometry;
+uniform single-sided models can repeatedly scan the same material vector. This is confirmed
+repeated computation, but its share of the 10.441 ms has not been measured. The next bounded
+targets are invariant scene metadata reuse and entity conversion/packing suitable for GPU work;
+preserve per-ray face semantics, history and GPU retirement. The 5.178 ms native
+`submit-record-other` residual also remains incompletely attributed. Small measured Flywheel/Sable
+bridge spans do not exclude costs from their generated geometry elsewhere in the pipeline.
+
+Raw capture, copied log/settings, artifact hashes and recomputed per-frame distributions are kept
+in `run/frame-profile-detail-20260924/evidence/prism-static-16/{ANALYSIS.json,FILES.json}` and the
+adjacent original profile directory. The preceding `MANIFEST.json` remains the source/build identity;
+it was not overwritten by this analysis. No Prism settings/world edits, client restart, optimization,
+staging, commit or push. No additional user sampling is needed to select the first bounded target;
+performance gains require a later same-scene/settings comparison, including GPU and memory cost.
+
+## 2026-09-24: First host preparation optimization and bounded A/B/A measurement
+
+Status: implemented; build-verified; automated-verified; bounded runtime-observed; manual comparison
+pending. Evidence: native behavior/GPU tests and three isolated client profiles. Applies to the
+existing paired dirty worktrees above Radiance `6e9b97a53049fad833e673da647ac517efde5fe3` / MCVR
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`; all earlier diagram/profiler work is preserved.
+
+### Implemented scope
+
+MCVR now evaluates the model-wide face rule once per model traversal, sharing its value between
+BLAS opaque decisions, TLAS flags and per-geometry shader flags. The direct chunk, entity and
+Flywheel consumers retain mixed single/double-sided and mirrored-transform semantics. This is a
+local value snapshot, not a cache across material changes. WorldPrepare reserves CPU metadata
+arrays from already published geometry counts and avoids temporary hit-group string copies.
+Entity conversion reserves known geometry/vertex counts before filling vectors. Flywheel's prepared
+instance list is produced once and reused for capacity prediction and actual traversal.
+
+No GPU offload, cross-frame geometry cache, shader/JNI changes, view culling, history simplification
+or retirement changes were introduced. The new capacity prepass still visits all published owners;
+actual traversal continues generation checks and resource retention. These are local reductions
+in repeated host work, not a complete response to the longer-term GPU migration direction.
+
+### Tests and measurement
+
+RelWithDebInfo native INSTALL and paired `distributedJar verifyDistributedJar` passed. The first
+Gradle invocation split an unquoted PowerShell `-Pmcvr.configuration` argument and did not execute
+packaging; quoting the property fixed the invocation, with no build configuration change. Logs are
+preserved separately. **7/7 targeted CTests passed**, including the existing Vulkan material-faces
+GPU fixture, JNI contract, vertex packing, world mesh, instancing and profiler tests. Expanded face
+tests execute the production value helper for 512 mixed models, mirrored/zero transforms, unrelated
+material bits and same-allocation material replacement. An optional synthetic benchmark confirms
+equal checksums and avoids repeated scans; its speedup is not a game-FPS prediction. GAME/bootstrap
+source was unchanged and its old test counts are not represented as new execution.
+
+A/B/A used fresh copies of the same repository test world and identical initial settings/mods:
+1280x720, 16 chunks, DLSS balanced/RR model 4, four bounces, FG off, Reflex 1, vsync on, cap 260.
+The setup script initially wrote only Radiance's vsync field to false; Minecraft's retained
+`enableVsync:true` is applied by WindowMixins at startup and all three final configs record true.
+This is not a vsync-off test; the correction does not change the equal settings across A/B/A.
+Each process settled for 30 s after world entry, then captured 30 s; no build or other game client
+ran during sampling. All recorded frames were focused with no screen and no failed frames or
+sample drops. No background section worker work was recorded. All three saved every dimension
+and exited 0. This is a live stationary world, not a deterministic replay of entity animation.
+
+| Metric (ms unless stated) | Old A, PID 47024 | New B, PID 101248 | Old A2, PID 10524 |
+| --- | ---: | ---: | ---: |
+| Recorded frames | 953 | 1072 | 958 |
+| Mean real frame interval | 31.482 | 28.003 | 31.326 |
+| Interval p50 / p95 / p99 | 31.419 / 36.986 / 43.072 | 28.369 / 31.940 / 35.462 | 31.705 / 35.600 / 40.271 |
+| Chunk metadata, host self | 9.205 | 6.447 | 9.137 |
+| Metadata init, host self | 0.255 | 0.487 | 0.249 |
+| WorldPrepare, host inclusive | 11.384 | 8.655 | 11.315 |
+| Java geometry marshaling | 2.883 | 2.893 | 2.948 |
+| Main-queue GPU completion | 7.410 | 6.985 | 5.854 |
+
+Quantiles use linear interpolation over positive raw frame-start intervals. The new capacity
+prepass adds metadata-init work; compare total preparation rather than counting only the cheaper
+chunk loop. The measured frame interval reduction is approximately 11%, or about 32 to 36 real
+FPS, in this isolated scene. A2 returning to the old host costs strengthens the comparison, but does
+not separate each optimization's contribution. Geometry marshaling shows no clear gain here;
+GPU intervals varied and no GPU-speedup claim follows. Peak VRAM, upload/allocation bytes and
+moving/player-update workloads were not measured in this batch. Do not extrapolate this result to
+the user's different 3840x2054 scene or treat it as long-duration/visual acceptance.
+
+Diagnostic precision correction: the Java exclusive scopes partition their outer FRAME_OTHER
+scope, not every nanosecond of the enclosing wall timer. These captures have a mean wrapper gap
+below 0.001 ms/frame, retained in `COMPARISON.json`; it is not missing data or normalized away.
+Earlier statements of exact wall equality should be read with this timer-boundary qualification.
+
+### Identity and handoff
+
+New Radiance JAR: `C5507DC8F1F1A112229CF17041CF472EBE0242DE1BDEDB6E56A98BE62A1D8A77`.
+New core.dll: `5C1CD35F6EABA6C5EDFB45BC49518064AF2FCA3E80EC9B8B627C7FA75FF908C6`.
+Unchanged matched Audit JAR: `049754B8250437B09641DCFA706AB489D2798047EBEE4920E2664E181877F246`.
+Build, embedded, extracted and actually loaded isolated-client DLL agree. A/A2 used the previous
+`0BC8AA...` JAR / `3A09E3...` DLL; their results remain separate from B.
+
+`run/host-preparation-opt-20260924/evidence/` holds the complete source snapshots and build inputs
+(`MANIFEST.json`), local candidate diff, PDB, tests, benchmark and `COMPARISON.json`; the three
+adjacent case directories retain raw profiles/logs/settings/world copies. The original world source
+is the earlier repository `run/frame-profile-detail-20260924/final/client/saves/Test`, not Prism.
+The matched JAR handoff to the authorized Prism instance is recorded in `DEPLOYMENT.json`; no
+settings or worlds are changed. User comparison should keep the original 16-chunk scene, position,
+view and resolution, capture 30 s after settling, and then observe normal movement/interaction.
+The agent reads identities and metrics. No new visual acceptance, staging, commit, amend or push.
+GPU-loss uncertainty, deferred diagram/spring issues and public DLL licensing remain independent.
+
+## 2026-09-24: Prism follow-up of the host preparation optimization
+
+Status: runtime-observed; performance attribution remains bounded.
+Evidence: two user-operated 30 s profiles and installed/loaded artifact hashes; no new build or tests.
+Applies to: the preceding host-preparation worktree and deployment, unchanged product source.
+Supersedes: no prior run; supplements the isolated A/B/A with the user's different 4K workload.
+Remaining acceptance: moving/interaction visuals, memory/upload trends and broader workloads.
+
+The user completed sampling and explicitly reported a slightly different view angle. PID 72800
+captured at 14:08:44 and 14:11:25 +08:00. Both used 3840x2054, 16 chunks, focused frames, FG off,
+and predominantly ChatScreen, matching the earlier profile's presentation conditions. The saved
+Radiance option values match the old capture (ignoring timestamp comments); pipeline.yaml is
+byte-identical. No sample drops or failed frames were recorded. This does not establish an identical
+scene workload: native per-geometry vertex-packing calls increased from 856.62 to 1040.82 per frame.
+Those are call counts, not entity or vertex counts, and do not provide an exact work normalization.
+
+| Metric (ms unless stated) | Old PID 102228 | New first | New settled |
+| --- | ---: | ---: | ---: |
+| Recorded frames | 478 | 464 | 485 |
+| Mean real frame interval | 62.761 | 64.667 | 61.913 |
+| Interval p50 / p95 / p99 | 62.251 / 68.599 / 72.738 | 64.100 / 70.563 / 76.626 | 61.193 / 66.191 / 70.902 |
+| Chunk metadata, native CPU self | 10.441 | 7.927 | 7.977 |
+| Metadata init, native CPU self | 0.239 | 0.550 | 0.578 |
+| Java geometry marshaling | 14.109 | 15.312 | 15.491 |
+| Entity batch construction, native CPU inclusive | 5.866 | 6.992 | 6.514 |
+| Vertex packing within that batch | 3.172 | 3.813 | 3.439 |
+| Main-queue GPU completion | 20.004 | 22.353 | 21.411 |
+| Background Java section compilations | 0 | 848 | 0 |
+
+Quantiles are recomputed consistently from raw positive frame intervals with linear interpolation;
+the generated reports use a different quantile convention. GPU rows omit unavailable tail frames.
+The first new sample includes 848 concurrent section compilations and 833 native worker enqueue
+events, so it is not a settled stationary comparison. The second contains neither. Nested CPU rows
+and overlapping GPU/worker work must not be summed into a frame cost.
+
+The settled sample retains lower chunk-metadata cost (about 24%), including a net reduction of
+about 2.12 ms when its more expensive capacity prepass is included. End-to-end interval only moves
+from 62.76 to 61.91 ms (about 1.4%, roughly 15.9 to 16.2 real FPS). This small uncontrolled difference
+is not a proven overall speedup or an extrapolation of the isolated 11% result. Geometry marshaling,
+entity batch work and GPU duration increased alongside the changed workload; these samples alone
+cannot label those changes an optimization regression. Recurring host data preparation remains
+the measured bottleneck. No GPU offload or new product change was made for this follow-up.
+
+Prism's installed JAR is `C5507DC8F1F1A112229CF17041CF472EBE0242DE1BDEDB6E56A98BE62A1D8A77`;
+PID 72800 actually loaded core.dll `5C1CD35F6EABA6C5EDFB45BC49518064AF2FCA3E80EC9B8B627C7FA75FF908C6`.
+Audit remains `049754B8250437B09641DCFA706AB489D2798047EBEE4920E2664E181877F246`.
+`run/host-preparation-opt-20260924/evidence/prism-followup/` preserves both raw captures, settings,
+log, `LOADED.json`, reproducible `Analyze.py`, `ANALYSIS.json` and SHA-256 `FILES.json`. The preceding
+source snapshot/build manifest is retained unchanged. The baseline remains in the earlier
+`run/frame-profile-detail-20260924/evidence/prism-static-16/` directory.
+
+The observed log has no new device-loss report, but includes server saved-map decoding errors
+also present before optimization, outside these capture windows. They are not attributed to this
+native optimization. The process was still running at the identity check; this is not a final
+save/close result. The user's sampling feedback does not imply visual or interaction acceptance.
+Only evidence and maintenance records changed; no game/settings/world mutation or Git action.
+
+## 2026-09-24: User authorizes copied-scene performance fixtures
+
+Status: user-approved test policy; no world copy or fixture run performed by this entry.
+Evidence: user permits copying the Prism scene into a test fixture and, when necessary, fixing
+time/weather or controlling entity variation. Applies to future paired performance measurements.
+
+Copy the selected world into an isolated repository `run/` case after a consistent save; retain
+the user's original world/settings unchanged. Record source identity, copied player pose, renderer
+settings and every fixture adjustment. Time/weather and entity controls belong only to the copy.
+Prefer controlling motion/state while preserving entity counts, models and visible geometry;
+removing entities or effects changes the workload and must not be reported as an optimization gain.
+Use identical fresh fixture copies and controls on both sides of a comparison. This extends the
+earlier repository-only source-world restriction for benchmark preparation, not authorization to
+edit or automate gameplay in the user's Prism world. Future fixture work is tracked in the roadmap.
+
+## 2026-09-24: Submission-local strings and unchanged sampler fast path
+
+Status: implemented; build-verified; automated-verified; bounded runtime-observed.
+Evidence: production-helper tests, matched package, copied-scene A/B/A and scripted client regression.
+Applies to: Radiance worktree over `6e9b97a53049fad833e673da647ac517efde5fe3` and MCVR worktree over
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`, including earlier uncommitted work.
+Supersedes: no earlier measurements; establishes a controlled follow-up to the Prism captures.
+Remaining acceptance: broad moving/visual workloads, memory/transfer costs and long-duration stability.
+
+### Scope and implementation
+
+The user delegates subsequent testing and repair to the agent. Automated gameplay remains confined
+to repository copies; this does not turn automated assertions into user visual approval.
+`EntityProxy` now uses `SubmissionStrings` to own one UTF-8 allocation per distinct group/content
+name within a synchronous JNI submission. Native conversion copies the names before returning;
+the existing finally path releases the table. Nested submissions are independent, and no string
+pointer or cached material decision survives a frame/reload. Every geometry still captures its
+actual RenderType face state. Vertex math, JNI signatures and geometry selection are unchanged.
+
+MCVR skips sampler creation and descriptor/alias republishing for unchanged ordinary-texture
+settings. The comparison now includes mipmap mode, correcting a previously missed mipmap-only
+change. Changed settings allocate first, retain the old sampler with the existing frame/reload
+retirement mechanism, then replace/publish. Frame aliases still republish because their image can
+change with the same sampler. Texture initialization, bind-all, reload commit and pipeline creation
+retain their own publication paths. This is CPU work avoidance, not GPU vertex offload.
+
+### Fixture and comparison
+
+After the user's Prism world was normally saved and closed, `Newport City` was copied to
+`run/entity-preparation-opt-20260924/fixture/`. `SOURCE.json` hashes every original world file and
+records controls. Only the copy disables time/weather progression and mob spawning (already false);
+saved time/weather, existing entities/AI and geometry are preserved. All timed cases use fresh
+copies with the same saved position `(33.042726, 95, 223.112289)` and rotation `(100.08612, -34.41608)`.
+Source-world hashes were checked again after testing; no source-world change was made.
+
+Conditions: Java 21, NeoForge 21.1.251, identical copied mods/config/pipeline, 3840x2054, 16 chunks,
+four bounces, DLSS balanced/RR model 6, SR model setting 13, Reflex 2, FG off, vsync off, cap 260.
+Only vanilla and mod resources were enabled; a copied PBR pack was not active. Each process settled
+45 s in-world and captured 30 s, focused with no screen. No concurrent build or game ran during
+measurement. The separate JFR diagnostic process is excluded from timing comparisons.
+
+| Metric (ms unless stated) | A, PID 98536 | B, PID 33464 | A2, PID 100912 |
+| --- | ---: | ---: | ---: |
+| Recorded frames | 465 | 497 | 465 |
+| Mean real frame interval | 64.530 | 60.434 | 64.641 |
+| Interval p50 / p95 / p99 | 63.603 / 69.847 / 75.299 | 59.919 / 65.122 / 69.856 | 63.679 / 70.426 / 76.602 |
+| Java geometry marshaling | 15.545 | 13.145 | 15.545 |
+| Java auxiliary textures | 2.266 | 0.638 | 2.325 |
+| Native conversion/copy/enqueue | 5.080 | 5.064 | 4.994 |
+| Native vertex packing | 4.182 | 4.239 | 4.170 |
+| Native entity build, inclusive | 7.907 | 8.032 | 7.883 |
+| Chunk metadata, host self | 8.138 | 8.298 | 8.249 |
+| Main-queue GPU completion | 25.414 | 26.257 | 25.362 |
+
+Raw positive frame-start intervals use linearly interpolated quantiles. Nested/overlapping rows
+are not additive. Mean interval improves about 6.4% (roughly 15.5 to 16.5 real FPS); A2 restores
+the earlier costs. Combined changes are not individually attributed. Per-frame vertex-packing call
+counts are approximately 1040.7/1040.5/1040.6; final saved poses and renderer settings match. Live
+entity animation is not deterministic. A/B/A recorded 1/0/7 background section compilations
+(2.04/0/8.68 ms total), no sample drops or failed frames, and all saved every dimension and exited 0.
+Native vertex packing and GPU time did not improve. Peak VRAM/upload bytes, moving scenes and
+long-duration stability were not measured. This does not establish an all-world speedup.
+
+### Tests, failure and retest
+
+- RelWithDebInfo native INSTALL and `:distributedJar :verifyDistributedJar` passed.
+- GAME `:test` passed 5 targeted cases (submission-string ownership and material-face capture).
+  An initial unqualified `test --tests ...` also selected the Audit project and failed because it had
+  no matching tests; qualified `:test` passed. This was a task-selection failure, not hidden success.
+- Eight targeted CTests passed: contract, texture upload region, entity vertex packing, texture
+  lifecycle contract, texture name pool, texture binding snapshots, sampler update and material
+  faces. Source scanning in the lifecycle contract is supplementary. New helper cases exercise
+  repeated settings, mipmap-only change, allocation failure, retirement, reload and new ownership.
+  After tightening the exception assertion, the sampler target was rebuilt and its CTest rerun.
+- The first scripted regression (PID 67348) failed with `IllegalClassLoadError`: the optional Audit
+  scenario used `LevelRendererAccessor`, but its Mixin was disabled with CHUNK_BUILD logging.
+  World save evidence is retained. This was a diagnostic Java failure, not device loss.
+- Audit now enables that accessor for explicitly permitted experiments without enabling heavy
+  chunk observers. Normal operation remains default-off. Audit Java tests passed 18/18; Audit JAR
+  verification and both native collector tests passed. Main product artifacts were unchanged by
+  this diagnostic repair.
+- Retest PID 38168 passed the seven-stage scenario in 110.30 s after world entry: compare the active
+  block-entity index with a full section scan, add/remove a chest, F3+T, F3+A and temporary clouds-off/
+  restore. Assertions matched at each checkpoint; all dimensions saved and process exited 0 after
+  144.64 s total. This checks state/progression and safe termination, not final rendered pixels or
+  exact interaction latency. No device loss occurred. Pre-existing map-data parse errors and Veil
+  unsupported-particle messages remain in these logs and are not attributed to this optimization.
+
+### Identity, evidence and deployment
+
+Product JAR SHA-256: `A23143A7191D249688CE4C0635623DE524F825A2FDBF0AFE402D8D832AD64633`.
+Core DLL SHA-256: `D3A5A20087ED99C683698CD9A5FDF2BF5CAC650D85FD1313DCCF3B13B3F355CF`.
+Final Audit JAR SHA-256: `741CF08C1FE4F40C3AF96A606A4471ADA15BFF86A3B0BB2681DA73D9953CF8F6`.
+A/A2 used the preceding `C5507D...` JAR / `5C1CD3...` DLL. All three timed runs used the same earlier
+`049754...` Audit; the final Audit repair is exercised separately by the regression retest.
+Build, embedded, extracted and actually loaded core DLL agree for B and the retest.
+
+`run/entity-preparation-opt-20260924/evidence/` retains the full tracked/nonignored source snapshots,
+raw and LF-normalized hashes, matching PDB, build/dependency inputs, tests, per-batch diff,
+`COMPARISON.json` and final `MANIFEST.json`. Adjacent case directories hold raw profiles, logs,
+settings and world copies; the initial diagnostic failure is retained separately. `DEPLOYMENT.json`
+records the matched two-JAR handoff to the authorized Prism mods directory; no settings/worlds are
+changed. No new user visual acceptance is inferred, and no further manual test is requested.
+Remaining GPU offload/measurement work is in the roadmap. Earlier GPU-loss uncertainty, deferred
+spring/diagram/plunger defects and public binary licensing stay open. No staging or Git rewrite.
+
+## 2026-09-25: Entity packing writes directly into owned upload storage
+
+Status: implemented; build-verified; automated-verified; bounded runtime-observed.
+Evidence: field-equivalence tests, real-client B/A/B comparison, package and loaded-DLL identities.
+Applies to: paired dirty worktrees over Radiance `6e9b97a53049fad833e673da647ac517efde5fe3` and
+MCVR `ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`; prior changes remain intact.
+Supersedes: no prior measurement; this isolates the next native packing optimization.
+Remaining acceptance: longer/moving workloads and visual breadth; no GPU offload is implemented.
+
+### Scope and ownership
+
+The MCVR entity batch previously packed PBR data into three temporary CPU vectors, then copied them
+into staging allocations. It now writes position, material and index streams directly into their
+owned mapped staging buffers. `Vertex::writePackedVertices` uses the same field/flag conversions,
+checks exact destination sizes and supports separate layer offsets. The source PBR data remains:
+eye-overlay matching, topology/normal offsets, material emission and other consumers still need it.
+No RenderType/face rule, shader, vertex layout, JNI signature or geometry selection changed.
+
+`DeviceLocalBuffer::writeToStagingBuffer` shares the existing staging preparation with ordinary
+uploads. Its synchronous callback cannot retain the mapped pointer or submit work. It flushes
+before returning; allocation/writer/flush failure prevents the batch from reaching upload submission.
+Flush errors preserve their VkResult through the existing fatal boundary. The existing transient
+staging owner, frame retirement, important upload queue and BLAS ordering remain unchanged.
+There is no global idle, new buffer cache, GPU compute pass or modification to the Prism world.
+
+Optional native profiling now aggregates repeated format/topology/material phases before calling
+the external Audit collector, rather than emitting per-vertex events. Batch layout, device buffer
+allocation, packing, staging and BLAS preparation are separate scopes. The `entity.blas-allocate`
+last scope also includes destruction of later-declared batch locals; its reduction must NOT be
+reported as isolated BLAS allocation or GPU build acceleration. Disabled profiling has no timing
+reads or observer output; its branch/stack overhead has not been independently benchmarked.
+
+### Controlled comparison and limits
+
+Use the preserved `run/entity-preparation-opt-20260924/fixture`, with the same saved pose, fixed
+time/weather progression, existing entities/AI and geometry. No new Prism world read or edit was
+needed. Fresh independent copies use Java 21, NeoForge 21.1.251, identical third-party mods/options/
+pipeline, 3840x2054, 16 chunks, four bounces, DLSS balanced/RR model 6, FG off, vsync off, cap 260.
+Each run settles 45 s in-world and captures 30 s, focused with no screen. No other game or build runs
+during capture. Process/WDDM counters are sampled identically every 5 s.
+
+| Metric (ms unless stated) | New B, PID 15976 | Reference A, PID 75160 | Final B2, PID 93952 |
+| --- | ---: | ---: | ---: |
+| Recorded frames | 557 | 519 | 554 |
+| Mean real frame interval | 53.937 | 57.880 | 54.243 |
+| Interval p50 / p95 / p99 | 53.421 / 57.600 / 61.323 | 57.359 / 60.780 / 66.919 | 53.689 / 58.367 / 62.355 |
+| Native format allocation/decode/copy | 2.350 | 2.364 | 2.386 |
+| Native topology/coordinate processing | 1.787 | 1.746 | 1.811 |
+| Native material overrides | 0.068 | 0.068 | 0.066 |
+| Entire conversion/copy/enqueue | 4.988 | 4.976 | 5.078 |
+| Host packing, inclusive | 2.047 | 4.277 | 2.063 |
+| Staging preparation/copy | 0.006 | 0.813 | 0.008 |
+| Entity build dispatch, inclusive | 3.583 | 7.627 | 3.648 |
+| Main-queue GPU completion | 24.847 | 25.012 | 24.949 |
+| WDDM process dedicated memory, sampled peak MiB | 8970.01 | 8969.51 | 8969.51 |
+| Process private bytes, sampled peak MiB | 15395.53 | 15001.75 | 15091.81 |
+
+The final comparison reduces mean interval about 6.3% (roughly 17.3 to 18.4 real FPS); both new runs
+retain the cheaper packing/upload path. Host packing plus staging drops from 5.090 to 2.070 ms.
+The reference retains the old temporary-vector implementation with exactly the same phase probes;
+its full source differs from the candidate only in `entities.cpp`. Candidate and final rebuilt
+product sources match byte-for-byte, but their relinked binaries are identified separately below.
+All three runs saved every dimension, exited 0 and reported no lost/failed samples. Final saved poses,
+renderer options and pipeline hashes match. Background compiles were 0/4/4, totaling 0/6.67/3.07 ms.
+Quantiles use linear interpolation over raw positive frame intervals. Nested CPU scopes, workers
+and GPU completion overlap and are not additive. Live animations are not deterministic replay.
+
+WDDM reports process memory accounting, including allocations outside MCVR's own counters; the
+5-second samples are not an exact allocation inventory or continuous peak. JVM/private memory
+varies; no overall memory reduction or GPU speedup is claimed. GPU upload byte volume was not
+independently sampled. The first two stages still cost about 4.2 ms and include allocation/copy,
+index construction, line expansion and texture-ID collection, not pure vertex arithmetic. This
+supports retaining the CPU optimization, not a prediction that a GPU migration would save all of it.
+
+### Validation, evidence correction and identity
+
+RelWithDebInfo INSTALL and `:distributedJar :verifyDistributedJar` passed for the final package.
+Ten distinct targeted CTests passed across two runs: contract, frame-profile, entity-vertex-packing,
+instancing-contract, world-mesh-contract, upload-staging-budget, material-faces, material-faces-gpu,
+failure-state-contract and pending-uploads. The GPU face test executes Vulkan but does not directly
+test the new staging method. Mapped-output tests compare every packed field/byte, two layer offsets,
+guard regions, empty input and rejection before writing an undersized destination. Aggregate timing
+tests verify parent self-time, bounded observer events and stale-epoch rejection. Real clients
+exercise the combined staging/upload/render path. Java/bootstrap source is unchanged; old Java test
+counts are not presented as new execution.
+
+The initial profiling attempt PID 77856 is excluded from the matched comparison: an edit script
+failed on Windows default text decoding, and its correction overlapped compilation. The loaded DLL
+did not emit the new phases, despite a newer object timestamp. Its retained source ZIP therefore
+cannot establish exact build identity. `instrumented/IDENTITY-CORRECTION.md` preserves this failure.
+Later builds finish source edits first, freeze all tracked/nonignored source and necessary new files,
+check phase labels in the binary and actual trace, and verify loaded modules. A temporary substitution
+of this batch's own `entities.cpp` produced the reference; the candidate was restored byte-for-byte
+and rebuilt. No other work was reset or hidden.
+
+Final JAR SHA-256: `2800DD4CF34DAA3161BB1D2F3628098FB2B9B32C76DD78AA042C6DEF1ED5AD3C`.
+Final core.dll SHA-256: `30CFAB078EDFA85D899E0F1730D52B3F56ECB58C1D7F66DA7C181CD87D6C7AEB`.
+Audit unchanged: `741CF08C1FE4F40C3AF96A606A4471ADA15BFF86A3B0BB2681DA73D9953CF8F6`.
+B used JAR `E82AC198...` / DLL `0E08A422...`; reference A used `3F1AD134...` / `1C3222F...`.
+Full hashes, source ZIPs, raw/LF-normalized file hashes, PDB, CMakeCache and embedded dependencies are
+retained per build in `run/vertex-packing-opt-20260925/evidence/`. `COMPARISON.json`,
+`RUNTIME_CHECKS.json` and adjacent cases retain raw profiles, settings, counters and saved copies.
+
+Final functional regression PID 39668 used the final package with profiling off and the explicit
+isolated probe enabled. Index/full-scan assertions matched after chest add/remove, F3+T, F3+A and
+cloud-mode restore; all seven stages passed, all dimensions saved, and process exit was 0 after
+143.26 s total. Its actual module hash matches the final DLL. Existing saved-map parsing errors
+remain separate from these assertions; no new device loss was observed. This is functional runtime
+coverage, not pixel equivalence or exact interaction-latency measurement.
+
+`DEPLOYMENT.json` records the final Radiance JAR handoff to the authorized Prism mods directory;
+Audit remains byte-identical. Original worlds, settings and other mods are untouched. Maintenance
+records written after the build are preserved in `MAINTENANCE_ADDENDUM.json`; product/test source
+still matches the frozen final manifest. No further manual sampling is requested. No visual approval,
+device-loss root-cause closure, long-duration guarantee or public binary permission follows.
+No staging, commit, amend or push was performed.
+
+
+## 2026-09-25: GPU conversion of recurring native PBR entity batches
+
+Status: implemented; build-verified; automated-verified; runtime-observed.
+Evidence: static, build, automated, GPU, bounded runtime measurements; no new visual approval.
+Applies to: the paired dirty worktree after the owned-staging optimization. Git HEADs remain
+Radiance `6e9b97a53049fad833e673da647ac517efde5fe3` and MCVR
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`; neither identifies the uncommitted candidate alone.
+Supersedes: none; extends the previous CPU optimization without discarding its reference path.
+
+### Actual workload and bounded implementation
+
+The optional format census found about 150,180 PBR vertices (19.22 MB input) per recorded frame,
+not the compact entity format initially considered. Native raw PBR quads/triangles can now defer
+coordinate flags, normal offsets, emission overrides, index construction and final position/material
+packing to `entity_convert.comp`. The existing Java model traversal, pose transforms and PBR
+production remain on the CPU. This is not a complete GPU model transform implementation.
+
+The raw capture owns its bytes before JNI returns. Eligibility excludes explicit-index inputs,
+post draws, external world-token captures, cached clouds, prebuilt geometry and whole entities
+with an eye layer. Those retain their CPU semantic/topology processing; ordinary processed PBR
+can still use GPU final packing. Eye-overlay matching, line expansion, cloud reuse and the archived
+UI scene recording path retain their existing consumers. Geometry order, face flags, material
+modes and BLAS/TLAS visibility remain unchanged. There is no per-vertex texture lookup on the GPU.
+The old unused texture-ID collection is also avoided by the deferred path; the measured host
+reduction must not be attributed entirely to arithmetic offload.
+
+Each batch has owned immutable input/jobs/descriptors and output buffers. Only the compute pipeline
+is shared. Compute writes the final BLAS inputs and ray-tracing material stream directly, with no
+production readback. Existing upload-to-compute ordering is followed by a compute-write dependency
+to AS input and ray-tracing shader reads; recorded batches join the existing frame retainer. No
+queue ownership change, global idle, forced serialization or unrelated visibility policy was added.
+Normal operation enables this path; `MCVR_ENTITY_GPU_CONVERSION=0` before launch selects the retained
+CPU reference. This is a restart-only diagnostic comparison, not a new UI option.
+
+### Same-artifact stationary comparison
+
+Evidence root (local, ignored): `run/gpu-vertex-opt-20260925/`. `before/`, `instrumented/`, `trial/`
+and `candidate/` under `evidence/` retain distinct full source manifests/ZIPs and artifacts. The early
+format-census and first-GPU trial are exploratory and are not combined with the final comparisons.
+The candidate manifest contains tracked and nonignored untracked sources, raw and UTF-8 CRLF-to-LF
+hashes, CMake configuration, embedded native/shader hashes and matching PDB. Later documentation-only
+changes are recorded separately; they do not create a new renderer binary.
+
+Fresh copies of `run/entity-preparation-opt-20260924/fixture` use the same saved pose, mods and
+settings: Java 21, NeoForge 21.1.251, 3840x2054, 16 render/32 simulation distance, `rt_dlss`, balanced
+RR model 6, four bounces, Reflex 2, FG/vsync off, cap 260. Time/weather controls and existing entities
+are inherited unchanged. Each stationary run settles 45 s and captures 30 s. No build or other game
+runs concurrently. All captured frames are focused, screen-free, nonfailed and report zero FG FPS.
+The GPU/CPU/GPU ordering uses one JAR/DLL/Audit pair; only the native reference switch changes.
+
+| Metric (ms unless stated) | GPU A, PID 99840 | CPU reference, PID 99172 | GPU B, PID 99360 |
+| --- | ---: | ---: | ---: |
+| Recorded frames | 605 | 553 | 595 |
+| Mean real frame interval | 49.594 | 54.249 | 50.466 |
+| p50 / p95 / p99 | 49.159 / 53.887 / 58.866 | 53.793 / 57.077 / 62.734 | 50.073 / 53.372 / 57.987 |
+| Java geometry marshaling, inclusive | 10.812 | 13.099 | 10.819 |
+| Native conversion/copy/enqueue, inclusive | 2.983 | 5.218 | 2.926 |
+| Entity batch dispatch, inclusive | 3.006 | 3.693 | 2.995 |
+| GPU conversion timestamp | 0.0454 | not executed | 0.0457 |
+| Main-queue GPU completion | 25.196 | 24.585 | 25.369 |
+
+Mean real frame interval is 7.0-8.6% lower, about 18.4 to 19.8-20.2 real FPS. This is a bounded
+scene result, not a universal FPS forecast. GPU conversion is cheap but overall GPU completion is
+not reduced. Inclusive scopes overlap; do not add Java/native/GPU rows. Quantiles interpolate raw
+positive frame intervals; GPU unavailable/tail samples remain omitted, not zero-filled.
+
+Logical conversion uploads are about 19.49 MB/frame (two buffers), versus about 15.32 MB for the
+previous final-stream layout at the corresponding vertex/index count: roughly +4.18 MB/frame.
+The former is directly counted; the reference byte figure is calculated from the final layout,
+not independent PCIe telemetry. Counter rows are separate from duration CSVs and tested as such.
+Sampled WDDM dedicated peaks stay around 8,970 MiB; JVM/private memory varies. Five-second WDDM
+process samples are neither continuous peaks nor an exact allocation inventory, and no memory
+reduction is claimed. The preserved fixture emits the same invalid map-dimension startup warnings
+in reference and candidate cases; they occur before settled sampling and are not silently erased.
+
+### Tests and artifact identity
+
+RelWithDebInfo native INSTALL, shader compilation and `:distributedJar :verifyDistributedJar`
+passed. Audit has 19 passing tests, including counter/duration separation. Twelve distinct targeted
+CTest cases passed: frame-profile, gpu-profile, entity-vertex-packing, entity-conversion-gpu,
+instancing-contract, jni-coverage, shaders, world-mesh-contract, upload-staging-budget,
+pending-uploads, material-faces and material-faces-gpu. Some existing contract cases are static
+supplements; they are not all GPU behavior tests.
+
+The new real Vulkan test calls the production shader and command recorder, compares CPU packed
+fields and indices, checks guard regions and position tolerance, uses processed/deferred PBR,
+quads/triangles, two immutable batches and deliberately split dispatches, then builds BLAS from the
+GPU outputs. It also passed with the installed Khronos core/synchronization validation and an
+error-counting callback. OBS/RTSS older API warnings remain in the log. This proves the fixture's
+conversion and synchronization, not full-client validation or final pixel equivalence. An initial
+manual test invocation supplied an incorrect SPIR-V path and failed before dispatch; the corrected
+CTest invocation and its successful log are retained separately.
+
+Frozen candidate artifacts (unchanged for the comparisons):
+
+- Radiance JAR: `22D6B9788151AB3E90AEA384AF59716595CC1FC30011F331A5D97EB2E828BC63`.
+- core.dll: `930910337A6CBD189220D999BC290AAA0CB53F7CC56D6DC205541553B9757006`.
+- Audit JAR: `077D78792CE42F90379621648B209EA5A204820DE13B0A3CAC4DE925AF8931D4`.
+- Matching PDB: `DB42A30F2D4C7843BCB73EB316150F21F0F479FCE7CFCF645D8391EA05106DBA`.
+
+Build, embedded, extracted and actually loaded DLL identities are checked in each case's manifest
+and `loaded.json`. Existing dirty diagram/diagnostic/CPU optimization changes remain intact.
+No Git staging, commit, history rewrite, push, public distribution or production-world change is
+part of this batch. Long-duration stability, unrelated spring/diagram/plunger defects, historical
+GPU-loss root cause and public DLL licensing remain open.
+
+
+### Moving-route comparison and remaining measurement limits
+
+Fresh GPU/CPU cases use the same frozen candidate and a 40-second, 5 Hz server-driven camera path
+inside a 50-second profile: eight-block X excursion, +/-35-degree yaw, same Y/Z/pitch, then return
+to the saved pose. Both execute all 201 targets with zero skips. This is a repeatable movement
+fixture, not natural walking or deterministic animation replay. GPU PID 100100 and CPU PID 99436
+exit 0 after 128.30/129.12 seconds, save all dimensions and report zero dropped/failed samples.
+
+| Metric (ms unless stated) | CPU route | GPU route |
+| --- | ---: | ---: |
+| Recorded frames | 885 | 947 |
+| Mean real frame interval | 56.534 | 52.813 |
+| p50 / p95 / p99 | 56.646 / 61.013 / 66.137 | 52.676 / 56.800 / 63.096 |
+| Native conversion/copy/enqueue | 5.619 | 3.142 |
+| Entity batch dispatch | 4.039 | 3.234 |
+| Main-queue GPU completion | 23.473 | 23.678 |
+| GPU conversion | not executed | 0.0477 |
+| Input PBR vertices/frame | 160,152.6 | 160,167.3 |
+| WDDM dedicated peak MiB | 8,976.02 | 8,976.02 |
+| Process private peak MiB | 15,191.70 | 15,285.75 |
+
+The moving case reduces mean real frame interval about 6.6%. Captured settings/focus are unchanged;
+GPU/native timing availability is reported independently. Logical GPU conversion upload averages
+20.79 MB/frame on this route. Stationary private peaks varied from 14,951 to 15,874 MiB across GPU
+runs versus 15,289 MiB on CPU: this batch does not establish a reliable private-memory saving.
+`STATIC_COMPARISON.json`, `ROUTE_COMPARISON.json`, `RESOURCE_COMPARISON.json`, raw profiles, options,
+launches, module identities and logs preserve the actual evidence. Profiling overhead has not been
+separately controlled; CPU/GPU/copy costs must not be summed into an exclusive frame pie chart.
+
+
+### Update regression, final snapshot and deployment
+
+The default GPU path also ran without frame profiling in PID 91280. The isolated probe passed all
+seven stages in 110.11 world seconds: initial block-entity index equivalence, chest insertion and
+removal, F3+T, F3+A, clouds off/restore, and final index equivalence (359 active sections restored).
+All dimensions saved and the process exited 0 after 142.69 seconds. This checks internal ownership
+and live update/reload execution, not every final pixel or interaction latency. Existing Veil
+unsupported-layout and map-data warnings remain visible; they are not declared solved here.
+
+All six final cases used the same JAR/DLL/Audit, completed normal save/exit and showed no device-loss
+result. `CASE_VERIFICATION.json` records per-process identity/results and fixed mod hashes. The
+host is RTX 4080 SUPER, driver 616.92, 16,376 MiB reported memory. Final `evidence/final/MANIFEST.json`
+and source ZIPs include the documentation addendum; product/test/build source hashes match the
+compiled `candidate` snapshot. No mechanical rebuild was needed for those documentation changes.
+The raw tests/XML, normalized/raw source hashes, SPIR-V identities, matching DLL/PDB, run scripts
+and individual logs are retained under the same ignored evidence root. This is acceptance evidence,
+not a disposable maintenance backup.
+
+The same matched Radiance/Audit artifacts were deployed to the authorized non-portable path
+`E:\Minecraft\PrismLauncherDev\instances\Radiance 1.21.1-neoforge\minecraft\mods`.
+`DEPLOYMENT.json` records before/after hashes. Only the two mod JARs were replaced; prior artifacts
+remain in the before snapshot. No Prism settings/world data were changed or played automatically.
+All automated clients have exited; no computer-use session was used. There is no request for a new
+manual sample. This does not add user visual approval, long-duration stability or cross-GPU evidence.
+
+
+## 2026-09-25 — Incremental published chunk scene metadata and rendering parity
+
+Status: implemented, build-verified and automated-verified; bounded runtime/performance results
+are recorded below. No new user visual acceptance or general GPU stability claim.
+
+The user requested the next measured optimization and explicit rendering-correctness checks.
+The previous GPU conversion remains enabled. This batch targets the approximately 8 ms/frame
+native chunk metadata phase; Java geometry generation, shaders, TLAS building, scheduling,
+view-distance policy and GPU completion/retirement contracts are not redesigned.
+
+MCVR stores one immutable CPU metadata snapshot per published chunk: owned buffers and address
+arrays, hit-group names, versioned face rules and instance appearance data. Frames retain the
+snapshot as one resource set instead of separately retaining nine leaves. Version/resource
+replacement, invalidation and emission-resource release invalidate it. Current double-precision
+camera-relative transforms and determinant-dependent winding remain per-frame work. Only primary
+world slots omit their unused transform history; every external slot retains history, including
+the frame before its first custom transform. This last boundary was caught during this batch's
+source review and added before final comparisons. No camera-based geometry removal is introduced.
+
+CPU reference assembly remains available after restart with `MCVR_CHUNK_SCENE_CACHE=0`.
+Default-off `MCVR_CHUNK_SCENE_VERIFY=1` independently compares the actual appended addresses,
+hit groups, instance appearance bytes and face rules with the live published source. Profiling
+exports separate hit/build/custom-history work counters; those values are not time measurements.
+Verification is disabled in all performance captures. Flat GPU metadata tables still upload each
+frame, and TLAS construction remains unchanged: this is not a fully persistent GPU scene.
+
+Evidence (non-portable, ignored): `run/chunk-scene-opt-20260925/`. `before` preserves the incoming
+worktree and prior artifacts; `candidate` is the first tested implementation; `validated` includes
+the external first-transform guard and final Audit fixture. Complete tracked/nonignored-untracked
+source ZIPs and raw/LF-normalized hashes distinguish these snapshots. They are acceptance evidence,
+not disposable Git recovery backups. Existing dirty work was retained without staging or commits.
+
+The final RelWithDebInfo native INSTALL and matched `distributedJar`/`verifyDistributedJar` builds
+passed. Thirteen targeted CTests passed, including actual GPU entity conversion/BLAS and material
+face tests, plus cache append/invalidation, ownership retention, mixed face rules, mirrored/large
+coordinate history, external first-transform, view separation and failure-safe factory tests.
+Audit tests/build passed; its optional existing hotspot probe now supports per-stage screenshots
+and a three-block Sable iron/leaves/glass fixture. These experiments require explicit access and
+isolated markers, and are not enabled for normal Prism use.
+
+### Same-artifact performance and correctness evidence
+
+RTX 4080 SUPER / driver 616.92; 3840 x 2054, render distance 16, simulation distance 32,
+RR Balanced (recorded RR model 6), four bounces, Reflex mode 2, FG/vsync off, cap 260. Each process
+starts from a fresh copy of the same isolated fixed-time/weather city fixture and waits 45 world
+seconds. Static profiles last 30 seconds; movement profiles last 50 seconds and include the same
+40-second, 5 Hz eight-block X / +/-35-degree yaw route. All captured frames are focused, world-active,
+without a GUI or failed-frame marker; generated-frame FPS is zero. Neither quality nor view distance
+was reduced. Pose animation and OS scheduling remain nondeterministic.
+
+| Case, in execution order | Frames | Real interval mean / p50 / p95 / p99 (ms) | Chunk metadata self (ms/frame) |
+| --- | ---: | ---: | ---: |
+| cached-static-a | 662 | 45.313 / 44.908 / 48.264 / 53.197 | 4.469 |
+| reference-static | 494 | 60.721 / 64.734 / 72.453 / 80.174 | 7.989 |
+| cached-static-b | 615 | 48.809 / 47.422 / 66.443 / 69.626 | 4.781 |
+| reference-static-b | 608 | 49.357 / 48.973 / 52.462 / 56.235 | 7.945 |
+| cached-route | 1022 | 48.955 / 48.801 / 52.876 / 58.383 | 4.704 |
+| reference-route | 969 | 51.614 / 51.487 / 56.166 / 60.762 | 7.856 |
+
+Metadata work falls from 7.85-7.99 to 4.47-4.78 ms/frame (about 40-44%). The two entries per frame
+under that label are consecutive phases in one preparation call, not two full scene traversals.
+The moving comparison reduces real frame interval 5.2% (51.614 -> 48.955 ms), p95 56.166 -> 52.876 ms.
+Both moving cases finish all 201 targets with zero skips and identical initial camera position/angles.
+This small route is not a new-chunk throughput or large-distance travel benchmark.
+
+Do not attribute the entire 60.721 -> 45.313 ms static difference to this cache. The first reference
+run has 10.84 ms `acquire-other` mean versus 1.25 ms on its repeat; cached runs also vary (0.97/2.10 ms).
+The extra frame-start variation is not localized further here. All samples are retained, including
+the slower reference and noisier cache run. GPU main-queue duration stays approximately 24-25 ms in
+static runs. Profiling overhead was not separately controlled; inclusive Java/native/GPU values are
+not additive exclusive portions of a frame.
+
+Steady captures contain approximately 8,199 reused chunk snapshots per frame. Cached static A has
+zero rebuilds during capture; static B has three total and the moving run six, matching occasional
+live publications rather than continual rebuilding. Static logical PBR input is approximately
+150,168 vertices/frame in both paths; moving input is approximately 160,110. Native/GPU mesh input
+volume is not reduced by culling. All static WDDM dedicated peaks are 8,970.01 MiB; moving peaks are
+8,975.52/8,976.02 MiB. Process-private peaks range 15,067-15,873 MiB; the moving cache/reference peaks
+are 15,232/15,014 MiB. No process-memory saving is claimed. WDDM samples are every five seconds over
+the entire process, not continuous allocation peaks or a statistic excluding SDK-owned resources.
+
+The earlier candidate PID 100092 passed the original seven-stage update case in 110.16 world
+seconds and exited 0, but predates the external-history safeguard and must not be merged with final
+results. Final candidate PID 7216 passes the extended 110.20-second case: chest add/remove, mixed
+Sable fixture assembly/client delivery, F3+T, F3+A, cloud off/restore, final index consistency and
+normal save/exit (143.97 seconds total). Its default-off source verifier reports at least 9,540,582
+chunk comparisons with no mismatch, including a custom-transform external slot across both reloads.
+The block-entity index goes 359 -> 360 -> 359 before reload and returns to 359 after rebuilding.
+Stage screenshots are retained for comparison; this is no new user visual verdict. Prior fixture
+invalid-map-dimension warnings and Veil unsupported-layout reload errors remain visible and are not
+claimed solved by this optimization.
+
+Final matched build identity (SHA-256):
+
+- Radiance JAR: `9A537E4398BB292271384C7373F7C318E8392A818CF694B648581F17A3C67813`.
+- core.dll: `B7BBB90BBCAC5906F25EFBB684E898CD9FE64B4E919CA8711EB275767502F6F4`.
+- Audit JAR: `2A69CA08C4D62CEDC4201896861BA2C94560306B16038F8A4D97FF2150006521`.
+- Matching local PDB: `125B492BA193CD8750C7A5E408AE113EA9EC618A8ABD4501C1EF0411BA9FF833`.
+
+The 19 Audit tests pass with no skips. Native validation is 13/13, not the entire historical suite.
+`STATIC_COMPARISON.json`, `ROUTE_COMPARISON.json`, `RESOURCE_COMPARISON.json`, raw profiles, process
+logs, test XML and source/packaged manifests preserve the evidence. The 15 fixed git submodules
+and ignored Streamline headers / NRD-generated includes were freshly inventoried and unchanged
+from the prior GPU conversion batch. Build, embedded and actually loaded DLL hashes agree.
+
+
+### Reference reload control and final handoff
+
+The same final artifact with cache disabled also passes the Sable/edit/F3+T/F3+A/cloud regression
+(PID 100060, 110.14 world seconds / 143.81 process seconds, exit 0, all dimensions saved, final index
+359). Agent inspection of the two final stage screenshots found no gross missing-building or texture
+replacement difference in that view. PT noise/cloud samples differ; no pixel-exact or user visual
+approval is inferred, and the Sable fixture's delivery/input checks are not a comprehensive visual
+physics test. Eight processes with the final artifact (four static, two moving, two update controls)
+all save/exit normally without a reported device loss. The first pre-safeguard candidate is kept as
+separate evidence. `CASE_VERIFICATION.json` verifies hashes of all six installed mods, embedded and
+extracted/loaded DLL identity, per-process results and the actual pass lines.
+
+`evidence/validated/MANIFEST.json` retains the exact compiled product/test/build source bytes.
+The final maintenance snapshot adds documentation and removes spaces from one otherwise empty C++
+line; `FINAL_CHECK.json` records that sole non-document difference explicitly. It changes no token,
+line number or behavior and did not trigger a mechanical rebuild or reuse of a new binary hash.
+The tested artifacts remain exactly those listed above. Both staged areas remain empty and the
+preexisting worktree changes remain uncommitted. Whitespace checks pass.
+
+The matched Radiance/Audit JARs are deployed to the authorized non-portable Prism instance
+`E:\Minecraft\PrismLauncherDev\instances\Radiance 1.21.1-neoforge\minecraft\mods`.
+Only the two existing mod JARs are replaced, with before/after identity in `DEPLOYMENT.json`;
+Prism settings, saves and other mods remain untouched. No automatic Prism launch or computer-use
+session was used. All repository test clients have exited. No further manual sample is requested.
+This does not close historical GPU-loss, other PT configurations, large-distance travel, long-term
+stability or NVIDIA public-redistribution gates.
+
+## 2026-09-25 — Defer idle raster commands during real material-state capture
+
+Status: implemented and build-verified; targeted automated/GPU checks and bounded runtime comparisons
+are recorded below. This is not renewed user visual acceptance or a general stability conclusion.
+Applies to the uncommitted Radiance/MCVR worktrees based on `6e9b97a` / `ead8d47`; existing changes
+are retained. Local, non-portable evidence: `run/submission-opt-20260925/`.
+
+The next Java-to-native submission investigation first separated argument allocation, cleanup and
+actual RenderType face-state capture. The original product with finer external-Audit profiling
+measures about 0.05 ms/frame for argument allocation/free, versus 6.80 ms for face capture (setup
+1.44, clear 0.59, GL-state backup 0.03, restore 3.21 ms; nested, not additive frame shares). Therefore
+this batch does not add an argument arena, skip callbacks, cache faces by RenderType/name, or begin
+GPU pose/model migration. JNI copies the owned input before returning; that lifetime is unchanged.
+
+MCVR's raster setters immediately update their shadow fields but no longer record transient GPU
+state commands while `overlayMode == NONE`. Real draw entries already replay the complete state;
+the NONE-to-POST entry now does so too. Active-pass changes remain immediate. Actual setup/clear
+callbacks, callback-internal draws, GL-cache restoration, face/winding rules, target/viewport changes
+and JNI fatal checks remain in place. Main/FBO/diagram/post entry points and masked-clear/fixed
+post-effect paths were checked directly. There are no shader, geometry, queue, resource-retirement,
+JNI ABI or Java product changes in this batch. `MCVR_IDLE_UI_STATE=0` is a restart-only eager
+reference; default operation enables idle deferral, not a function-disabling workaround.
+
+External Audit adds nested capture stages and a default-off `MaterialStateProbe`. In a marked
+isolated client it renders/readbacks a 64x64 FBO through production TextureTarget/BufferUploader:
+idle-to-draw state, active-pass blend/depth/scissor/color-mask changes, a real custom RenderType draw,
+FRONT/CW capture, and restoration after an intentionally throwing callback. Failed expectations
+log FAIL even if normal client shutdown returns zero. The probe is never enabled in timed samples
+or Prism. The initial, post-F3+T and final reads passed in PID 97684, alongside chest add/remove,
+Sable iron/leaves/glass assembly/delivery, F3+A, cloud restoration and published-chunk verification.
+Its seven stages took 110.11 world seconds, process 165.52 seconds, then all dimensions saved and
+exit 0. The earlier PID 93884 basic regression also passed but did not enable the new pixel/Sable
+switches; it is not presented as equivalent coverage. A failed preparation command created an
+unused partial fixture, and an earlier UTF-8 script-edit failure left that basic run's switches off;
+both are tooling errors, not game crashes or successful enhanced-probe results.
+
+RelWithDebInfo native INSTALL and paired `distributedJar`/`verifyDistributedJar` passed. Audit build
+executes 19 Java tests and two native collector tests successfully. Seven targeted MCVR CTests pass:
+framebuffer contract/GPU, JNI coverage, FG UI GPU, material-faces CPU/GPU and diagram-surface GPU.
+The standalone GPU tests supplement, rather than replace, the real client's changed UIModule path.
+No full historical suite or fresh full-client validation-layer run is claimed. One unquoted Gradle
+property invocation failed before task execution; the quoted corrected command passed and both
+logs remain. The initial census collector used Release; detailed census and final candidate use
+RelWithDebInfo. Only same-final-artifact comparisons below support the performance conclusion.
+
+### Same-artifact performance
+
+RTX 4080 SUPER / driver 616.92; 3840x2054, render distance 16, simulation distance 32, four bounces,
+RR Balanced/model 6, Reflex 2, FG/vsync off, cap 260. Every case uses a fresh copy of the same city
+fixture with fixed time/weather. Static captures are 30 seconds after 45 world seconds settling;
+movement captures are 50 seconds, containing the same 40-second, 5 Hz, eight-block X / +/-35 degree
+yaw route. Both movement runs reach 201 targets with zero skips. All captured frames are focused,
+world-active, no GUI/failed-frame marker, and generated FPS zero. No quality/view-distance reduction.
+
+| Execution case | Frames | Real interval mean / p50 / p95 / p99 (ms) | Face capture (ms/frame) |
+| --- | ---: | ---: | ---: |
+| idle-static-a | 638 | 47.046 / 46.490 / 52.551 / 56.614 | 5.597 |
+| eager-static | 603 | 49.789 / 49.260 / 54.683 / 60.507 | 7.114 |
+| idle-static-b | 652 | 46.076 / 45.681 / 48.967 / 55.722 | 5.526 |
+| idle-route | 1032 | 48.462 / 48.598 / 52.165 / 57.526 | 5.924 |
+| eager-route | 975 | 51.299 / 51.083 / 55.353 / 62.594 | 7.525 |
+
+Static real intervals improve 5.5-7.5%, moving interval 5.5%. Face capture falls about 21-22%; the
+restore portion falls 3.309 -> 2.377-2.394 ms in static runs. Overall Java marshaling is 11.868 ->
+10.118-10.295 ms static, 12.568 -> 10.772 ms moving. Static frame-start-other is approximately
+0.98-1.00 ms in all three runs; GPU main-queue duration remains 27.2-27.6 ms. Do not credit every
+fraction of total-frame improvement exclusively to this one nested timer or predict the same gain
+on another scene/GPU. Render-thread profiling overhead was held constant, not independently measured.
+
+Static GPU-conversion input stays about 150,166-150,167 vertices/frame and logical upload 19.49 MB;
+moving input is about 160,126/160,190 (animation and time-weighted sampling are not deterministic).
+This does not remove geometry. Static WDDM dedicated peaks are 8,969.5-8,970.0 MiB; moving peaks are
+8,976.0/9,246.1 MiB. Private process peaks are 14,738.7-15,555.0 MiB static and 15,854.5/16,324.2 MiB
+moving. These five-second, whole-process samples include startup/SDK activity and are not allocation
+peaks or proof of memory savings. The implementation introduces no persistent GPU cache.
+
+`STATIC_COMPARISON.json`, `ROUTE_COMPARISON.json`, `RESOURCE_COMPARISON.json`, raw CSVs, per-process
+logs and `CASE_VERIFICATION.json` retain distributions, identity and limits. `before`, `instrumented`,
+`detailed` and `candidate` preserve separate complete tracked/nonignored-untracked source snapshots;
+raw and UTF-8 CRLF-to-LF hashes are recorded. The final product is compiled from `candidate`;
+subsequent maintenance text does not require a binary rebuild. Fifteen pinned submodules and the
+ignored Streamline/NRD-generated build inputs were freshly checked and match the preceding batch.
+
+Final tested identity (SHA-256):
+
+- Radiance JAR: `AB94FD035B83E454B35C1FAD189DFED0C7C49E9A637F044FA0E0DB25AFDCC672`.
+- core.dll: `FB2760E8D299C65A7F553837DAA1D133E2B56277AEF001342D2E94EFA443A7E6`.
+- Audit JAR: `417428E7D73D428084A80D3976BEAB59EAE65E461EA6A92FD0F4454308F2433F`.
+- Local matching PDB: `0822C00D121AE73E7873B80CCC691AC38D34C7ACDF937CAA7CA5A764F90B367E`.
+
+Build/embedded/extracted/loaded DLL identities agree in the completed cases. No staging, commit,
+amend, push or public release occurs. Deferred spring/diagram/plunger visuals, historical GPU-loss
+root cause, other PT/FG configurations, large travel and long-duration/cross-GPU behavior remain
+open. This measured CPU command reduction does not complete Java model/pose GPU migration.
+
+### Final reference pixels, GUI check and deployment
+
+The eager reference PID 7072 passes the same seven-stage/Sable/reload case and all three pixel
+assertions (110.18 world seconds / 146.10 process seconds, exit 0). All six 64x64 RGBA readbacks
+(initial, after reload, final in both modes) are byte-identical. This is exact parity for the test
+pattern, not all world images. The native source verifier and block-entity-index assertions remain
+separate from pixel evidence.
+
+PID 72340 also opens the actual Create config factory, opens mechanical-piston Ponder, scrolls
+forward/back successfully, captures each scene and closes normally (47-second world sequence,
+81.86-second process). Agent inspection of retained config and Ponder-next images found the
+expected controls, textured preview and blurred world background; it is not user approval or a
+pixel-exact reference comparison. No Ponder PT was reintroduced. Nine processes on the final
+artifact have distinct normal-save/exit evidence and no reported device loss. The two earlier
+census processes use the earlier product and are not merged into that count. Existing invalid-map
+saved-data warnings and Veil unsupported-layout/type errors remain visible; this optimization does
+not claim to repair them.
+
+The tested Radiance/Audit JARs above were deployed to the authorized non-portable Prism
+`E:\Minecraft\PrismLauncherDev\instances\Radiance 1.21.1-neoforge\minecraft\mods`, replacing only
+those two files. Before/after hashes are in `DEPLOYMENT.json`; old artifacts remain in `before`
+evidence. Prism was not running and was not launched; its settings, worlds and other mods were not
+changed. No computer-use session or further manual sample is required. Final source maintenance
+changes after the compiled `candidate` are documentation only, recorded by `FINAL_CHECK.json`.
+Full snapshots include the new Audit probe/Mixin and all preexisting necessary untracked sources.
+Both staging areas remain empty and whitespace checks pass. No acceptance evidence was deleted.
+
+## 2026-09-25 Persistent rigid baked-model prototype and producer attribution
+
+Status: implemented / build-verified / automated-verified / runtime-observed within the cases below;
+not general visual acceptance. Evidence: source, build, CPU behavior tests, bounded Vulkan compute
+and ray-rule tests, real copied-city runs. No staging/commit/amend/push/public release.
+Starting HEADs remain Radiance `6e9b97a53049fad833e673da647ac517efde5fe3` and MCVR
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`; all incoming dirty/untracked optimizations are retained.
+
+### Scope, measured selection and implementation
+
+The user authorized attribution followed by one persistent-model prototype, not six parallel
+optimization projects. The [bounded research follow-up](research/2026-09-24-medium-scene-cpu-hotspots.md#2026-09-25-producer-attribution-and-bounded-rigid-baked-model-prototype)
+contains producer timings, overlap rules, source contracts and remaining costs. Actual city
+ItemFrameRenderer input (about 56,220 vertices/frame) led to the rigid baked-model bulk-quad target;
+no renderer/block/texture-name whitelist was introduced. ModelPart skeletons are not rewritten.
+
+Product areas: `RigidModelCapture`, ordinary EntityProxy/StorageVertexConsumerProvider capture,
+block/item model entry Mixins and resource reload; native `Entities` local model resources,
+WorldPrepare instance/history assembly, submission commit/retirement, JNI and shared ray-cone LOD.
+The renderer/model/quad/tint callbacks still execute. Stable local quad recipes avoid transformed
+PBR vertex expansion, native conversion/upload and BLAS rebuild on hits. Current transforms,
+visibility/appearance and real RenderType face callbacks remain. Unsupported wrappers/poses and
+special consumers use the original path; no second complete ModelPart expansion is introduced.
+Cache limits, epoch invalidation, texture-owner check-and-use and in-flight retirement are explicit.
+The restart-only `-Dradiance.rigidModels=true` prototype is **off by default** pending wider coverage.
+
+A direct correctness gap found during evaluation was fixed: per-owner draw-count changes can shift
+ordinals, so the final history identity includes owner, draw count and ordinal; matching native
+model identity is also required. Missing/replaced draws cannot inherit another identical part's
+old transform merely because the ordinal matches. Maximum persistent draws per owner is 1,024;
+excess draws retain original expansion. This does not solve general semantic identity for arbitrary
+renderers that reorder indistinguishable same-count draws; their existing order-based history
+contract remains a limitation, not a claim of universal temporal equivalence.
+
+The shared LOD helper now uses transformed triangle edges with the world-space ray cone. This is
+required when moving scale from expanded vertices into an instance matrix and also affects direct
+users of the same helper. It is applied to both A and B, not credited as a persistence speedup.
+No visibility deletion, quality reduction, global GPU idle, unrestricted AS update, new stable
+world origin, scene-table rewrite, scheduling rewrite, arena, PTLAS or SER was added.
+
+### Automated verification and failed attempts
+
+Final GAME tests: 206 passed. Bootstrap: 10 passed, two skipped. Audit: 21 passed plus its two native
+collector tests. The seven rigid Java tests exercise the actual quad recorder/fallback, mutable input
+ownership, appearance changes, supported/refused poses and history identities. The native lifecycle
+helper is used by production and tests failure, abandoned recording, actual submit and repeat frames.
+
+RelWithDebInfo native build/INSTALL and paired package, JNI, shader and Maven-development-artifact
+checks passed. MCVR CTest initially passed 61/63: two supplemental shader-source contract tests still
+expected the old LOD helper spelling. After updating those two expectations, their 2/2 retest passed;
+the real new rigid-model GPU test and existing face/GPU tests had already passed. This is a complete
+successful union of that suite plus targeted retest, not a claim that its first invocation was 63/63.
+The new GPU math test covers 263,168 scale/mirror/rotation/nonuniform/degenerate-UV cases; it does not
+by itself prove complete PT image parity.
+
+Preserved failed tooling: an unqualified Gradle `--tests` filter also reached Audit (no matching test),
+and `verifyDistributionJar` was an incorrect task spelling. Correct qualified/full test tasks and
+`verifyDistributedJar` passed. An early packaging mistake detected by the embedded-DLL assertion
+still continued into an invalid mixed Java/old-native package because the shell sequence lacked an
+exit guard. PID 50496 (`verify-1`) crashed during startup in `sl.reflex.dll`, before world entry;
+its hs_err/logs remain. Artifact mismatch is confirmed, **its causal role in that Reflex crash is not**.
+The invalid run is excluded from correctness/performance evidence. Preparation now validates hashes
+before copying and every build/prepare stage stops on failure. No automatic identical crash retry.
+
+### Source and artifact chain
+
+Non-portable evidence root: `Radiance/run/model-persistence-20260925/`. `before`, `prototype-3`,
+`prototype-4` and `prototype-5` retain separate full tracked/nonignored-untracked source archives,
+raw hashes and UTF-8 CRLF-to-LF normalized hashes, configuration and matching symbols. Partial failed
+snapshots are not promoted to valid identities. `DEPENDENCIES.json` freshly rechecks all 15 pinned
+clean submodules and 117 ignored Streamline/NRD header/shader build inputs. Runtime DLLs/SPIR-V and
+shader archives are hashed inside each packaged JAR. No retired replay product was reintroduced.
+
+Final product source is `evidence/prototype-6/MANIFEST.json`; `prototype-7` adds only the diagnostic
+correction described below and maintenance text. Product JAR/DLL/PDB hashes are unchanged:
+
+- JAR: `C8DA1FCC146CFEFC74526195D343BF277602481FA374BD46B686529FB8450B39`.
+- core.dll: `B015D09C3E8306038BC126EC50A3A412C1B6C3AD882F3311D04110333BBAD5A6`.
+- Audit used for final product lifecycle/A/B: `6B016E79EE5A850A197C217AFDEC0661ED8F21C39708B4FDCD58A84B3AE715A9`.
+- Corrected census/deployment Audit: `A277EE2450A79FF8A6DD93AF783D9886B5C39C50E2719E3728FF1530B8C77E4D`.
+- Matching local PDB: `2738513119D22A58F685FB68A7529E9196A7BEC19EB8255AA471CBE5542FC8B9`.
+
+`prototype-4` formal repeated comparisons precede the draw-count history correction and use JAR
+`04CAA4DEA99059C2BE17747CE0EAF3A2292216C366F232C5AB1B8854706280FC` and Audit
+`68BD114B35FE6646C46AED9EA781FA1B3ADDCD835765FF7399A9E455BF655877`, with the same native DLL.
+Its results are retained separately, not merged into final-artifact regression claims. The earlier
+`verify-2` sampled 4,096 draws on `prototype-3`; it is not substituted for final regression evidence.
+
+### Final lifecycle and geometry checks
+
+The intermediate `prototype-5` JAR `22EFFFDCBDD925D1FB76C9ACF6058E3B99517C44E4470508D18F462936D75ACD`
+and Audit `936B09FCDF14069546387015CE7D0DF03090DAF156076F4DD0B3C5CE1ADA3F6C` passed
+`lifecycle-final`, PID 88040, in 134.00 process seconds, exit 0. Its evidence remains in
+`LIFECYCLE.json`; it is not labeled as the final artifact. Final changes additionally snapshot the
+recorded pose before the original renderer mutates its PoseStack, restrict eligibility to exact
+vanilla SimpleBakedModel inputs (custom subclasses retain their callbacks/fallback), and fix the
+diagnostic's delayed rigid-face accounting so it cannot steal legacy producer labels. Unresolved
+rigid material ownership is explicitly `unattributed/rigid-material`.
+
+Final `prototype-6` case `lifecycle-verified`, PID 96068, runs 133.49 process seconds and exits 0.
+Eight stage reports pass after actual item-frame rotation, cutout/glass substitution, glint/glowing
+fallback, empty/invisible state, restoration, F3+T, deletion/replacement and F3+A. Expected item,
+rotation, invisibility and glowing state are checked after delivery to the actual client. Cache IDs
+from before reload are absent afterward. Each stage samples original PBR expansion versus local
+geometry transformed by its current matrix; all observed position/normal errors are zero and other
+material bytes match exactly. `VERIFIED_LIFECYCLE.json` indexes its eight stages (4,096 initial
+draws / 493,044 vertices, then 752-1,015 sampled draws per stage) and practical limits.
+
+This is CPU input parity plus real lifecycle evidence, not per-pixel reflection/shadow/motion-vector
+acceptance. The process records saving all dimensions, Streamline/NGX shutdown and empty delayed
+resource list, then normal exit. It does not establish a historical GPU-loss root cause, dangerous
+G3 injection success, long-duration stability or cross-GPU compatibility. Fresh processes and resource
+reload are tested; a live cross-dimension transition is not claimed by these stage logs.
+
+### Same-artifact static and moving comparison
+
+Final `prototype-6` A disables only `radiance.rigidModels`; B enables it. Both retain idle-state
+optimization, GPU PBR conversion, chunk metadata cache and the corrected ray-cone shaders. Fresh
+copies of the same Newport City fixture use 3840x2054, 16 view distance, 32 simulation distance,
+four bounces, RR Balanced/model option 6, Reflex 2, FG/vsync off and the same mods/settings. The
+profile records focus throughout, zero SDK generated FPS and no dropped/failed samples. Heavy
+producer census and dual-path verification are disabled in both formal variants.
+
+After 45 seconds of world warmup, static samples last 30 seconds. Moving samples last 50 seconds
+and contain the same 40-second route (201 targets, zero skipped, eight-block X excursion and
+plus/minus 35-degree yaw, returning to the original pose). Separate processes never compete for
+the GPU. Frame-start intervals are real frames, not FG/display FPS; CPU/GPU inclusive timers are
+not added together as savings.
+
+| Final case / PID | Intervals | Mean ms | p50 ms | p95 ms | p99 ms |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| static A / 80532 | 630 | 47.615 | 47.080 | 51.751 | 57.372 |
+| static B / 42848 | 698 | 42.952 | 42.638 | 46.920 | 51.661 |
+| route A / 100276 | 1,001 | 49.935 | 49.796 | 54.772 | 59.395 |
+| route B / 100176 | 1,093 | 45.713 | 45.392 | 51.032 | 56.475 |
+
+The final product pair reduces mean real interval 9.8% static and 8.5% moving. Earlier independent
+`prototype-4` pairs showed 6.8-9.7% static and 3.9-7.7% moving improvement; their different Java
+history/diagnostic revision is retained separately. The intermediate `prototype-5` static A had
+additional between-frame tail gaps (mean 48.354, p95 65.948 ms), which are not all credited to this
+optimization. `PROTOTYPE4_COMPARISON.json`, `PROTOTYPE5_COMPARISON.json` and
+`VERIFIED_COMPARISON.json` retain per-case raw/distribution links rather than pooling artifacts.
+This is bounded repeat evidence, not a universal speedup or formal confidence interval.
+
+| Final static metric, per frame | A | B | Interpretation |
+| --- | ---: | ---: | --- |
+| Java/native PBR input vertices | 150,180 | 91,163 | 59,016 persistent vertices reused; about 39.3% less expansion |
+| Logical GPU input upload bytes | 19,492,556 | 11,828,146 | About 7.66 MB less; not measured PCIe traffic |
+| Dynamic BLAS inputs | 1,040.8 | 808.6 | Persistent models are already built in steady state |
+| Persistent instances / cached models | 0 / 0 | 490 / 132 | No new persistent geometry upload/build events in this complete steady capture |
+| Total TLAS instances | 9,240.8 | 9,498.6 | About 258 extra instances; cost is not hidden |
+| Java ENTITIES inclusive / self ms | 13.149 / 6.185 | 10.756 / 4.869 | Inclusive contains nested stages; do not add both |
+| Geometry marshal inclusive / self ms | 10.237 / 3.596 | 9.048 / 2.664 | Producer work remains |
+| Face capture inclusive ms | 5.686 | 5.419 | Callbacks retained; not a new material-state optimization |
+| Native conversion inclusive ms | 3.032 | 1.971 | Conversion/format/queue scopes overlap |
+| Entity metadata ms | 1.843 | 1.611 | No global scene-table migration |
+| Additional rigid JNI/queue time ms | 0 | 0.176 | Extra per-instance submissions |
+| Entity BLAS GPU ms | 1.473 | 1.098 | Nonblocking retired query |
+| TLAS GPU ms | 0.207 | 0.194 | Run variance; route increases 0.197 to 0.204 ms |
+| Main queue GPU interval ms | 26.037 | 25.217 | Excludes separate queues and SDK-private work |
+
+Sampled static process dedicated GPU peaks are 9.408/9.399 GB and private committed bytes
+16.276/15.950 GB; route peaks are 9.412/9.405 GB GPU and 15.695/15.578 GB private. These are
+five-second WDDM/process samples including startup, not exact peaks or proof of reduced memory.
+All four final comparisons save/close and exit 0 in approximately 110/112/130/130 process seconds.
+
+Decision: retain the bounded, default-off prototype; the recurring work and total interval fall
+beyond the observed repeat spread, with a small extra instance cost. Controlled expansion is worth
+considering only after its next producer's actual capability/consumers are established. This does
+not authorize skeleton animation caching, general scene-table work or feature/quality reduction.
+Optional observation steps and a hash-checked no-build launcher are in the task's isolated
+`ACCEPTANCE.md`; no new user performance sample is required. Prism/production data are unchanged.
+
+### Diagnostic correction after the formal comparison
+
+`verified-census`, PID 31312, exposed an Audit-only omission: the rigid capture wrapper selected an
+explicit unassigned owner but did not enter the face-count/timing scope. Product rendering and
+global FrameProfiler face timers were correct; the producer CSV omitted 490 rigid face captures
+per frame rather than charging them to another renderer. Its 44.048 ms interval is a heavy-census
+observation, excluded from formal performance samples. Preserve the CSV as incomplete face attribution.
+
+`prototype-7` adds the missing scope only when that census is active; no product code, shader,
+JAR, native DLL or PDB changes. Audit build and its 21 Java tests/two native collector tests pass
+again. The earlier formal A/B and lifecycle retain their Audit-6 identity; they are not relabeled
+as executions of the corrected Audit. Ordinary heavy-census-disabled measurements do not execute
+the newly added `ProducerCensus.face` call. Exact uninstrumented observer overhead remains unmeasured.
+
+Corrected real-client census `census-corrected`, PID 87436, exits normally after 109.88 process
+seconds with all dimensions saved and the exact final DLL loaded. Its 665 profiled frames record
+exactly 490 rigid face captures/frame (1.911 ms), explicitly unassigned to a concrete producer;
+ordinary chest counts remain 229/frame and item-frame legacy counts 12/frame. Nothing steals the
+legacy attribution queue. No dropped samples are reported. The heavy census's mean interval is
+45.158 ms versus the separate lightweight static candidate's 42.952 ms: it is visibly intrusive,
+not a formal speed comparison or an exact observer-overhead measurement. Formal A/B has it off.
+`CENSUS_CORRECTION.json` preserves this scope and artifact identity.
+
+The isolated optional `manual-observation` copy contains the unchanged product and corrected Audit;
+its no-build launcher is syntax-checked and verifies both mod hashes before startup. It is not
+automatically launched or visually approved. `evidence/final/MANIFEST.json` retains all necessary
+tracked/nonignored-untracked source and build identities; `FINAL_CHECK.json` proves only maintenance
+text differs from prototype-7 and that product sources are unchanged from prototype-6. No new backup
+refs, commits, staging or cleanup of historical evidence occurred.
+
+## 2026-09-25 Prism handoff for the rigid baked-model prototype
+
+Status: deployed; user runtime/visual acceptance pending. Evidence: artifact/configuration identity
+only; no new game run, rebuild or Git operation. This supersedes the preceding optional repository
+manual-launch handoff: the user requires the authorized Prism instance for actual observation.
+
+The unchanged final Radiance product and corrected Audit from the
+[prototype entry](#2026-09-25-persistent-rigid-baked-model-prototype-and-producer-attribution) were
+copied to `E:\Minecraft\PrismLauncherDev\instances\Radiance 1.21.1-neoforge\minecraft\mods`
+(non-portable). Both destination hashes and the packaged core.dll hash match that entry.
+No matching client was running during deployment. The instance now overrides the previously empty
+inherited JVM arguments with `-Dradiance.rigidModels=true`, so manual startup actually enables the
+otherwise default-off experiment. Heavy census, scripted mutations and automatic shutdown remain off.
+Other mods, game settings and worlds are untouched; the agent did not launch Prism or Minecraft.
+
+Machine record: `run/model-persistence-20260925/evidence/prism-deployment-20260925-081723/DEPLOYMENT.json`.
+The prior instance.cfg is retained there for this acceptance's configuration rollback. Prior mod
+bytes already match the retained `evidence/before/` artifacts, so no duplicate binary backup was
+created. Loaded-runtime identity and user observations must be checked after the user's launch;
+deployment alone does not extend the previous automated correctness or performance evidence.
+
+## 2026-09-25 Bounded Prism visual feedback for persistent models
+
+Status: runtime-observed; visually-accepted as a bounded user smoke observation, not every checklist
+item. The user reports no apparent issue after receiving the targeted rotation, transparency,
+special-layer, reflection/shadow and reload observation list; individual actions are not inferred.
+Product/Audit identity is unchanged from the preceding Prism handoff.
+
+Read-only evidence captured after process 44340 ended confirms installed JAR/Audit hashes and the
+matching extracted core.dll (created at 08:18:20). There is no fresh live module snapshot or launcher
+exit code. The log records Newport City entry at 08:20:06, client resource reload with
+SPBR-22-reverse-1.21.1.zip at 08:23:37, all dimensions saved at 08:24:20.802, then Minecraft stopping
+and Audit closure at 08:24:21 (zero unknown intents/dropped records). No device-lost message is
+present in this latest.log. Existing unsupported Veil shader/layout warnings remain, so this is not
+a claim of an error-free log. The stale 06:38 radiance-perf.log is excluded from this observation.
+
+Non-portable evidence: `run/model-persistence-20260925/evidence/prism-observation-20260925-44340/`.
+The instance retains the rigid-model opt-in. Its observed Java is 25.0.4, distinct from the automated
+Java 21 comparison; no new performance claim is made. Detailed per-item visual parity, live dimension
+changes, long-duration stability, native shutdown internals, historical GPU-loss root cause and
+public redistribution remain outside this acceptance. No product, instance or world changes,
+rebuild, staging, commit or push occurred while recording this feedback.
+
 ## 2026-09-25 Screen-effect static audit and missed Veil underwater overlay
 
 Superseded symptom report: the user later retracted the missing-texture observation after retesting;
@@ -2743,6 +4054,158 @@ preserves their relationship to the historical investigation. Only maintenance d
 no product/Audit source, instance setting, world or artifact changed, and no build, runtime test,
 deployment, staging, commit, amend or push was performed.
 
+## 2026-09-25 bounded ModelPart persistence experiment
+
+Status: implemented/build-verified/automated-verified and bounded runtime-observed; **not a measured
+performance win, not promoted or visually accepted**. Preserve the first baked-model prototype and
+its earlier evidence. This is a separate opt-in extension (`radiance.rigidParts`, also requiring
+`radiance.rigidModels`), not a replacement for the first prototype or an enabled-by-default feature.
+HEADs remain Radiance `6e9b97a53049fad833e673da647ac517efde5fe3` and MCVR
+`ead8d47d80ad2bc9cf81740c29f0ec230b61f92f`; all inherited dirty work remains.
+
+The remaining producer evidence selected vanilla `ModelPart` rigid parts: ArmorStand model expansion
+was about 0.95 ms with 35,304 vertices/frame, Boat about 0.23 ms with 7,200. Chest/Bed remain original:
+their wrapped consumers and block-entity capture are outside this prototype's ownership contract.
+Eligibility follows exact ModelPart/Cube/PBR capabilities, ordinary entity ownership and equivalent
+uniform/mirrored transforms; no renderer/texture-name material whitelist is introduced.
+`PartModelCapture` and `ModelPartPersistentMixins` retain original model traversal, animation,
+visibility and callbacks. Stable local polygon inputs are compared before use, not transformed and
+hashed every frame. Local mesh resources include current color/light/overlay, texture generation and
+layer. Mutable inputs invalidate the recipe; pose-only changes submit a current instance transform.
+Unsupported poses, consumers, outlines/glint wrappers and raster previews use the original path.
+The existing native rigid-model JNI/BLAS ownership path is reused without a native ABI change.
+
+Part/layer/owner history has its own namespace; changing another part cannot shift this identity.
+Per-provider/layer face capture preserves the original grouped-layer callback boundary, never caching
+a face rule across frames. The part recipe cache is bounded to 512 entries/16 MiB of local vertex
+storage; source count is 512, layer identities at most 64 per source, with inactive expiry and original
+fallback at capacity. Current-frame recipes are not evicted. Native resources remain independently
+retired by the existing frame retainer. Directed review also found that the first and second Java
+recipe caches could pin the last world until a later entity frame. Both now clear on disconnect and
+normal client close, in addition to reload/world changes; GPU ownership is not prematurely freed.
+
+Audit now maps delayed rigid draws through their real storage providers to producer rows, instead
+of charging them to the next ordinary draw or hiding all of them as unknown. Persistent referenced
+vertices are separate from generated/uploaded bytes; native GPU timing remains global. Default-off
+`partVerify` compares sampled output with actual original `Cube.compile`. `partLifecycle` uses only
+explicitly marked disposable worlds; it is not a normal product path or performance measurement.
+
+### Measurement and decision
+
+Local, ignored evidence: `run/model-parts-20260925/` (non-portable full root
+`D:\Workspaces\Repositories\GitHub\RecRivenVI\Radiance\run\model-parts-20260925`). `before` and
+`candidate-1` manifests archive both repositories including necessary untracked sources, raw SHA-256
+and UTF-8 CRLF-to-LF normalized hashes. `PERFORMANCE.json`, eight per-process raw profiles, options,
+launch inputs, sampled memory, loaded DLL hashes and route logs preserve the comparison.
+
+Both sides enable the existing baked-model path; only the new part path differs. Each process starts
+from the same immutable city fixture, 3840x2054, 16 chunks, RR Balanced, jitter/SHARC and Reflex settings
+unchanged, FG off, `MCVR_IDLE_UI_STATE=1` on both sides. Each warms for 45 seconds after entering the world, then records 30 seconds static
+or 50 seconds containing the fixed 40-second/201-step translation-and-turn route. A/B/B/A order is
+used separately for both cases, two processes per side. Every recorded frame is focused, in-world,
+no screen, actual resolution/view distance unchanged, with zero SDK generated FPS. All route runs
+report 201 steps and zero skipped steps; all eight processes save and exit 0, with no dropped profile
+batches/events. Detailed census/dual-path checking is off in these eight samples. Hardware recorded
+locally is RTX 4080 SUPER, driver 616.92; these finite samples are not a stability or hardware survey.
+
+| Real frame interval, equal weight per process | Baseline | Part candidate |
+| --- | ---: | ---: |
+| Static mean / p95 / p99, ms | 44.47 / 48.20 / 51.58 | 44.77 / 48.63 / 53.94 |
+| Route mean / p95 / p99, ms | 46.94 / 50.97 / 55.95 | 47.58 / 51.77 / 57.31 |
+
+Mean differences are +0.69% static and +1.36% route, within the limited run-to-run spread and in the
+wrong direction for a speedup. Quantiles above average each process's quantile; they are not a
+confidence interval or a pooled tail estimate. Static dynamic PBR vertices fall 91,163 to 46,810 and
+logical GPU upload ranges 11.83 to 6.08 MB/frame, but rigid instances rise 490 to 2,278, total TLAS
+instances about 9,499 to 11,163. Entity BLAS GPU time falls 1.107 to 0.928 ms; TLAS time rises 0.189 to
+0.214 ms, native rigid queue time 0.182 to 0.720 ms, entity metadata 1.648 to 2.347 ms. These nested and
+overlapping costs must not be summed into an invented frame saving. Main-queue interval drops only
+24.754 to 24.466 ms; material capture remains 5.585 versus 5.687 ms. Steady complete captures have
+zero new rigid-model/BLAS events, with 132 versus 612 resident models. More tiny persistent instances
+have displaced work rather than producing a useful overall win. Five-second process GPU-memory
+samples stay around 9.4 GB; CPU heap/private peaks fluctuate, not proof of lower total memory.
+
+Decision: retain a bounded, default-off experimental path and its evidence, **do not expand or enable
+it by default**. The first baked-model improvement is not undone. Further work would need to reduce
+the instance/submission granularity cost, with a new bounded design and comparison; do not simply add
+more ModelPart consumers, GPU features or claim the approximately halved vertex count as a speedup.
+
+### Verification, correction and final artifact
+
+This round ran GAME 211/211, bootstrap 10 passed/2 skipped, Audit Java 21/21, its two native collector
+tests, and the affected MCVR CTest subset 5/5 (entity conversion GPU, material faces CPU/GPU, rigid
+model GPU math, rigid build lifecycle). The five new part tests exercise actual Cube.compile parity,
+mutable geometry/UV/normals, history namespace and live/expired layer identity bounds. Full matching
+local packaging, distributed-JAR and GAME Maven identity verification passed in RelWithDebInfo.
+An unquoted PowerShell `-Pmcvr.configuration` invocation failed task parsing before build execution;
+`build-2-retry.log` preserves the successful quoted retry, not a concealed source/test failure.
+
+`probe-1` compares 4,096 draws/101,640 vertices against actual Cube.compile with zero observed
+position/normal difference and exact material bytes; it is CPU geometry evidence, not GPU hit/visual
+parity. The first lifecycle process (PID 53980) passed pose, visibility flags, equipment, glow state,
+reload, replacement and F3+A stages but **failed its exit probe**: the diagnostic omitted
+ClientLevel.disconnect and reentered on Minecraft's nested tick. It never demonstrated successful
+saving/close. A thread dump and the actual PauseScreen/Minecraft bytecode established the diagnostic
+error. After a normal window-close request failed, only that verified disposable process was stopped
+(exit -1); retain `forced-stop.json`, first logs and thread dump. No GPU-loss root cause is implied.
+The probe was corrected to stop itself before matching the vanilla level/client disconnect order.
+`lifecycle-retest` then checks target-owner geometry per non-glowing stage, reload identity change,
+replacement, F3+A, and both Java recipe caches empty after disconnect, plus normal save/exit. The glow
+stage verifies synchronized fallback state, not its final outline image. `probe-baseline-final` gives
+a fresh bounded census/default-part-off runtime on the final package. Results are not substituted for
+new user visual acceptance, a live dimension test, arbitrary Cube.compile-modifying Mixins or long
+stability. Historical device-loss and license gates remain independent.
+
+The timed prototype used JAR `F088DDB2FA6276598B737D49F3D70620A94638B5827BBD24D1537E5F9466F939`
+and Audit `588B988A8CF9AAC30467584E864DCF8CB064AE5AF70A59E7D80EDE979E30BCC1`. Subsequent bounds,
+cleanup and diagnostic corrections are **not retroactively timed** as this same version. Final
+`candidate-3/MANIFEST.json` fixed the intermediate product/test sources and these isolated artifacts (superseded by the final closeout below):
+
+- Radiance JAR: `C397C5A7ABDE8ED08483F55AD3D1CFD9D8731C0BD5C176B98FC4B46731ADCD78`.
+- Audit JAR: `95D785AA99A0AF65DA7E4CD0A3E0421C9F5E01D405601599F96B8A159876C534`.
+- core.dll (unchanged this round): `B015D09C3E8306038BC126EC50A3A412C1B6C3AD882F3311D04110333BBAD5A6`.
+- Matching local PDB: `2738513119D22A58F685FB68A7529E9196A7BEC19EB8255AA471CBE5542FC8B9`.
+
+Build DLL, embedded JAR DLL and each final test's extracted/loaded DLL are hash-checked separately.
+The final documentation overlay/manifest records only later maintenance changes, without rebuilding
+or claiming new product tests. `ACCEPTANCE.md` preserves focused optional visual checks. No Prism
+files/settings were changed, no user visual pass was filled in, and no staging, commit/amend, push
+or binary publication occurred. The new prototype is not recommended for normal enablement.
+
+
+### Final default-off allocation correction
+
+Final candidate review found two newly introduced IdentityHashMap allocations on every storage
+provider, including ordinary/default-off paths. The part-only material/occurrence state is now lazy,
+created only after part eligibility and source identity checks, and dropped on close. A sixth part
+regression constructs real StorageVertexConsumerProvider instances and checks absent default state,
+shared opt-in state and close cleanup. This removes an unintended cost from keeping the experiment
+disabled; it is not a claim that the opt-in experiment now has a measured net speedup.
+
+`build-final.log` reruns affected full Java/bootstrap/Audit builds and package/identity checks:
+GAME **212/212**, bootstrap **10 passed/2 skipped**, Audit Java **21/21**, Audit native collectors
+**2/2**. Raw XML and counts are retained in `evidence/final-test-results.zip` and `FINAL-TESTS.json`.
+The prior native subset remains this round's 5/5 evidence; no native product changed or redundant
+full CTest run was claimed. The measured eight-run comparison still belongs only to candidate-1.
+
+`evidence/candidate-4/MANIFEST.json` and both ZIPs capture all tracked plus necessary nonignored
+untracked source/build inputs. Raw SHA256 and UTF-8 CRLF-to-LF normalized SHA256 are recorded;
+non-UTF8 bytes are unchanged. Final artifact identities supersede candidate-3 for further testing:
+
+- Radiance JAR: `89FDB75B828F06B565133E8818D0DCF74A0D00B2CCACF06080E2EFD6D564BA63`.
+- Audit JAR: `7294EBE93029324828306E004C38AFEC9371D8961680C3F86C2CFCFDDD0EE7CA`.
+- core.dll and PDB: unchanged from the exact hashes above.
+
+Final candidate-4 runtime: `lifecycle-final` PID 4116 ran 126.73 seconds and exited 0; the six
+non-glowing target-owner comparison checkpoints had zero observed position/normal differences and
+exact appearance. Its lifecycle assertion passed after pose/flags/equipment, glow fallback state,
+reload, replacement, F3+A and empty caches after disconnect. All three dimensions saved.
+`probe-default-final` PID 82520 ran 109.67 seconds, completed its bounded default-part-off profile,
+saved all dimensions and exited 0. Both loaded the expected DLL; neither showed device loss.
+`evidence/FINAL-RUNTIME.json` indexes those precise checks. The first diagnostic failure remains in
+its separate directory and has not been relabelled a pass. This is finite automated evidence, not
+visual acceptance, a dimension-change test or long-term stability proof. Prism remains unchanged.
+
 ## 2026-09-25: Split the non-performance source checkpoint
 
 Status: source separation verified; build-verified and automated-verified within the stated scope.
@@ -2804,3 +4267,31 @@ parents, and generate fresh SSH signatures. Do not create the performance commit
 Remaining diagram/screen-effect reports, GPU-loss cause, broader runtime/visual acceptance and
 public runtime licensing remain open. Push/backup-cleanup results are reported separately rather
 than causing a second documentation amendment.
+
+## 2026-09-25: Performance Optimization Test V1 source checkpoint
+
+Status: user-authorized additional performance commit; existing verification evidence retained.
+Applies above Radiance Initial port `59d17117a9cb5d0027119a1ccae2cd309c8b5e8a`.
+Paired native performance commit: `265d822e315cd10b864beb49ac5e89dfa0acca20`.
+This completes the performance side of the preceding subject split. Both Initial port commits
+remain unchanged; the separate checkpoint uses the configured identity, current time and SSH
+signature. It includes submission strings, persistent baked-model capture, the bounded ModelPart
+experiment, lifecycle/fallback guards, Audit profiling/probes, regressions and performance records.
+Diagram corrections and unrelated visual investigations remain in Initial port.
+
+All product, test and build inputs match the normalized candidate-4 source manifest in
+`run/model-parts-20260925/evidence/candidate-4/MANIFEST.json`; only later maintenance records differ.
+The source archives and JAR/DLL/PDB hashes were rechecked. The retained Radiance JAR is
+`89FDB75B828F06B565133E8818D0DCF74A0D00B2CCACF06080E2EFD6D564BA63`, Audit JAR is
+`7294EBE93029324828306E004C38AFEC9371D8961680C3F86C2CFCFDDD0EE7CA`, and DLL is
+`B015D09C3E8306038BC126EC50A3A412C1B6C3AD882F3311D04110333BBAD5A6`.
+The earlier GAME 212/212, bootstrap 10 passed/2 skipped, Audit Java 21/21, collector 2/2 and native
+5/5 subset remain prior execution evidence. Candidate-4's two bounded runtime checks, candidate-1's
+timed comparison and older visual feedback retain their separate identities. No build, test,
+client run or deployment is repeated for this source-only checkpoint.
+
+Complete candidate lists, snapshot/artifact checks and staged diffs are retained outside Git at
+`D:/Workspaces/Artifacts/RadiancePerformanceV1/20260925/`. Necessary new source and tests are included;
+generated artifacts, runtime libraries, logs, instances and worlds are excluded. ModelPart remains
+default-off without a measured net gain. GPU-loss cause, broader temporal/visual acceptance and
+public binary licensing remain open. This operation creates local commits only; no push is authorized.

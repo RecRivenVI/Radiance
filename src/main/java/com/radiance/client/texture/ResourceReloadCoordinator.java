@@ -33,6 +33,7 @@ public final class ResourceReloadCoordinator {
                     preparedAuxiliaryTextures.clear();
                     com.radiance.client.proxy.vulkan.TextureProxy.TASKS.invalidateUploads();
                     WorldMeshSink.invalidateResources();
+                    com.radiance.client.vertex.RigidModelCapture.invalidateResources();
                     com.radiance.compatibility.simulated.DiagramSectionMeshes.invalidateResources();
                     ShaderRegistry.beginReloadGeneration();
                     shaderGenerationStarted = true;

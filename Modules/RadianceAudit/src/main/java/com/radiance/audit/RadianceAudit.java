@@ -11,7 +11,7 @@ public final class RadianceAudit {
         if (!AuditConfiguration.enabled()) return;
         boolean attached = ModList.get().isLoaded("radiance");
         AuditLedger.INSTANCE.initialize(attached);
-        if (attached) RadianceAuditAdapter.register();
+        if (attached) { RadianceAuditAdapter.register(); FrameProfiler.register(); }
         if (attached && ExperimentAccess.permitted()) {
             FgBoundaryProbe.register();
             ChunkLatencyProbe.register();

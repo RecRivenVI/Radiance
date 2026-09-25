@@ -21,6 +21,14 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ModelBlockRenderer.class)
 public class BlockModelRendererMixins {
+    @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "renderModel(Lcom/mojang/blaze3d/vertex/PoseStack$Pose;Lcom/mojang/blaze3d/vertex/VertexConsumer;Lnet/minecraft/world/level/block/state/BlockState;Lnet/minecraft/client/resources/model/BakedModel;FFFIILnet/neoforged/neoforge/client/model/data/ModelData;Lnet/minecraft/client/renderer/RenderType;)V")
+    private void radiance$rigidModel(PoseStack.Pose pose, VertexConsumer consumer, BlockState state,
+        net.minecraft.client.resources.model.BakedModel model, float r, float g, float b, int light, int overlay,
+        net.neoforged.neoforge.client.model.data.ModelData data, net.minecraft.client.renderer.RenderType layer,
+        com.llamalad7.mixinextras.injector.wrapoperation.Operation<Void> original) {
+        com.radiance.client.vertex.RigidModelCapture.render(model, pose, consumer,
+            target -> original.call(pose, target, state, model, r, g, b, light, overlay, data, layer));
+    }
 
     @Final
     @Shadow

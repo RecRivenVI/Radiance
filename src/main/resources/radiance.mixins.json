@@ -6,6 +6,7 @@
   "plugin": "com.radiance.mixin_related.MixinPlugin",
   "mixins": [],
   "client": [
+    "vulkan_render_integration.ModelPartPersistentMixins",
     "vanilla_resource_tracker.NamespaceResourceManagerMixins",
     "vanilla_resource_tracker.TextureManagerMixins",
     "vulkan_render_integration.ReloadableResourceManagerImplMixins",

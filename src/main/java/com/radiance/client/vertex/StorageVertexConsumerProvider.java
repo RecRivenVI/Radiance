@@ -12,6 +12,31 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 
 public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSource {
+    final java.util.List<RigidModelCapture.Draw> rigidDraws = new java.util.ArrayList<>();
+    long rigidInstance;
+    int rigidOrdinal;
+    private boolean rigidEnabled;
+    PartState partState;
+
+    static final class PartState {
+        final Map<RenderType, PartModelCapture.MaterialBatch> materials = new java.util.IdentityHashMap<>();
+        final Map<Object, Integer> occurrences = new java.util.IdentityHashMap<>();
+    }
+
+    PartState partState() {
+        if (partState == null) partState = new PartState();
+        return partState;
+    }
+
+    public void enableRigidModels(int instance) {
+        rigidEnabled = RigidModelCapture.ENABLED;
+        rigidInstance = Integer.toUnsignedLong(instance);
+    }
+    public java.util.List<RigidModelCapture.Draw> takeRigidModels() {
+        var result = new java.util.ArrayList<>(rigidDraws);
+        rigidDraws.clear();
+        return result;
+    }
 
     protected final Map<RenderType, VertexConsumer> pending = new HashMap<>();
     protected final Map<RenderType, ByteBufferBuilder> allocated = new HashMap<>();
@@ -51,6 +76,10 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
                     bufferAllocator, renderLayer);
                 if (vertexConsumer instanceof PBRVertexConsumer pbrVertexConsumer) {
                     pbrVertexConsumer.setDefaultAlbedoEmission(defaultAlbedoEmission);
+                    if (rigidEnabled && vertexConsumer.getClass() == PBRVertexConsumer.class) {
+                        pbrVertexConsumer.rigidOwner = this;
+                        pbrVertexConsumer.rigidLayer = renderLayer;
+                    }
                 }
             } else {
                 vertexConsumer = new BufferBuilder(bufferAllocator, drawMode, vertexFormat);
@@ -80,6 +109,8 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
     }
 
     public void close() {
+        rigidDraws.clear();
+        partState = null;
         for (Map.Entry<RenderType, ByteBufferBuilder> entry : this.allocated.entrySet()) {
             entry.getValue()
                 .close();

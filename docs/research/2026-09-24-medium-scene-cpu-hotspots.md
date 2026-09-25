@@ -180,3 +180,145 @@ and Prism deployment. This supersedes the no-implementation/no-new-test boundary
 stage, without rewriting the original JFR findings or attributing exclusive milliseconds to them.
 Ordinary entity frame-slot buffer pooling, a reusable default-image allocation cache, the sampler
 follow-up, per-change performance attribution and user visual acceptance are not completed by it.
+
+## 2026-09-25: Producer attribution and bounded rigid baked-model prototype
+
+Status: implemented, build-verified and runtime-observed for the bounded cases; broader visual
+acceptance remains open. This follow-up supersedes the earlier unmeasured-producer boundary only
+for the recorded city fixture. It does not revive the retired standalone replay tool.
+
+The user-selected scope is producer attribution followed by one persistent-model experiment.
+Stable GPU scene records/render origin, new chunk scheduling, arenas, PTLAS and SER are deferred;
+no visibility/quality reduction or animation throttling is authorized by this prototype.
+Canonical implementation, exact final identities and same-condition results are in the
+[paired implementation ledger](../DEVELOPMENT_LEDGER.md#2026-09-25-persistent-rigid-baked-model-prototype-and-producer-attribution).
+Non-portable raw evidence: Radiance `run/model-persistence-20260925/`.
+
+### Measured choice, rather than a renderer-name whitelist
+
+The first census (PID 60276) measured approximately 150,180 PBR vertices per frame. Rounded parent
+producer results follow; renderer/face timings occur in different stages and must not be added to
+nested child-model timings as independent frame costs.
+
+| Actual producer | Vertices/frame | Renderer inclusive ms/frame | Face capture ms/frame |
+| --- | ---: | ---: | ---: |
+| ItemFrameRenderer | 56,220 | 2.714 | 1.825 |
+| ArmorStandRenderer | 38,800 | 1.449 | 1.094 |
+| ChestRenderer | 16,488 | 0.854 | 0.878 |
+| BedRenderer | 16,272 | 0.900 | 0.831 |
+| PaintingRenderer | 12,144 | 0.559 | 0.725 |
+| BoatRenderer | 7,200 | 0.273 | 0.231 |
+| MinecartRenderer | 2,184 | 0.173 | separate CSV |
+| Other named producers plus unassigned | remainder | separate CSV | separate CSV |
+
+The second census (PID 3420, 618 frames) traced item-frame work into actual baked-model entries:
+240 block-model calls/frame, 21,120 vertices, 0.806 ms and two local model identities; 235 item-model
+calls, 34,400 vertices, 1.501 ms and 35 identities. Armor-stand item layers add about 3,496 vertices.
+The selected capability is therefore a rigid baked-model bulk-quad path, not a hard-coded item-frame
+or block-name optimization. Ordinary ModelPart animation is deliberately not rewritten.
+Unassigned dynamic input is about 72 vertices/frame. Child model bytes overlap parent producer bytes.
+`blas_candidates` counts submitted CPU candidates, not completed GPU builds or per-producer GPU time.
+
+The detailed census measured 1,516.6 face captures/frame and 5.979 ms total: setup 1.210, clear 0.580,
+backup 0.098, restore 2.483, remainder 1.608 ms. The remainder includes actual matrix/texture/FBO/state
+snapshots, bookkeeping and instrumentation; it is not an allocation-time measurement. This is real
+RenderType setup/clear/restore work, not primarily name parsing. Cached material rules cannot replace
+the actual callbacks, state source or sampling time. The prototype still captures every submitted
+layer's actual face state; it does not claim to eliminate the remaining roughly 5.5 ms.
+
+The first two census CSVs' renderer-self field only excluded nested renderer scopes, not every model
+scope. Preserve them as inclusive-like historical evidence. The later Timer stack subtracts actual
+nested model/renderer scopes; its controlled-clock exception test establishes that distinction.
+Heavy census and dual-path geometry checking are off for the performance comparisons.
+
+The corrected baseline census, PID 79208 (`prototype-5`, path disabled, 623 frames), records
+ItemFrame inclusive/self 2.767/0.469 ms, ArmorStand 1.445/0.402, Chest 0.863/0.308, Bed 0.888/0.338,
+Painting 0.557/0.557 and Boat 0.272/0.069. Parent self excludes measured child model/renderer scopes,
+not all uninstrumented subcalls. Its face split is 5.835 ms total: setup 1.194, clear 0.586, backup
+0.096 and restore 2.458; the residual is not a separately measured allocator cost. The source
+recipes remain stable enough to remove 59,016 transformed vertices/frame in the measured prototype.
+Per-producer GPU build durations are still unavailable: native BLAS/TLAS timestamps and actual
+persistent build counters are global, and delayed rigid material capture is explicitly unassigned
+instead of being misattributed to the next ordinary producer.
+
+### Implementation and costs that remain
+
+`RigidModelCapture` intercepts the actual block/item baked-model entry only for the concrete vanilla
+`SimpleBakedModel` data contract (not subclasses/custom callbacks), with an exact eligible PBR consumer in ordinary world entity capture. Renderer, model, tint, lighting and
+quad callbacks still execute each frame. The recorder owns local quad inputs and changing appearance;
+on a cache hit it avoids transformed 128-byte vertex expansion. This is not caching the last frame's
+transformed mesh, nor generating it in full before hashing. Copying/comparing the 32-int local quad
+recipes and callback execution still cost CPU time and allocation; neither is claimed to disappear.
+
+One local model resource and BLAS serves rigid instances with current double world origin, matrix,
+visibility and material state. Identity includes local recipe/appearance, texture generation and
+RenderType; native variants include actual encoded face/type flags. Histories also require matching
+model identity and draw layout/count. Visibility-induced ordinal shifts discard history rather than
+borrowing another same-model part's previous transform. Geometry changes rebuild; no unrestricted
+AS update/refit is introduced. Only a successfully submitted build can release build inputs, through
+normal frame retirement. An abandoned recording must be recorded again.
+
+The Java cache is bounded to 512 entries/32 MiB local vertex storage and the native variant cache to
+1,024 entries. Inactive entries age out after 120 frames. Current-frame and GPU references retain
+ownership. Reload/world identity changes invalidate; Java direct memory is released on the next
+entity-frame boundary, not promised to disappear immediately while sitting in a menu. Unsupported
+consumers, custom bulk behavior, nonuniform/skew/singular poses, excess per-entity draw count and
+special raster/camera-relative paths retain the original execution. Glint/outline wrappers therefore
+remain semantically active instead of forcing a second full old expansion inside the fast path.
+
+Moving scale into the instance exposed a direct input-contract issue: ray-cone width is world-space
+but existing LOD derivatives were local-space. The shared hit/any-hit helper now derives from
+object-to-world transformed triangle edges. A real compute test covers scale/mirror/rotation and
+degenerate UV cases. This does not establish complete PT image equivalence. Both A and B use the
+same corrected shaders so their performance difference does not conflate this correction.
+
+Every persistent draw currently uses a JNI submission and a lightweight TLAS instance; there is no
+per-cube split. More instances and recipe comparisons are explicit tradeoffs. Evaluate real frame
+intervals, upload bytes, dynamic BLAS work, TLAS count/time and process memory together. A lower
+vertex count alone is insufficient evidence to expand the prototype.
+
+## 2026-09-25 ModelPart granularity experiment
+
+Status: bounded implementation and measurement, **not a measured expansion win**. The second
+prototype and fixed evidence are in the
+[ledger](../DEVELOPMENT_LEDGER.md#2026-09-25-bounded-modelpart-persistence-experiment).
+It selects exact vanilla ModelPart/Cube + eligible ordinary-entity PBR ownership, preserving original
+traversal/poses and all unsupported consumer paths. Each part is a mesh (not each Cube by definition),
+but the chosen producers contain many one-cube parts: 1,788 extra rigid instances remove only about
+44,352 dynamic vertices/frame. The first baked-model prototype's larger recipes do not establish
+that these small parts should also become separate TLAS instances.
+
+The eight-process A/B/B/A static/route comparison has no net benefit: 44.47 to 44.77 ms static and
+46.94 to 47.58 ms route. Lower upload and BLAS work is offset by rigid submission and entity metadata;
+the existing approximately 5.5-6 ms material state chain also remains. The correct direction is still
+avoiding unnecessary production, but unit size and scene/submission overhead must be measured.
+There is no authorization or evidence here for arbitrarily freezing animation, grouping unrelated
+materials, dropping outlines or removing off-camera geometry. Do not expand wrappers/ModelPart
+coverage simply to improve a coverage percentage.
+
+This addendum also corrects the previous menu-retention limitation for the final candidate: Java
+recipes now clear at disconnect/normal close; native in-flight resources retain their independent
+ownership. Detailed delayed-draw producer mapping is now available, while per-producer GPU time
+still is not. The final lifecycle/bounds corrections have separate artifact identity from the timed
+prototype. Full GPU temporal/image parity, external model-Mixin semantics, live dimension churn and
+long stability remain unproven. Keep this second experiment default off; larger-granularity or batched
+instance expression requires a later bounded design and its own A/B, not silent rollout.
+
+
+The new `evidence/PRODUCERS.json` retains the actual delayed-draw attribution and unassigned remainder.
+A fresh parts-off census (`probe-baseline-final`, candidate-3) versus the earlier diagnostic candidate
+(`probe-1`, candidate-1) identifies coverage, **not a controlled timing comparison**:
+
+| Producer | Dynamic vertices/frame, parts off | Parts on | Persistent draws, off -> on |
+| --- | ---: | ---: | ---: |
+| ArmorStand | 35,304 | 0 | 20 -> 1,491 |
+| Boat | 7,200 | 0 | 0 -> 240 |
+| Chest (wrapped fallback) | 16,488 | 16,488 | 0 -> 0 |
+| Bed (wrapped fallback) | 16,272 | 16,272 | 0 -> 0 |
+| Minecart | 2,160 | 720 | 1 -> 61 |
+
+Unassigned dynamic input remains explicit (about 72 versus 69 vertices/frame); per-producer native
+GPU attribution is unavailable. Material faces are still measured as the actual capture scope,
+not a full allocation/lock/state-transition subprofile; the approximately 5.6 ms cannot be declared
+all removable. This round does not claim to have solved that separate bottleneck. Final lazy provider
+state and close/bounds guards have their own candidate-4 tests/runtime, not a rerun of the timed A/B.

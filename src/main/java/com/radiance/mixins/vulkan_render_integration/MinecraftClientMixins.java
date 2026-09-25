@@ -199,6 +199,7 @@ public class MinecraftClientMixins {
 
     @Inject(method = "close()V", at = @At("TAIL"))
     private void closeNativeRenderer(CallbackInfo ci) {
+        com.radiance.client.vertex.RigidModelCapture.invalidate();
         RendererProxy.close();
     }
 
@@ -227,5 +228,11 @@ public class MinecraftClientMixins {
     )
     private void resetBuiltChunkCount(Screen disconnectionScreen, boolean transferring, CallbackInfo ci) {
         ChunkProxy.builtChunkNum = 0;
+    }
+
+    @Inject(method = "disconnect(Lnet/minecraft/client/gui/screens/Screen;Z)V", at = @At("TAIL"))
+    private void releaseLocalModelRecipes(Screen screen, boolean transferring, CallbackInfo ci) {
+        // Java recipes are no longer queued; native instances own their separate in-flight resources.
+        com.radiance.client.vertex.RigidModelCapture.invalidate();
     }
 }

@@ -20,6 +20,7 @@ public final class UnifiedAcceptanceProbe {
     public static void poll(Minecraft mc) {
         if (LichenProbe.poll(mc)) return;
         if (HotspotOptimizationProbe.poll(mc)) return;
+        if (FixedSceneRouteProbe.poll(mc)) return;
         if (FgBoundaryProbe.poll(mc)) return;
         if (!ENABLED || mc.level == null || mc.player == null) return;
         if (!Files.isRegularFile(mc.gameDirectory.toPath().resolve(".radiance-acceptance")))

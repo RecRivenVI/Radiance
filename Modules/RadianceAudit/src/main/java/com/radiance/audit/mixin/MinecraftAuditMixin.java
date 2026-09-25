@@ -87,6 +87,8 @@ public abstract class MinecraftAuditMixin {
         com.radiance.audit.SmokeProbe.poll(minecraft);
         com.radiance.audit.DiagramParityProbe.poll(minecraft);
         if (net.neoforged.fml.ModList.get().isLoaded("radiance")) {
+        com.radiance.audit.RigidModelLifecycleProbe.poll(minecraft);
+        com.radiance.audit.PartModelLifecycleProbe.poll(minecraft);
         com.radiance.audit.CatnipRasterProbe.poll(minecraft);
         com.radiance.audit.RasterSimulatedProbe.poll(minecraft);
         com.radiance.audit.ChunkLatencyProbe.poll(minecraft);

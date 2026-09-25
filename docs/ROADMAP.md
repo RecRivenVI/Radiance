@@ -721,3 +721,168 @@ identifies the deployment, two-world save/exit observations and remaining log li
 one-shot replay tool stays retired; derived optimizations and the formal optional Audit mod remain.
 No exhaustive Ponder/FG/PBR, fault-injection, native-close or long-duration acceptance is inferred.
 GPU-loss investigation and public binary licensing keep their preceding independent boundaries.
+
+## 2026-09-24: Frame-stage attribution in Radiance Audit
+
+Status: implemented; automated-verified; bounded runtime-observed; first representative static sample analyzed.
+See [implementation, measurement contract and evidence](DEVELOPMENT_LEDGER.md#2026-09-24-optional-frame-stage-profiler-with-correlated-java-native-and-gpu-samples)
+and [commands/report guide](../Modules/RadianceAudit/README.md#frame-profiling).
+
+The optional profiler separates an exclusive render-thread wall-time partition from nested native
+CPU work, concurrent worker work and main-queue GPU completion intervals. It records real frame
+intervals/focus and SDK real/generated counters separately. The two isolated low-distance runs prove
+capture plumbing, bounded output and normal shutdown, not the dominant cost in all worlds.
+
+First representative static capture: 1,381 frames/30 s, 2560x1440, eight chunks, focused, FG off,
+zero reported loss; about 46 real FPS. Host PT-module preparation (6.82 ms/frame), geometry marshaling
+(4.21 ms/frame), and unclassified world orchestration (3.03 ms/frame) warrant narrower timing;
+main-queue GPU duration was 11.07 ms. This is a measured scenario, not an all-world bottleneck claim.
+See the [detailed sampling follow-up](DEVELOPMENT_LEDGER.md#2026-09-24-static-prism-profile-and-detailed-preparation-timing).
+
+User direction: investigate moving suitable CPU computation to GPU. No offload is implemented by
+these diagnostic changes. First distinguish arithmetic/packing from scene ownership, allocation,
+driver recording and synchronization. Any later migration must preserve material/visibility and
+retirement contracts, and compare real frame-time distributions, GPU cost and memory under the same
+scene/settings; fewer CPU milliseconds alone is not sufficient evidence of an end-to-end speedup.
+
+Detailed stationary capture is now runtime-observed at 3840x2054/16 chunks: 478 frames/30 s,
+zero reported loss, 62.76 ms mean real frame interval versus 20.00 ms main-queue GPU duration.
+The user changed scene/view distance and resolution; this is not an eight-versus-sixteen A/B test.
+See [measurements and attribution correction](DEVELOPMENT_LEDGER.md#2026-09-24-sixteen-chunk-stationary-profile-identifies-recurring-host-scene-work).
+
+Next bounded targets: recurring chunk scene metadata (10.44 ms), geometry marshaling (14.11 ms,
+including native conversion/copy 4.83 ms), and separate world-tail entity batch construction
+(5.87 ms inclusive, including vertex packing 3.17 ms). First distinguish avoidable invariant CPU
+work from arithmetic worth offloading; repeated model-face scans are a source-confirmed candidate,
+not yet a measured explanation for the whole metadata cost. Preserve face/material semantics,
+history, fairness and in-flight retirement. Acceptance requires a same-scene/settings before/after
+comparison of real frame p50/p95/p99, GPU time, upload/allocation volume and memory, followed by
+normal movement/updates. Do not infer pure vertex-transform cost from inclusive timers or sum
+CPU/GPU/worker tables. Separate chunk-queue GPU work, SDK-internal FG timing and controlled
+instrumentation overhead remain measurement gaps. Deferred spring/diagram/plunger defects,
+GPU-loss uncertainty and public DLL licensing are unchanged.
+
+First bounded optimization is now implemented and measured: model-wide face decisions are reused
+within each traversal, scene metadata vectors reserve known sizes, and entity conversion avoids
+repeated vector growth. See [A/B/A evidence and limits](DEVELOPMENT_LEDGER.md#2026-09-24-first-host-preparation-optimization-and-bounded-aba-measurement).
+At 1280x720/16 chunks the isolated old/new/old frame intervals were 31.48/28.00/31.33 ms; total host
+WorldPrepare was 11.38/8.66/11.31 ms. This does not close the broader GPU-migration direction:
+native/Java marshaling remains a measured target, peak memory/upload costs and moving workloads
+remain unmeasured. The user's [4K follow-up](DEVELOPMENT_LEDGER.md#2026-09-24-prism-follow-up-of-the-host-preparation-optimization)
+retains the lower chunk-metadata cost (10.44 to 7.98 ms), but total real interval only changes
+62.76 to 61.91 ms with a changed view and more per-frame geometry-packing calls. It does not prove
+the isolated 11% gain transfers to this workload. Geometry marshaling (15.49 ms) and world-tail entity
+batch construction (6.51 ms inclusive, packing 3.44 ms within it) remain bounded next targets; isolate
+conversion/packing from Java traversal, copies and driver recording before choosing GPU offload.
+An identical-workload end-to-end comparison and moving/interaction acceptance remain open. Keep this
+CPU-only reduction as a distinct baseline before introducing GPU conversion/packing or new caches.
+
+The user now authorizes copying the representative Prism world into an isolated repository fixture;
+see [scope and preservation rules](DEVELOPMENT_LEDGER.md#2026-09-24-user-authorizes-copied-scene-performance-fixtures).
+Prepare consistent saved copies with identical pose/settings, optionally fixed time/weather and
+controlled entity state. Preserve representative geometry/workload and record all controls; do not
+modify the source Prism world or count removed workload as a speedup. The fixture and a second
+CPU-only optimization are now implemented: submission-local UTF-8 ownership and unchanged-sampler
+publication avoidance. See [copied-scene A/B/A and regression evidence](DEVELOPMENT_LEDGER.md#2026-09-24-submission-local-strings-and-unchanged-sampler-fast-path).
+At 3840x2054/16 chunks, old/new/old real intervals are 64.53/60.43/64.64 ms (about 6.4% reduction).
+Native vertex packing and GPU time did not improve. The scripted copy passed add/remove, F3+T,
+F3+A and cloud restore after a diagnostic-accessor gate repair. This does not retroactively make
+earlier captures controlled comparisons or establish pixel equivalence/long-duration stability.
+
+The user delegates further testing/repair to the agent; do not require additional manual samples.
+Reuse fresh isolated copies and keep the Prism source intact. Next bounded evidence target remains
+native conversion/copy, now separated from packing and driver work before deciding GPU migration.
+The next [packing batch and B/A/B evidence](DEVELOPMENT_LEDGER.md#2026-09-25-entity-packing-writes-directly-into-owned-upload-storage)
+is implemented and measured: final streams write directly into owned staging storage, retaining PBR
+data required by semantic consumers. New/reference/new intervals are 53.94/57.88/54.24 ms; packing
+plus staging drops from 5.09 to 2.07 ms. No GPU speedup or memory reduction is established.
+
+Format allocation/decode/copy remains about 2.4 ms, topology/coordinate work about 1.8 ms, and total
+native conversion about 5 ms. Any GPU trial must identify a common format and its semantic consumers,
+account for transfer/synchronization costs, and preserve lines, overlays, material/face rules and
+retirement. Do not predict savings from the full inclusive timer or remove necessary intermediate
+data merely because it exists. Sampled WDDM process-memory peaks are now retained; exact allocation/
+upload volume, moving/update performance, diagnostic overhead and long-duration behavior remain
+measurement gaps. No further user sampling is required; use isolated automated cases. No GPU offload
+or blanket visual approval is implied by the CPU reduction, and unrelated deferred issues stay open.
+
+
+A bounded GPU PBR conversion is now implemented and measured; see the
+[paired implementation and same-artifact comparisons](DEVELOPMENT_LEDGER.md#2026-09-25-gpu-conversion-of-recurring-native-pbr-entity-batches).
+The census selected actual PBR input. GPU/CPU/GPU stationary real frame intervals are
+49.59/54.25/50.47 ms; the controlled moving route improves 56.53 -> 52.81 ms. The native path defers
+eligible PBR processing/index generation and final packing, with immutable per-batch resources and
+existing frame retirement; `MCVR_ENTITY_GPU_CONVERSION=0` remains a restart-only CPU reference.
+Java pose/model work, special semantic consumers and cached geometry are not claimed to be fully
+GPU-driven. Logical upload increases about 4.18 MB/frame in the stationary case; GPU completion and
+sampled memory do not improve. Behavioral GPU packing/BLAS and bounded runtime checks do not close
+cross-GPU, complete pixel parity, diagnostic-overhead or long-duration measurement gaps. The
+broader GPU migration remains partial; any next step must be chosen from measured remaining costs,
+not the existence of a compute path. No additional user sample is required for this batch.
+
+The same candidate's isolated update regression passed chest add/remove, F3+T, F3+A and cloud
+restore, followed by save/exit. The final source/packaged identity and Prism-only mod deployment
+are recorded in that entry. These bounded automated results do not imply new visual acceptance or
+close the broader GPU migration, historical GPU-loss or public-redistribution gates.
+
+
+The next bounded native CPU step caches published chunk scene metadata. See the
+[2026-09-25 evidence and correctness boundaries](DEVELOPMENT_LEDGER.md#2026-09-25--incremental-published-chunk-scene-metadata-and-rendering-parity).
+Versioned resource snapshots preserve in-flight owners; primary static chunks omit unused history,
+while all external slots retain it. Same-artifact metadata cost falls roughly 40-44%; the fixed
+moving route improves real frame interval 5.2%. Static frame-start variance is retained rather than
+credited entirely to the cache. This does not remove per-frame GPU table upload/TLAS work or move
+Java model generation to GPU. Paired reload/edit/Sable checks and source-field comparisons are
+bounded correctness evidence, not blanket pixel parity or renewed user visual acceptance. Larger
+travel, complex moving Sable scenes, other PT configurations and long-duration/cross-GPU behavior
+remain unmeasured for this batch. Preserve historical GPU-loss and public binary licensing gates.
+
+The next [submission census and idle raster-state batch](DEVELOPMENT_LEDGER.md#2026-09-25--defer-idle-raster-commands-during-real-material-state-capture)
+is implemented and measured. Argument allocation/free is only about 0.05 ms/frame, so no arena was
+added. Actual face-state callbacks/restoration cost about 6.8 ms; deferring transient native GPU
+state commands outside a raster pass preserves those callbacks and reduces capture cost about
+21-22%. Same-artifact static frame intervals improve 5.5-7.5%, the fixed moving route 5.5%, without
+reducing geometry or quality. Real framebuffer assertions and reload/edit/Sable checks are bounded
+correctness evidence, not complete visual acceptance. Remaining face capture is still about
+5.5-5.9 ms; JNI/state bookkeeping and Java model generation are not eliminated. Choose any further
+batch from the new exclusive timings and retain callback/state semantics; do not assume the small
+argument buffers or the whole inclusive vertex timer justify a GPU rewrite. Existing unrelated
+visual defects, historical GPU-loss, other configuration/long-duration checks and licensing remain
+open. No new user sample is required for this delegated automated-testing batch.
+
+The [producer-attribution and persistent rigid-model prototype](DEVELOPMENT_LEDGER.md#2026-09-25-persistent-rigid-baked-model-prototype-and-producer-attribution)
+is implemented, build/automated verified and observed in bounded city runs, with the new path off
+by default. Measured ItemFrame baked geometry selected the first target; supported local recipes
+reuse model geometry/BLAS while original callbacks and current instance appearance still execute.
+At that checkpoint ModelPart skeletons retained the existing path; the later opt-in experiment
+below does not change the default. Custom models/consumers and unsupported poses still fall back.
+Do not generalize this into caching prior-frame animated vertices or suppressing offscreen objects.
+
+Expansion remains a measured decision: preserve actual per-draw consumers, history, material/face
+rules and in-flight lifetimes; show fewer generated/uploaded bytes and BLAS builds alongside total
+real frame time and the cost of added TLAS instances. CPU reconstruction and bounded GPU math tests
+do not close full PT output/visual parity, arbitrary same-count draw reordering, live dimension
+changes, other configurations or long-duration stability. Static/route A/B evidence and the final
+artifact are kept separately from earlier prototypes in the linked entry. No extra user performance
+sample is required for this delegated batch; optional visual observations remain unfilled.
+
+Global stable scene records/origin, new scheduling work, arena redesign, PTLAS and SER remain
+deferred candidates; none is implemented by this prototype. The remaining material-face callback
+cost has been attributed, not removed by guessing rules or caching dynamic state. Historical
+GPU-loss and public binary licensing gates remain independent and open.
+
+The [2026-09-25 Prism observation](DEVELOPMENT_LEDGER.md#2026-09-25-bounded-prism-visual-feedback-for-persistent-models)
+adds bounded user feedback of no apparent issue, with actual resource reload and world-save logs.
+It does not mark every suggested visual subcase, live dimension changes or long-duration behavior
+as tested. The prototype remains opt-in; broader rollout and the independent GPU-loss/licensing
+limits are unchanged.
+
+The [bounded ModelPart extension](DEVELOPMENT_LEDGER.md#2026-09-25-bounded-modelpart-persistence-experiment)
+is implemented with targeted geometry/lifecycle evidence, but the eight-process comparison found
+**no useful net speedup** (44.47 to 44.77 ms static; 46.94 to 47.58 ms route). It remains separately
+default off and is not approved for wider coverage or normal enablement. Reduced vertex production
+is offset by many small rigid submissions and scene metadata; a future effort must address that
+granularity before extending to more consumers. The first baked-model prototype remains intact.
+New target-owner CPU comparisons and finite lifecycle runs do not fill in user visual, complete GPU
+temporal, arbitrary model-Mixin, live dimension or long-duration acceptance. No new user test is
+required merely to confirm this negative performance result.

@@ -15,7 +15,7 @@ public final class NativeDiagnostics {
         if (!AuditConfiguration.enabled()) return;
         String library = System.getProperty("radiance.audit.nativeLibrary", "");
         boolean requested = Boolean.getBoolean("radiance.audit.nativePerformance")
-            || Boolean.getBoolean("radiance.audit.capture") || ExperimentAccess.permitted();
+            || Boolean.getBoolean("radiance.audit.capture") || ExperimentAccess.permitted() || FrameProfiler.requested();
         if (library.isBlank() && !requested) return;
         try {
             Path path = library.isBlank() ? extractBundledLibrary() : Path.of(library);
@@ -57,4 +57,12 @@ public final class NativeDiagnostics {
     }
     private static native String drain();
     private static native boolean install(int flags);
+    static synchronized boolean attachProfiler() {
+        if (!attached) initialized = false; // An explicit capture may load the collector after passive startup.
+        initialize();
+        return attached && installProfile();
+    }
+    private static native boolean installProfile();
+    static native void profileFrame(long frame, boolean active);
+    static native String drainProfile();
 }
