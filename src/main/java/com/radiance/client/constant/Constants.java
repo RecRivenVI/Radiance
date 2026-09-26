@@ -97,7 +97,8 @@ public class Constants {
             com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION_TEX_LIGHTMAP_COLOR, 10),
         POSITION_TEXTURE_COLOR_NORMAL(
             com.mojang.blaze3d.vertex.DefaultVertexFormat.POSITION_TEX_COLOR_NORMAL, 11),
-        PBR_TRIANGLE(PBRVertexFormats.PBR_TRIANGLE, 12);
+        PBR_TRIANGLE(PBRVertexFormats.PBR_TRIANGLE, 12),
+        PBR_COMPACT_V1(PBRVertexFormats.PBR_COMPACT_V1, 13);
 
         private static final Map<VertexFormat, Integer>
             BY_VERTEX_FORMAT =

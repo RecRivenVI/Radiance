@@ -4295,3 +4295,540 @@ Complete candidate lists, snapshot/artifact checks and staged diffs are retained
 generated artifacts, runtime libraries, logs, instances and worlds are excluded. ModelPart remains
 default-off without a measured net gain. GPU-loss cause, broader temporal/visual acceptance and
 public binary licensing remain open. This operation creates local commits only; no push is authorized.
+
+## 2026-09-25: OpenGL inventory and portable upstream benchmark preflights
+
+Status: implemented; build-verified; automated-verified; runtime-observed (bounded preflight).
+Evidence: static bytecode/mappings, targeted unit tests, two real-client world runs and saved NBT.
+Applies to: Radiance worktree on `ebd5038c1e55e06041946f6b5215f589bd496447`; MCVR unchanged at
+`265d822e315cd10b864beb49ac5e89dfa0acca20`. No Git history operation or Prism deployment.
+Remaining acceptance: effective-settings parity, formal repeated benchmarks, diagnostic-overhead
+measurement, full native/GPU spans and semantic/visual translation audit.
+
+### Requested behavior and implemented boundary
+
+Added an offline artifact-scoped ASM inventory under `Modules/RadianceAudit/tools`: direct GL
+invocations, method references, nested JARs, symbolic callers, Mixin candidates and blind spots.
+Exact-site review decisions require evidence and reject stale IDs. Initial translation/semantic
+status is UNKNOWN; no claim that a Mixin implies complete translation or equivalent pixels.
+The bounded manifest scanned 18,811 classes/160,999 methods: 6,645 call sites, including 5,460
+binding/loader sites and 1,185 Minecraft/mod sites. Categories: 292 draw, 223 clear, 46 copy/blit,
+9 compute, 6,075 state/resource. All are initially unreviewed. The manifest includes actual hashed
+JARs and nested contents, not every mod/version or final transformed/runtime code.
+
+Added separate 1.21.1 NeoForge and 1.21.4 Fabric benchmark adapters, retaining Audit identity and
+upstream metadata/icon. A default-inert, explicit Java startup companion handles early-window
+isolation and common real-frame timing; fork-specific JNI/collector code is absent. ASM is inside
+an extracted private transformer JAR, with its original license, to avoid Fabric classpath
+conflicts. Mouse/key callbacks and public polling are neutralized only in this process, no-focus
+hints precede creation, cursor grabbing/warping is suppressed, fullscreen is rejected, and actual
+focus is not forged. Scripts restrict output to repository `run/`, refuse evidence overwrite and
+never force-kill/restart clients. Existing product and normal Audit logic are unchanged.
+
+A new deterministic flat-world/datapack generator produces shared vanilla content and a 1.21.1
+modded extension. Saved evidence confirms 64 chests, 64 banners, 16 equipped armor stands and 16
+item frames in both final cases. NeoForge additionally saved 8 Create motors and 32 shafts at
+16 RPM, plus 4 occupied Sable slots. These confirm fixture state, not pixel equivalence or proof
+that every object used the intended GPU backend. Higher tiers are source/test checked, not run.
+
+### Validation, corrections and identities
+
+Targeted Java tests cover real transformed JVM method execution (window creation/input polling,
+fullscreen rejection, default-off behavior and original frame-body/stack-map preservation), GL
+method references/nested archives, stale review decisions and malformed inventory input. Python
+fixture tests cover generated NBT/datapack roundtrip, tier limits, version/scope rejection and
+non-overwrite. This batch passed 4 inventory tests, 4 benchmark transformer tests and 3 Python
+fixture tests (11 total, no failures or skips). The final check reran inventory and Python tests;
+unchanged benchmark tests were Gradle up-to-date against their retained result. No unrelated MCVR
+build or native regression was rerun for this diagnostics-only change.
+
+History retained: first inventory invocation used default Java 25 and failed before compilation;
+Java 21 passed. A relative CLI path was fixed to resolve at the repository root. Fabric initial
+setup encountered TLS transfer errors; official hash-checked downloads completed through urllib.
+Early Fabric launch exposed duplicate ASM from the first fat agent; the private nested transformer
+corrected it. A process-exit race in the wrapper lost that first short failure's buffered output;
+the next bounded launch captured the concrete classpath error and the wrapper was corrected. These
+were launcher/tool failures, not GPU/device-loss evidence. The first NeoForge preflight also used
+the older fixture FOV and mislabeled Minecraft's cached-focus column; final cases use the corrected
+recipe and separate actual GLFW focus. Old records remain separate, not merged into final results.
+
+Final diagnostic hashes (SHA-256):
+
+- Startup companion: `058AF3F8DFFFAE389871D0148EFDD1E25B163B54509CC59ACC8CB232F44B8FC3`.
+- NeoForge adapter: `B89E5F101205BABC6CE4373DBD7C663625A2247A3CCA587D338C090E2AE52473`.
+- Fabric adapter: `8559CB7924DBA345EEA31F6B7E3EA4668471551F7F459112518A452F621F26B9`.
+
+Final runs, requested 1280x720, view distance 8, 25-second world warmup and 10-second sample:
+
+| Case | Process/result | Collected real-frame calls | Focus/save evidence |
+| --- | --- | --- | --- |
+| `neo-final-preflight` | PID 62776, 62.49 s total, exit 0, no timeout close | 1,585 | GLFW focus false in every sampled frame; 0 game-foreground observations; all dimensions saved |
+| `fabric-final-preflight` | PID 85508, 57.54 s total, exit 0, no timeout close | 1,527 | GLFW focus false in every sampled frame; 0 game-foreground observations; all dimensions saved |
+
+Windows foreground was sampled at 250 ms, not continuously. Both runs retained Minecraft cached
+focus=true without altering it. Observer state had no error or incomplete frame. Loaded/extracted
+core matched each unmodified upstream JAR: NeoForge
+`D1BD513F14E99A563233FF4F724537F767D8958C75887833E6195D9A6737146A`, Fabric
+`A9969B70B6998B1F8F90AF54EFEDA8652CC7E98769B7D36C3C944011B71A5B60`.
+
+### Evidence location and remaining gates
+
+Non-portable evidence root:
+`D:/Workspaces/Repositories/GitHub/RecRivenVI/Radiance/run/upstream-benchmarks-20260925/`.
+`MANIFEST.json` fixes raw-byte source hashes (including necessary new files), starting commits and
+artifact identities. Each final case retains launch/fixture manifests, logs, loaded-core identity,
+foreground samples, raw frame CSV, observer status, saved world and `ANALYSIS.json`. The inventory
+input/CSV/JSON/report are under that root. These are ignored evidence, not disposable backups.
+
+These runs are preflights, not valid speed rankings: upstream native options kept VSync, NGX/DLSS
+was skipped, emission collection and chunk defaults differ, and actual framebuffer dimensions/
+GPU work/observer overhead still need measurement. No foreground FG delivery, full visual parity,
+long-duration stability, native-close-specific proof or public redistribution clearance is claimed.
+The detailed [research contract](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md) and
+[benchmark instructions](../Modules/RadianceAudit/benchmark/README.md) own the next comparison gates.
+
+## 2026-09-25: Matched three-version pressure benchmarks
+
+Status: implemented; build-verified; automated-verified; runtime-observed (bounded measurements).
+Evidence: source/bytecode, five Java observer tests, seven Python fixture/gate tests, live configuration,
+raw frame intervals, process/device telemetry, loaded-module identities and saved-world contents.
+Applies to: Radiance worktree on `ebd5038c1e55e06041946f6b5215f589bd496447`; MCVR unchanged at
+`265d822e315cd10b864beb49ac5e89dfa0acca20`. No renderer product changes, Git operation or Prism access.
+Supersedes: the preceding preflight-only measurement gate, not its recorded failures or limitations.
+Remaining acceptance: actual draw/visual parity, diagnostic overhead, broader workloads and hidden
+upstream SDK model selection. Native GPU timings and complete mesh-queue drain are unavailable.
+
+### Workload and configuration
+
+The user requested heavier scenes and common performance settings, then explicitly reported the
+host ready for measurement. Model-city now has 256 chests, 256 animated banners, 256 fully equipped
+diamond armor stands and 256 item frames displaying equal counts of fence, hopper, brewing-stand
+and anvil models. Factory adds 64 Create motors, 256 shafts and 16 Sable assemblies. Fixed-seed fresh
+worlds, camera, time/weather and recipe avoid accumulating changes between runs. Higher tier and a
+144-building terrain recipe exist but were not executed. These are synthetic stationary fixtures,
+not the user's previous city save or a moving-route measurement.
+
+Shared requests: 2560x1440 windowed, render/simulation distance 16/5, entity distance scale 4,
+70-degree FOV, no resource pack, Advanced PT, RR Balanced, four bounces, jitter/SHARC on, emission
+collection on, VSync off in both option layers, cap 260, FG/Reflex off, eight chunk workers and 8x8
+native batch limits; Java 21, 2/8 GiB initial/max heap. The fork explicitly enables `rigidModels`
+and leaves `rigidParts` off. The original JARs and embedded cores are unchanged. Optional NVIDIA
+DLLs required by the upstream install convention were locally provisioned from the pinned fork's
+runtime set, with identical loaded hashes and retained notices. Exact upstream internal RR model
+selection remains unobserved; the fork uses E/5. Driver 616.92, RTX 4080 SUPER, normal dynamic clocks.
+
+The startup observer defaults off and requires the explicit isolated benchmark mode. It reads live
+Java pipeline/options, actual framebuffer size, GLFW focus/minimization and real frame-loop timing;
+it does not rewrite renderer settings or forge focus. Foreground checks run at 250 ms; device and
+process telemetry at one second. All ten formal clients remained unfocused and non-minimized,
+without a sampled OS foreground ownership. Minecraft's separate cached focus flag stayed true.
+
+### Corrections, tests and formal results
+
+History is preserved under the evidence root. `preflight-neo` exited normally but silently fell
+back to Vanilla PT with Advanced requested and emission collection off. `preflight-fabric` used the
+wrong attribute owner and retained a default shader path. Both failed the new configuration gate
+and are excluded. Corrected NeoForge/Fabric `-v2` and fork `-v2` preflights loaded RR and observed
+Advanced before formal measurement. The prepared but unlaunched `preflight-fork` is not a run.
+
+Java 21 built the startup companion and two adapters; five observer/transformer tests passed.
+Seven Python tests passed, including bounded deterministic recipes, target profiles and rejection
+of fallback, focus, dimensions and wrong saved camera. Final aggregation checked real saved armor,
+item contents and camera across all ten cases. This batch did not rerun unrelated native or GAME
+renderer tests. No heavy build or analysis overlapped formal timed samples.
+
+Each formal process uses 60 seconds of world warmup followed by a 30-second sample. Common order:
+NeoForge, Fabric, fork, fork, Fabric, NeoForge. Factory order: upstream, fork, fork, upstream. All
+ten passed configuration/fixture gates, exited 0 without timeout intervention and logged all
+dimensions saved. Factory saved 16 occupied Sable slots and all 320 kinetic block entities at
+nonzero speed (16 RPM). This confirms world state, not that every producer reached the intended
+rendering backend. No new device-loss marker was observed; this is not long-duration acceptance.
+
+Mean milliseconds have equal weight per run. p95/p99 pool the two raw frame distributions. FPS is
+1000 divided by that mean real-frame interval, not the game's cached counter or generated frames.
+
+| Scene / target | Two run means, ms | Mean, ms | Real FPS | Pooled p95 / p99, ms |
+| --- | --- | --- | --- | --- |
+| Model-city / upstream NeoForge 1.21.1 | 23.350 / 22.676 | 23.013 | 43.45 | 24.51 / 31.68 |
+| Model-city / upstream Fabric 1.21.4 | 33.285 / 33.530 | 33.408 | 29.93 | 35.37 / 36.83 |
+| Model-city / fork Test V1 | 37.817 / 37.489 | 37.653 | 26.56 | 39.34 / 42.77 |
+| Factory / upstream NeoForge 1.21.1 | 23.638 / 23.625 | 23.632 | 42.32 | 25.36 / 29.23 |
+| Factory / fork Test V1 | 32.318 / 33.527 | 32.923 | 30.37 | 35.52 / 39.42 |
+
+The fork is slower in these fixtures. This is a whole-product observation, not evidence that the
+recent optimization caused the difference: shaders, scene/culling coverage, SDK integration and
+version behavior are not proven equivalent. Do not compare factory directly with model-city as
+an incremental workload test; their fixed cameras differ to cover the wider factory.
+
+| Scene / target | Render-thread CPU, ms/frame | Approximate process CPU cores | Peak device VRAM, MiB |
+| --- | --- | --- | --- |
+| Model-city / upstream NeoForge | 22.62 | 1.15 | 8705 |
+| Model-city / upstream Fabric | 33.12 | 1.07 | 9115 |
+| Model-city / fork | 37.31 | 1.16 | 9706 |
+| Factory / upstream NeoForge | 23.25 | 1.38 | 8868 |
+| Factory / fork | 32.66 | 1.36 | 9920 |
+
+Thread CPU includes native/driver execution and possible busy waiting, not just Java model work.
+Process cores mean CPU-seconds/wall-second, not percent of the whole CPU. External telemetry is
+approximately correlated to observer initialization with two-second sample-edge exclusion. VRAM
+is whole-device NVML peak over the entire process lifecycle, including desktop/SDK allocations,
+not this process's exclusive usage. GPU clock means varied roughly 2.39-2.79 GHz; clocks were not
+locked or driver policy modified. Raw utilization, power, memory and clocks remain in each case.
+
+### Identity, evidence and remaining boundary
+
+Non-portable root: `D:/Workspaces/Repositories/GitHub/RecRivenVI/Radiance/run/upstream-pressure-20260925/`.
+`MANIFEST.json` pins raw-byte diagnostic/build-input snapshots, artifacts and retained test reports.
+`model-series.json`, `factory-series.json` and their results preserve order; `SUMMARY.json` includes
+per-run data, equal-run aggregates, pooled percentiles and telemetry scopes. `SUMMARY.md` is a
+compact evidence index. Each case retains launch/input hashes, raw logs/CSV, live options, actual
+DLL paths/hashes and its world. Nothing in these ignored records is a disposable recovery backup.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Upstream NeoForge JAR | `A92AD47B966A6F656C6F28068DD7B69D61C0AFAAFFC3583DFD0294B631CB9E09` |
+| Upstream Fabric JAR | `FC4F36919809C584F922704F29150DA68202C7E6B4DF9E3D35274552C668C86E` |
+| Fork JAR | `89FDB75B828F06B565133E8818D0DCF74A0D00B2CCACF06080E2EFD6D564BA63` |
+| Fork embedded/extracted/loaded core | `B015D09C3E8306038BC126EC50A3A412C1B6C3AD882F3311D04110333BBAD5A6` |
+| Updated startup companion | `D751ABD204B24C73A9B8AE47027AFEC8DC1998E40EE0BE11F9CA60E206B5A754` |
+
+Upstream core and unchanged adapter identities remain those in the preceding entry. No Java/native
+product package was rebuilt. The new companion replaces the old preflight observer only in these
+new cases. Agent source, artifact and launch hashes are separate from the renderer source identity.
+
+Matched requests and finite stability do not prove pixel parity, complete warm mesh queues,
+identical hidden RR model choice or identical scene/pass submission. Native GPU spans, generated
+frames, moving routes, higher tiers, terrain-city and observer-overhead isolation remain open.
+Window occlusion is not independently measured. Source inventory semantic classification, prior
+GPU-loss root cause and public NVIDIA binary redistribution remain separate unresolved work.
+No benchmark client or owned telemetry helper remains running after this series.
+
+## 2026-09-25: Correction to upstream comparison and packaged implementation inspection
+
+Status: investigating; documentation corrected.
+Evidence: static artifact/decompiled-bytecode/shader inspection and retained runtime settings;
+no new client, build or performance test.
+Applies to: Radiance `ebd5038c1e55e06041946f6b5215f589bd496447` / MCVR
+`265d822e315cd10b864beb49ac5e89dfa0acca20` versus the supplied upstream NeoForge 0.1.6 JAR.
+Supersedes: the effective shader-work parity interpretation of the
+[preceding pressure checkpoint](#2026-09-25-matched-three-version-pressure-benchmarks), not its
+raw timings, process outcomes, artifact identities or saved-world evidence.
+
+The user asked why upstream 1.21.1 was substantially faster and which optimizations it contains.
+The original gate checked global `option.rayBounces=4` but missed the separate Advanced-module
+controls. In every formal NeoForge upstream sample, the packaged shader inputs were bounce budget
+3, initial ReSTIR samples 8 and spatial samples 2; the fork and Fabric inputs were 4, 32 and 4.
+Consequently the measured frame-rate gap is not a matched-quality or isolated optimization result.
+The RR path overrides some low-tier resolution controls, so half-rate NRD must not be used as its
+explanation. The historical summary/manifest and their original source snapshots remain unchanged;
+this entry and the linked research carry the correction.
+
+Bounded inspection additionally confirmed compact 64/40-byte PBR records, explicit Java buffer
+ownership transfer, compact diffuse/specular ray queues and a different volumetric-light pipeline
+in the supplied upstream package. Entity culling and post-raster/UI contracts also differ from
+the fork. These are separate potential optimization and semantic/workload differences, without a
+measured per-feature attribution or a matching public native-source revision.
+
+Canonical findings, exact source paths, precision/lifetime limitations and evidence index:
+[internal shader workload and upstream implementation](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md#2026-09-25-correction-internal-shader-workload-and-upstream-implementation).
+The ignored `run/upstream-implementation-20260925/FINDINGS.json` binds all ten original live settings
+files and extracted evidence by raw-byte SHA-256. No renderer code, MCVR file, deployed artifact,
+benchmark setting or Git history was changed. Next comparison requires module-level workload
+normalization and explicit coverage limitations before any same-work performance claim.
+
+## 2026-09-25: Repeated comparison with explicit shader controls
+
+Status: benchmark configuration implemented; automated-verified; runtime-observed.
+Evidence: packaged shader metadata, ten Python behavior tests, three successful configuration
+preflights and ten new formal client processes. No renderer or Java observer rebuild.
+Applies to: unchanged Radiance `ebd5038c1e55e06041946f6b5215f589bd496447` / MCVR
+`265d822e315cd10b864beb49ac5e89dfa0acca20` products and the two pinned upstream packages.
+Supersedes: the prior timing table as the preferred exposed-control comparison; it does not erase
+the [missed-parameter correction](#2026-09-25-correction-to-upstream-comparison-and-packaged-implementation-inspection).
+
+### Configuration and setup correction
+
+The user authorized another run and confirmed the host was ready. Audit benchmark preparation now
+reads each original Advanced ZIP's `configs.json`, maps shared/known-renamed controls to the fork's
+pinned defaults, rejects unsupported enum/range values, and records every target-only control.
+All 50 exposed upstream-Neo shader attributes and 59 attributes in each older pack are pinned and
+read back at world entry and sample end. Common inputs include bounce budget 4, initial candidates
+32, spatial samples 4, radius 32, spatial disocclusion samples 20, confidence cap 24, common light
+inputs and cloud controls. Upstream's separate initial-disocclusion budget is 32 and RR resolution
+controls explicitly select quality/high; its algorithm-specific controls remain documented.
+
+The first short setup attempt was rejected: writing dynamic values only into `pipeline.yaml`
+left upstream Neo at 3/8/2. Its actual loader uses an absolute-pack-path-hashed properties file in
+`radiance/shader-pack-settings/`. Preparation now writes that file; older package settings also
+receive `advanced.zip.txt`. The file is included in launch hashes. The comparison gate checks the
+extracted Advanced ZIP against the original package and rejects live attribute fallback. The
+rejected process saved/exited normally and is excluded from all timing aggregates.
+
+No settings are injected into a running renderer. All formal runs use original packages, a fresh
+fixed world, the same fixture/camera recipes as before, 2560x1440, distances 16/5, Advanced/RR
+Balanced, jitter/SHARC on, VSync/FG/Reflex off, cap 260, Java 21 and 2/8 GiB heap. The fork retains
+`rigidModels=true`, `rigidParts=false`. NVIDIA runtime hashes and observer binaries are unchanged.
+The model sequence is Neo/Fabric/fork/fork/Fabric/Neo; factory is Neo/fork/fork/Neo. Each process
+warms up for 60 seconds and samples for 30 seconds. No builds overlap formal timing.
+
+### Measured results
+
+Means weight the two runs equally; percentiles pool their raw real-frame intervals. FPS is the
+inverse mean frame-loop interval, not a generated/presented-frame counter.
+
+| Scene / target | Two run means, ms | Mean, ms | Real FPS | Pooled p50 / p95 / p99, ms |
+| --- | --- | --- | --- | --- |
+| Model-city / upstream NeoForge 1.21.1 | 22.480 / 23.212 | 22.846 | 43.77 | 22.39 / 24.37 / 29.00 |
+| Model-city / upstream Fabric 1.21.4 | 32.842 / 34.380 | 33.611 | 29.75 | 33.46 / 36.01 / 38.12 |
+| Model-city / fork Test V1 | 37.560 / 38.426 | 37.993 | 26.32 | 37.96 / 40.09 / 42.01 |
+| Factory / upstream NeoForge 1.21.1 | 22.819 / 23.606 | 23.213 | 43.08 | 22.50 / 25.55 / 30.09 |
+| Factory / fork Test V1 | 32.432 / 32.482 | 32.457 | 30.81 | 32.60 / 34.83 / 38.04 |
+
+Upstream Neo remains about 66.3% higher in real FPS in model-city and 39.8% in factory. The former
+unmatched table was 43.45/29.93/26.56 FPS and 42.32/30.37 FPS respectively. The new comparison does
+not materially remove the observed gap. It cannot establish which implementation change caused
+it, or prove that equal input values produce equal work or images in different integrators.
+
+Render-thread CPU means remain close to frame intervals (22.64/33.11/37.63 ms in model-city,
+22.98/32.02 ms in factory); these include native/driver execution and possible busy waiting, not
+only Java geometry. Whole-device full-lifecycle VRAM peaks were 8992/9458/10044 MiB in model-city
+and 9151/10202 MiB in factory. The observed sample clock means span approximately 2.37-2.79 GHz;
+normal driver DVFS was retained. These are not isolated process or GPU-pass measurements.
+
+### Validation, identity and remaining boundary
+
+All ten formal processes passed the settings/identity/fixture/focus gates, exited 0 without timeout
+closure and saved all dimensions. No device-loss marker appeared. Every timed frame was unfocused
+and not minimized. Saved factory data contains 64 motors, 256 shafts at 16 RPM and 16 occupied
+Sable slots; the shared model contents and camera also passed checks. This does not prove every
+producer reached the same PT/backend path. Three successful short preflights are separate from the
+formal table. The ten Python tests cover actual preparation/gate behavior, including the missed
+module value, pack-settings path, range rejection and altered extracted shader identity.
+
+JAR and loaded-core identities remain those of the preceding pressure checkpoint: Neo JAR
+`A92AD47B966A6F656C6F28068DD7B69D61C0AFAAFFC3583DFD0294B631CB9E09`, Fabric JAR
+`FC4F36919809C584F922704F29150DA68202C7E6B4DF9E3D35274552C668C86E`, fork JAR
+`89FDB75B828F06B565133E8818D0DCF74A0D00B2CCACF06080E2EFD6D564BA63`; fork core
+`B015D09C3E8306038BC126EC50A3A412C1B6C3AD882F3311D04110333BBAD5A6`.
+
+Non-portable evidence root:
+`D:/Workspaces/Repositories/GitHub/RecRivenVI/Radiance/run/upstream-aligned-v2-20260925/`.
+`MANIFEST.json` binds raw-byte harness snapshots, input/artifact evidence and `SUMMARY.json`;
+`SUMMARY.md`, the two series manifests, raw frame/telemetry files and `python-tests.txt` provide the
+index. The rejected setup remains in `run/upstream-aligned-20260925/preflight-upstream-neo`.
+Unexecuted cases prepared there are not results. No evidence was deleted or overwritten.
+
+Different culling/geometry coverage, integration algorithms, froxel/screen-volume processing,
+tone mapping, SDK versions and exact hidden RR model remain unequal or unverified. GPU stage
+attribution, observer overhead, moving/loading workloads, complete visual parity and long-duration
+stability remain open. GPU-loss root cause and public NVIDIA redistribution permission are not
+closed. No product source, MCVR file, Prism data or Git history changed; all owned benchmark clients
+and NVIDIA telemetry helpers have exited.
+
+## 2026-09-25: Expanded upstream 1.21.1 implementation inventory
+
+Status: investigating; static artifact evidence only. Extended the read-only product investigation
+of supplied NeoForge 0.1.6 JAR `A92AD47B966A6F656C6F28068DD7B69D61C0AFAAFFC3583DFD0294B631CB9E09`
+against the unchanged fork product snapshot in the preceding entry. Traced block-entity section
+indexing, bounded chunk admission and worker scratch, Sable persistent section geometry, and
+Flywheel model/program/submission reuse. The
+[expanded inventory](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md#2026-09-25-follow-up-expanded-upstream-1211-optimization-inventory)
+separates overlapping fork capabilities, newly observed differences, semantic/quality differences,
+and unavailable native implementation evidence.
+
+No renderer changes, builds, launches, deployments or new timing samples were performed. Derived
+bytecode evidence and raw-byte identities are retained under the existing investigation's
+`expanded-inventory/EVIDENCE.json`; previous evidence is unchanged. No additional optimization is
+authorized by the inventory. Per-mechanism timing, full rendering equivalence and the native source
+match remain unverified; aggregate benchmark results are not reassigned to individual mechanisms.
+
+## 2026-09-25: Full-scene PT optimization constraints and impact assessment
+
+Status: proposed, with static source evidence. User reaffirmed physical correctness, full geometry
+participation and no world post-raster replacement. Product snapshots remain Radiance
+`ebd5038c1e55e06041946f6b5215f589bd496447` / MCVR `265d822e315cd10b864beb49ac5e89dfa0acca20`;
+existing benchmark tooling/worktree edits are preserved. Traced Java source closing, the two host
+copies in eligible native entity conversion, the 128-byte ABI and direct Advanced dispatch.
+
+The [canonical plan](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md#2026-09-25-full-scene-pt-optimization-impact-and-implementation-plan)
+prioritizes explicit source ownership, lossless layout and timing-gated active continuation queues.
+It records integer/mode precision limits, the native indirect-feature prerequisite, original-pixel
+random/cache addressing and inactive-output initialization. No product edits, builds, tests,
+launches or deployment occurred; this is not a new optimization result. Prior benchmark outcomes,
+GPU-loss uncertainty, visual boundaries and public binary licensing remain unchanged.
+
+## 2026-09-25: Muted automated Minecraft tests
+
+Status: implemented and automated-verified for the benchmark preparation paths; no client launch.
+User requires all future automated Minecraft tests to be silent. Recorded the general rule in
+`DOCUMENTATION_POLICY.md`; both fixture creation and all three benchmark profiles now set master
+volume to zero. `Start-Benchmark.ps1` rejects missing, duplicate or nonzero master-volume entries
+before Java launch. Historical cases and manual/Prism settings were not edited.
+
+Python fixture/profile suite: 10/10 passed, including generated options and all-target mute checks.
+PowerShell launcher parsing and Git whitespace checks passed. No renderer rebuild or new timing
+result; future comparisons must mute both sides and preserve old measurements' original settings.
+
+## 2026-09-25: Direct native input and lossless source format experiment
+
+Status: implemented, build/automated/GPU verified, bounded runtime-observed. Direct input is selected
+as the default; compact input remains experimental/default-off. No new user visual acceptance,
+long-duration claim, GPU-loss closure or public binary permission is implied.
+Baseline source heads remain Radiance `ebd5038c1e55e06041946f6b5215f589bd496447` / MCVR
+`265d822e315cd10b864beb49ac5e89dfa0acca20`; all changes remain uncommitted. Existing inventory,
+benchmark and documentation changes were preserved.
+
+### Final mechanism and rejected alternatives
+
+Java now supplies exact source byte lengths through a distinct `queueBuildSourcesV1` ABI. Eligible
+dynamic PBR input is copied directly to one native-owned staging buffer per submission before Java
+closes its mesh storage. This removes the intermediate retained host copy. Input groups keep the
+original geometry/output offsets, have immutable descriptors/jobs, upload each source once and
+remain owned through normal frame retirement. A 64 MiB global direct-payload budget falls back to
+owned copying without dropping geometry. It is not a bound on all GPU/SDK/cache memory.
+
+Retaining whole Java providers was rejected: their large allocation capacities could retain hundreds
+of MiB to borrow about 17.3 MB of useful vertices. No cross-JNI source lease, worker Java callback,
+new shutdown protocol or global GPU idle was introduced. Ordinary partial capture failure remains
+unpublished; actual source and metadata checks precede GPU consumption.
+
+An independent format-13 source stores 100 rather than 128 bytes. All float payloads, unrestricted
+color/light/overlay values, texture identities and emission bits remain exact; only discrete modes
+are combined. Existing logical first-write semantics and exact consumer class are preserved.
+Chunk/rigid/ModelPart caches, special Spring/Lock consumers and raster previews retain their prior
+paths; excluded compact dynamic inputs decode to canonical PBR on CPU. This private GPU source
+contract trusts the renderer producer's reserved-zero bits; it is not an arbitrary external binary
+vertex API. No precision reduction, camera-based geometry removal or world post-raster substitution
+was introduced. See the [mechanism/limits](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md#implemented-experiment-and-evidence-boundaries).
+
+The direct path can be disabled with `-Dradiance.directEntityInput=false`. Compact input is only
+selected with `-Dradiance.compactVertices=true`; default adoption was rejected on measured cost.
+A follow-up cached-offset/one-shot-OR/check-hoisting adjustment was tested but had no reliable
+producer benefit and was withdrawn, preserving its logs rather than accumulating an unproven change.
+
+### Correctness and build evidence
+
+GAME tests: 220 passed. Bootstrap: 10 passed, 2 existing skips. Audit: 21 unit, 4 inventory and
+5 benchmark tests passed; its 2 native collector tests passed. Python fixture/profile tests: 10
+passed. RelWithDebInfo native INSTALL, complete CTest 65/65, distributed-JAR and Maven-development
+artifact checks passed. Tests-only follow-ups reran the affected native fixtures.
+
+The native GPU fixture exercises mixed 128/100-byte inputs, two immutable generations and multiple
+source groups writing shared outputs in reordered dispatch order, with poisoned non-owner input
+regions, output guards and compute-to-BLAS use. Six records emitted by the actual Java consumer
+were passed to the native CPU decoder and, separately, to the real GPU fixture; output fields and
+indices matched the canonical path within the existing GPU position tolerance. This verifies the
+tested conversion boundary, not complete final-image equivalence or every third-party renderer.
+
+Initial test setup failures were retained: missing test registry bootstrap/class-name spelling,
+a missing STB include path in the new native test target, and a fixture expectation that ignored
+the second tile needed for 96 indices. The native fixture initially terminated on that uncaught
+test assertion; it was not a client/GPU fault. Corrected tests then passed. An unquoted PowerShell
+Gradle property was rejected before native configuration; the quoted command succeeded.
+
+### Same-artifact performance comparison
+
+Measured candidate JAR:
+`3D4CDF3921763E4E744419AB8E073AE3230B061D53F2556B2575FD58B7C5E8C3`.
+Native core: `350B5D3E18ABB25EB3C57BF7E9672F10B635AB274A52D46FC58525A5CE6D13B1`.
+All three variants use this same binary, fixed worlds/settings/mod identities, mute, 60-second
+warmup and 30-second observation. Model-city uses three balanced runs per variant; factory uses
+two reversed runs. All 15 formal cases passed configuration/focus/save/exit gates with no new
+device-loss marker. Means weight independent runs equally; percentile evidence pools raw frames.
+
+| Scene | Legacy ms | Direct ms | Direct + compact ms | Direct frame reduction |
+| --- | ---: | ---: | ---: | ---: |
+| Model city | 37.774 | 35.971 | 37.431 | 4.77% |
+| Create/Sable factory | 33.171 | 31.079 | 32.119 | 6.31% |
+
+The combined path was slower than direct alone; byte reduction is not counted as frame acceleration.
+Same-candidate instrumented D/C runs confirmed 135312 dynamic vertices and 512 rigid instances per
+frame on both paths. Source bytes were 17319936 vs 13531200 (21.875% lower); final GPU output stayed
+13801824 bytes. Direct mode uploaded two source and two job buffers, with no observed budget fallback
+in the accepted model profiles. Formal runs intentionally have no native profiler, so per-frame
+activation counts are corroborating diagnostic evidence, not telemetry from every formal sample.
+
+One later JFR/profile run acquired focus and was rejected; its normal save/exit and raw evidence
+remain, and its timing is excluded. The two unexecuted reverse-order cases subsequently passed.
+Instrumented source production cost increased while native marshalling fell; sparse JFR samples
+cannot pinpoint a single short Java method. A bounded actual-consumer CPU experiment also found
+100-byte production slower for position-only and full-field streams. This is a cost-transfer
+result, not proof that every workload or hardware configuration disfavors compact storage.
+
+### Final artifact, source evidence and remaining gates
+
+Final JAR: `6FA57B4BD15245D33037011BD4918950ED75ECFFB7FE11988D5D57A106B746DC`.
+It differs from the measured candidate only in the Java direct-input default (false to true);
+native core, shaders and compact producer are identical. Formal candidate timings are not relabeled
+as a full performance run of this final JAR. Final default/model/factory and compact-copy activation
+preflights are recorded separately in the evidence manifest.
+
+Non-portable evidence root:
+`D:/Workspaces/Repositories/GitHub/RecRivenVI/Radiance/run/fullscene-input-20260925/`.
+It retains baseline/candidate/final artifacts, matching PDB, raw-byte source archives and dependency
+identities, build/test logs, raw frame/process/GPU telemetry, Java source fixtures, JFR and bounded
+producer experiments. `FORMAL_SUMMARY.json/.md` and `DIAGNOSIS.json` separate formal from instrumented
+results. Memory peaks include startup; NVML VRAM is device-wide, not an SDK-complete process budget.
+OBS/RTSS implicit Vulkan layers were observed in the GPU fixture environment; no global layer or
+driver setting was changed. Evidence is not temporary rollback material.
+
+Batch-3 assessment is investigating only: Advanced continuation passes still dispatch over image
+extents, use launch coordinates in random/cache addressing and initialize inactive outputs. The
+device does not currently enable indirect trace dispatch. Current module-level GPU intervals and
+CPU submission timings do not isolate the continuation cost or establish a traversal bottleneck.
+Per-pass completion, active work and CPU record/wait attribution are the next evidence gates; no
+new queue/integrator implementation or quality tradeoff was made. Broader movement/reload/visual,
+other hardware and long-duration validation remain bounded by the actual recorded cases.
+
+Final handoff evidence: all three final-JAR preflights passed configuration/save/exit gates.
+With both JVM overrides absent, model city used 135312 legacy vertices and two direct inputs;
+factory used 122928 vertices and one direct input per frame. The independent compact/copy case
+used 135312 compact vertices with no direct input, exercising the retained copy fallback. Counts
+are in `FINAL_ACTIVATION.json`. These instrumented runs are not pooled with the formal timings.
+The final Java/native and Java/GPU fixture invocations also passed using the regenerated fixture.
+
+Deployment was hash-verified in the authorized, closed Prism instance at
+`E:/Minecraft/PrismLauncherDev/instances/Radiance 1.21.1-neoforge/minecraft/mods/` (non-portable).
+Radiance SHA is the final JAR above; Audit SHA is
+`7294EBE93029324828306E004C38AFEC9371D8961680C3F86C2CFCFDDD0EE7CA`. The instance was not launched
+and its settings/worlds were not changed. `PRISM_DEPLOYMENT.json` records the prior identities;
+one previous mod pair is retained under `prism-before/` for deployment rollback until the handoff
+is accepted. No older backup, acceptance evidence, Git ref or production data was cleaned.
+
+Observed process-private peaks were 10850-11166 / 10835-10872 / 10841-10889 MiB for model L/D/C
+and 11484-11521 / 10999-11008 / 10998-11285 MiB for factory L/D/C. These include startup and GC
+variation, not isolated geometry allocations. Device VRAM peaks overlap (9798-10006 MiB across
+these cases); no whole-process GPU-memory saving is claimed from those values. No staging,
+commit, amend, push, tag or public binary release was performed.
+
+## 2026-09-26: Performance Optimization Test V2 source checkpoint
+
+Status: candidate organized against the completed validation snapshot; no new product change,
+build or client run in this Git-only batch. Before documentation updates, every tracked and
+necessary untracked file in both repositories matched the final raw-byte source manifest at
+`run/fullscene-input-20260925/MANIFEST.json`; no additional product files appeared. JAR/core hashes
+still match the preceding final-artifact entry. Its test, runtime, rejected-focus and visual
+boundaries retain their original dates and configurations.
+
+The candidate contains direct native-owned entity input (default on), the lossless compact source
+experiment (default off), behavioral/CPU/GPU tests, the static OpenGL inventory, isolated upstream
+benchmark adapters and scripts, silent/unfocused test configuration, and their maintained records.
+Generated binaries, debug symbols, native headers regenerated by the build, logs, evidence archives,
+runtime copies and test/production worlds remain outside Git. Necessary new source, shader and test
+files are included explicitly. Portable source tooling still records its local-runtime provisioning
+limits; a static call inventory is not complete rendering-coverage proof.
+
+By explicit user authorization, this is a new signed V2 commit above V1. Existing `Initial port`
+and V1 objects, identities and messages are preserved. The paired MCVR V2 checkpoint, created on
+2026-09-26, is `91301b6eecd5ccf1932de08d38df3673bb2a3664`; no self-SHA or reciprocal amendment is
+needed. Radiance preparation resumed on 2026-09-27: all 1212 Radiance and 561 MCVR manifest files
+were rechecked, with only the documented checkpoint ledger/policy edits differing from the final
+validation snapshot, no missing or extra source files, and unchanged final JAR/embedded core hashes.
+The Radiance commit uses its actual completion time. No push, tag or binary
+publication is authorized in this batch. No destructive history rewrite or extra recovery bundle
+is needed; existing Prism rollback files and unique acceptance evidence remain intact.
+
+The source checkpoint does not adopt compact input by default, implement batch-3 ray queues,
+resolve historical GPU-loss causes, supply new visual acceptance or grant NVIDIA redistribution
+permission. Commit-candidate and signature evidence is retained outside Git under
+`D:/Workspaces/Artifacts/RadiancePerformanceV2/20260926/` (non-portable).

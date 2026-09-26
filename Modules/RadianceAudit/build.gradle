@@ -109,3 +109,127 @@ tasks.register('verifyAuditJar') {
     }
 }
 tasks.named('check') { dependsOn tasks.named('verifyAuditJar'), 'testNativeAudit' }
+
+// Offline inventory has no Minecraft/native dependency and never loads the inspected classes.
+sourceSets {
+    inventory { java.srcDir 'tools/src' }
+    inventoryTest { java.srcDir 'tools/test' }
+    benchmark { java.srcDir 'benchmark/src' }
+    benchmarkTest { java.srcDir 'benchmark/test' }
+    benchmarkAdapter { java.srcDir 'benchmark/adapter' }
+    benchmarkNeo {
+        java.srcDir 'benchmark/neoforge'
+        compileClasspath += sourceSets.main.compileClasspath + sourceSets.benchmarkAdapter.output
+    }
+}
+dependencies {
+    inventoryImplementation 'org.ow2.asm:asm-tree:9.10.1'
+    inventoryImplementation 'com.google.code.gson:gson:2.13.2'
+    inventoryTestImplementation sourceSets.inventory.output
+    inventoryTestImplementation 'org.ow2.asm:asm-tree:9.10.1'
+    inventoryTestImplementation 'com.google.code.gson:gson:2.13.2'
+    inventoryTestImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    inventoryTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+    benchmarkImplementation 'org.ow2.asm:asm-tree:9.10.1'
+    benchmarkTestImplementation sourceSets.benchmark.output
+    benchmarkTestImplementation 'org.ow2.asm:asm-tree:9.10.1'
+    benchmarkTestImplementation 'org.junit.jupiter:junit-jupiter:6.1.3'
+    benchmarkTestRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+tasks.register('benchmarkTest', Test) {
+    testClassesDirs = sourceSets.benchmarkTest.output.classesDirs
+    classpath = sourceSets.benchmarkTest.runtimeClasspath
+}
+tasks.register('benchmarkHooksJar', Jar) {
+    archiveFileName = 'audit-benchmark-hooks.jar'
+    destinationDirectory = layout.buildDirectory.dir('benchmark-support')
+    from(sourceSets.benchmark.output) { include 'com/radiance/audit/benchmark/RuntimeHooks*.class' }
+}
+tasks.register('benchmarkTransformerJar', Jar) {
+    archiveFileName = 'audit-benchmark-transformer.jar'
+    destinationDirectory = layout.buildDirectory.dir('benchmark-support')
+    from(sourceSets.benchmark.output) { include 'com/radiance/audit/benchmark/BenchmarkTransformer*.class' }
+    from({ configurations.benchmarkRuntimeClasspath.collect { zipTree(it) } }) {
+        exclude 'META-INF/MANIFEST.MF', 'module-info.class', 'META-INF/versions/**'
+        duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    }
+    from(rootProject.file('LICENCE')) { into 'META-INF/licenses' }
+    from('benchmark/licenses') { into 'META-INF/licenses' }
+}
+tasks.register('benchmarkAgentJar', Jar) {
+    archiveClassifier = 'benchmark-agent'
+    dependsOn 'benchmarkHooksJar', 'benchmarkTransformerJar'
+    manifest { attributes 'Premain-Class': 'com.radiance.audit.benchmark.AgentBootstrap' }
+    from(sourceSets.benchmark.output) { include 'com/radiance/audit/benchmark/AgentBootstrap*.class' }
+    from(tasks.named('benchmarkHooksJar').flatMap { it.archiveFile })
+    from(tasks.named('benchmarkTransformerJar').flatMap { it.archiveFile })
+    from(rootProject.file('LICENCE')) { into 'META-INF/licenses' }
+    from('benchmark/licenses') { into 'META-INF/licenses' }
+}
+def benchmarkMetadata = tasks.register('benchmarkMetadata') {
+    def directory = layout.buildDirectory.dir('benchmark-metadata')
+    outputs.dir directory
+    inputs.properties metadata
+    doLast {
+        def out = directory.get().asFile
+        def neo = new File(out, 'neoforge/META-INF/neoforge.mods.toml')
+        neo.parentFile.mkdirs()
+        neo.text = """modLoader="javafml"
+loaderVersion="[4,5)"
+license="${metadata.license}"
+issueTrackerURL="${metadata.issues}"
+[[mods]]
+modId="radiance_audit"
+version="${project.version}"
+displayName="Radiance Audit (Benchmark)"
+displayURL="${metadata.homepage}"
+logoFile="${metadata.logo}"
+authors="${metadata.authors}"
+description='''Portable upstream benchmark adapter; requires the explicit startup companion for timing and unattended input isolation.'''
+[[dependencies.radiance_audit]]
+modId="minecraft"
+type="required"
+versionRange="[1.21.1]"
+side="CLIENT"
+"""
+        def fabric = new File(out, 'fabric/fabric.mod.json')
+        fabric.parentFile.mkdirs()
+        fabric.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+            schemaVersion:1, id:'radiance_audit', version:project.version.toString(), name:'Radiance Audit (Benchmark)',
+            description:'Portable upstream benchmark adapter; requires the explicit startup companion for timing and unattended input isolation.',
+            authors:[metadata.authors], contact:[homepage:metadata.homepage, issues:metadata.issues],
+            license:metadata.license, icon:metadata.logo, environment:'client',
+            entrypoints:[client:['com.radiance.audit.benchmark.adapter.PortableBenchmarkMod::initialize']],
+            depends:[fabricloader:'>=0.18.3', minecraft:'1.21.4', java:'>=21']
+        ]))
+    }
+}
+['NeoForge':'neoforge','Fabric':'fabric'].each { label, loader ->
+    tasks.register("benchmark${label}Jar", Jar) {
+        dependsOn benchmarkMetadata
+        archiveClassifier = "benchmark-${loader}-${loader == 'fabric' ? '1.21.4' : '1.21.1'}"
+        from(sourceSets.benchmarkAdapter.output)
+        if (loader == 'neoforge') from(sourceSets.benchmarkNeo.output)
+        from(layout.buildDirectory.dir("benchmark-metadata/${loader}"))
+        from(rootProject.file('src/main/resources')) { include metadata.logo }
+        from(rootProject.file('LICENCE')) { into 'META-INF/licenses' }
+    }
+}
+tasks.named('check') { dependsOn 'inventoryTest', 'benchmarkTest' }
+tasks.register('inventoryTest', Test) {
+    testClassesDirs = sourceSets.inventoryTest.output.classesDirs
+    classpath = sourceSets.inventoryTest.runtimeClasspath
+}
+tasks.register('renderInventory', JavaExec) {
+    group = 'verification'
+    description = 'Enumerates bytecode GL calls and possible callers without claiming semantic equivalence.'
+    classpath = sourceSets.inventory.runtimeClasspath
+    mainClass = 'com.radiance.audit.tools.GlInventory'
+    workingDir rootProject.projectDir
+    maxHeapSize = '2g'
+    doFirst {
+        if (!project.hasProperty('inventory.manifest') || !project.hasProperty('inventory.output'))
+            throw new GradleException('Supply -Pinventory.manifest=<JSON> and -Pinventory.output=<directory>')
+        args project.property('inventory.manifest'), project.property('inventory.output')
+    }
+}

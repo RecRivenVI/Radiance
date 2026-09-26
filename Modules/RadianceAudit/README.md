@@ -64,6 +64,11 @@ Radiance-specific native features require the matched renderer.
 
 ## Frame profiling
 
+For the separately pinned upstream 1.21.1 NeoForge and 1.21.4 Fabric packages, use the
+[portable benchmark adapters and startup companion](benchmark/README.md), not this fork-specific
+native collector. The [offline GL inventory](tools/README.md) enumerates artifact-scoped bytecode
+calls and maintains evidence-backed translation/semantic statuses separately from performance runs.
+
 With the matched Radiance/MCVR and this optional mod installed, run the **client command**
 `/radianceaudit profile start 30` (1–120 seconds, default 30). `/radianceaudit profile stop`
 ends it early. No JVM flags, cheats, server mod, graphics changes or experiment marker are needed.

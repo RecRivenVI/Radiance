@@ -115,6 +115,10 @@ gradle-app.setting
 
 **/build/
 
+# Python diagnostic tooling bytecode
+**/__pycache__/
+*.py[cod]
+
 # Common working directory
 run/
 runs/

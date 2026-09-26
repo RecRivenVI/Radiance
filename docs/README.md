@@ -53,3 +53,6 @@ Each substantial change should record:
 
 - [Radiance Audit](../Modules/RadianceAudit/README.md) documents the separately installed diagnostic
   module, build tasks, controls, experiment guards and retained native capture boundaries.
+- [Render-call inventory and upstream benchmarks](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md)
+  fixes the static-enumeration boundary, the two upstream artifacts and the common-metrics benchmark
+  design. Implementation/preflight evidence belongs to the linked development-ledger entry.

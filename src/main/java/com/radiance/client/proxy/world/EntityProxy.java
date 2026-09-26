@@ -111,6 +111,9 @@ import org.joml.Vector3dc;
 import net.neoforged.neoforge.client.ClientHooks;
 
 public class EntityProxy {
+    private static final boolean DIRECT_ENTITY_INPUT_ENABLED =
+        Boolean.parseBoolean(System.getProperty("radiance.directEntityInput", "true"));
+
     private static final ThreadLocal<Integer> transformedBlockEntityRenderDepth =
         ThreadLocal.withInitial(() -> 0);
     private static final ThreadLocal<StorageVertexConsumerProvider> debugLineCapture =
@@ -1811,6 +1814,8 @@ public class EntityProxy {
         ByteBuffer indexFormatBB = null;
         ByteBuffer vertexCountBB = null;
         ByteBuffer verticesBB = null;
+        ByteBuffer vertexByteCountsBB = null;
+        final boolean directEntityInput = closeAfterBuild && DIRECT_ENTITY_INPUT_ENABLED;
 
         try {
             int entityHashCodeSize = entityRenderDataList.getTotalEntityCount() * Integer.BYTES;
@@ -1903,6 +1908,17 @@ public class EntityProxy {
             verticesBB = MemoryUtil.memAlloc(verticesSize);
             long verticesAddr = memAddress(verticesBB);
             int verticesBaseAddr = 0;
+
+            long vertexByteCountsAddr = 0;
+            int vertexByteCountsBaseAddr = 0;
+            {
+                int geometryByteCountSize = Math.multiplyExact(
+                    entityRenderDataList.getTotalLayersCount(), Long.BYTES);
+                if (geometryByteCountSize != 0) {
+                    vertexByteCountsBB = MemoryUtil.memAlloc(geometryByteCountSize);
+                    vertexByteCountsAddr = memAddress(vertexByteCountsBB);
+                }
+            }
 
             for (EntityRenderData entityRenderData : entityRenderDataList) {
                 entityHashCodeBB.putInt(entityHashCodeBaseAddr, entityRenderData.hashCode);
@@ -2002,10 +2018,15 @@ public class EntityProxy {
 
                     verticesBB.putLong(verticesBaseAddr, vertexBufferInfo.addr());
                     verticesBaseAddr += Long.BYTES;
+                    {
+                        vertexByteCountsBB.putLong(vertexByteCountsBaseAddr, vertexBufferInfo.size());
+                        vertexByteCountsBaseAddr += Long.BYTES;
+                    }
                 }
             }
 
-            queueBuild(lineWidth,
+            queueBuildSourcesV1(1, directEntityInput,
+                lineWidth,
                 coordinate.getValue(),
                 normalOffset,
                 entityRenderDataList.getTotalEntityCount(),
@@ -2026,7 +2047,8 @@ public class EntityProxy {
                 vertexFormatAddr,
                 indexFormatAddr,
                 vertexCountAddr,
-                verticesAddr);
+                verticesAddr,
+                vertexByteCountsAddr);
         } finally {
             freeDirectBuffer(entityHashCodeBB);
             freeDirectBuffer(entityPosXBB);
@@ -2046,6 +2068,7 @@ public class EntityProxy {
             freeDirectBuffer(indexFormatBB);
             freeDirectBuffer(vertexCountBB);
             freeDirectBuffer(verticesBB);
+            freeDirectBuffer(vertexByteCountsBB);
             submissionStrings.close();
 
             if (closeAfterBuild) {
@@ -2103,6 +2126,32 @@ public class EntityProxy {
         long indexFormats,
         long vertexCounts,
         long vertices);
+
+    private static native void queueBuildSourcesV1(int formatAbiVersion,
+        boolean directEntityInput,
+        float lineWidth,
+        int coordinate,
+        boolean normalOffset,
+        int size,
+        long entityHashCodes,
+        long entityPosXs,
+        long entityPosYs,
+        long entityPosZs,
+        long entityRayTracingFlags,
+        long entityPostRenderFlags,
+        long entityPrebuiltBLASs,
+        long entityPosts,
+        long entityLayerCounts,
+        long entityLineFrames,
+        long geometryTypes,
+        long geometryGroupNames,
+        long geometryContentNames,
+        long geometryTextures,
+        long vertexFormats,
+        long indexFormats,
+        long vertexCounts,
+        long vertices,
+        long vertexByteCounts);
 
     public static native int beginWorldMeshFrame(long worldToken, long frameToken,
         long resourceGeneration);

@@ -113,6 +113,13 @@ authorized `Performance Optimization Test V1` commit in each repository. This ex
 that additional performance checkpoint; it does not authorize creating it during the split or
 change the metadata/signature rules for `Initial port`.
 
+User-approved exception, 2026-09-26: preserve `Initial port` and the existing V1 checkpoints and
+create one paired `Performance Optimization Test V2` commit per repository for the accumulated
+performance, diagnostic/benchmark tooling and validation records. Use the configured identity,
+actual new commit times and SSH signatures, with an English title and Markdown bullet body as in
+V1. This is an additive checkpoint, not an amendment or authorization to push/publish. Original
+historical metadata remains unchanged; cross-repository references stay one-way.
+
 History-rewrite backups are temporary rollback tools. Before a destructive local or remote update,
 create and verify the smallest bundle that can restore the affected refs. Remove superseded
 project-maintenance backup refs after the rewrite and recovery bundle have been verified. Keep a
@@ -128,6 +135,10 @@ User decision, 2026-09-24, applying to the Radiance/MCVR pair:
 - Run automated Minecraft clients in isolated, case-specific directories under Radiance `run/`.
   Keep build/unit-test output in its normal build directories. Existing runtime and acceptance
   evidence is retained in place; this rule does not authorize moving or deleting historical runs.
+- User decision, 2026-09-25: every automated Minecraft test must start with master volume zero
+  (`soundCategory_master:0.0` in the isolated instance's `options.txt`). Apply this equally to all
+  benchmark variants and record the configuration; do not change Windows-wide audio or the user's
+  manual/Prism settings. Historical measurements keep their original audio configuration.
 - Hand off manual acceptance by deploying the matched Radiance JAR and, when needed, its matched
   diagnostic mod to the user's designated Prism instance. The current authorized instance is
   `E:\Minecraft\PrismLauncherDev\instances\Radiance 1.21.1-neoforge` (non-portable).

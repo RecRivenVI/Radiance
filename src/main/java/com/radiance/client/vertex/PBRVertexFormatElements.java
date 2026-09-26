@@ -67,4 +67,11 @@ public class PBRVertexFormatElements {
 
     public static final VertexFormatElement
         PBR_ALBEDO_EMISSION = register(VertexFormatElement.Type.UINT, VertexFormatElement.Usage.UV, 1);
+
+    /**
+     * Compact-v1 gives the existing UINT/UV/1 slot a new per-format name. The compact consumer
+     * uses the canonical PBR_TRIANGLE mask for logical one-shot setters, so this physical alias
+     * does not replace the PBR_USE_NORM logical field.
+     */
+    public static final VertexFormatElement PBR_PACKED_MODES = PBR_USE_NORM;
 }

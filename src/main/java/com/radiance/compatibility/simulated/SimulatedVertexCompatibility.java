@@ -3,6 +3,7 @@ package com.radiance.compatibility.simulated;
 import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.radiance.client.vertex.PBRVertexConsumer;
+import com.radiance.client.render.RasterPreviewScope;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.resources.ResourceLocation;
 
@@ -10,6 +11,7 @@ import net.minecraft.resources.ResourceLocation;
  * Converts Simulated's spring vertex contract into Radiance material data.
  */
 public final class SimulatedVertexCompatibility {
+    private static final boolean COMPACT_SOURCE = Boolean.getBoolean("radiance.compactVertices");
 
     private SimulatedVertexCompatibility() {
     }
@@ -25,7 +27,8 @@ public final class SimulatedVertexCompatibility {
         }
         return isSpringLayer(renderType)
             ? new SpringPBRVertexConsumer(allocator, renderType)
-            : new PBRVertexConsumer(allocator, renderType);
+            : PBRVertexConsumer.dynamic(allocator, renderType,
+                COMPACT_SOURCE && !RasterPreviewScope.active());
     }
 
     public static boolean isLockLayer(RenderType type) {

@@ -886,3 +886,67 @@ granularity before extending to more consumers. The first baked-model prototype 
 New target-owner CPU comparisons and finite lifecycle runs do not fill in user visual, complete GPU
 temporal, arbitrary model-Mixin, live dimension or long-duration acceptance. No new user test is
 required merely to confirm this negative performance result.
+
+## Mechanical render-call inventory and upstream benchmark suite
+
+Status: tooling implemented, automated-verified and runtime-observed; model-city and factory timing
+runs completed, but internal shader workloads were not matched (see the correction below).
+Semantic classification, draw/visual parity and broader workloads remain open. User selected
+Modrinth Fabric 1.21.4 `0.1.5-alpha` as the latest public release, explicitly accepting its alpha
+classification; the other reference is the supplied NeoForge 1.21.1 `0.1.6-alpha` OpenGL-UI JAR.
+See [scope/design](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md) and
+[implemented evidence](DEVELOPMENT_LEDGER.md#2026-09-25-opengl-inventory-and-portable-upstream-benchmark-preflights).
+The [larger-scene comparison](DEVELOPMENT_LEDGER.md#2026-09-25-matched-three-version-pressure-benchmarks)
+records six common-model and four factory runs. All stayed unfocused, used the requested dimensions
+and RR/Advanced settings, and saved/exited normally. Results do not isolate a Test V1 speedup.
+The [subsequent artifact inspection](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md#2026-09-25-correction-internal-shader-workload-and-upstream-implementation)
+found 3/8/2 bounce/initial/spatial settings in upstream NeoForge versus 4/32/4 in the other targets,
+despite equal global bounce requests. The raw results remain whole-product observations, not an
+equal-work performance ranking. No upstream optimization port is implemented by this investigation.
+The [authorized explicit-control rerun](DEVELOPMENT_LEDGER.md#2026-09-25-repeated-comparison-with-explicit-shader-controls)
+then passed three short preflights and ten formal runs with module/pack-owned settings pinned and
+read back. The observed performance gap persists; algorithm, culling and visual equivalence remain
+open. This is the preferred exposed-control comparison, not a measured per-optimization attribution.
+
+Next gates:
+
+- Connect reviewed exact-artifact statuses to existing runtime intent/disposition evidence. Cover
+  pre-cancellation producers, post-Mixin code, native/reflective/dynamic blind spots explicitly;
+  never equate static enumeration or interceptor presence with complete visual translation.
+- Keep the now-observed PT/RR, VSync/caps, emission, chunk, dimensions and focus settings pinned.
+  Retain the now-implemented module/pack-owned control and extracted-shader identity gates;
+  distinguish RR overrides from NRD-only half-rate modes. Resolve upstream SDK model
+  selection, coverage/culling, occlusion and mesh-queue state before claiming equivalent work.
+  Separate cross-version vanilla and modded 1.21.1 tables; neither isolates one optimization.
+- Validate actual Flywheel/PT producer submission, all workload tiers and observer overhead. Retain
+  raw real-frame mean/p50/p95/p99 and run spread; missing upstream native/GPU/FG metrics stay
+  unavailable. Do not infer generated-frame performance from background frame calls.
+- Pin a clean-machine runtime provisioning recipe before calling the launcher portable; local
+  templates currently depend on the retained isolated runtime/classpath. Never operate Prism or
+  production worlds, steal focus, block desktop input or automatically retry device loss.
+
+The retired replay remains archived. No product quality reduction, new rendering optimization,
+GPU-loss closure or NVIDIA public-distribution permission is implied by this suite.
+
+## Full-scene PT optimization candidates from the upstream comparison
+
+Status: direct input implemented and selected as the default after repeated timing; compact input
+implemented but experimental/default-off after a negative incremental performance result. The user requires physical rendering semantics,
+complete scene participation and no post-raster world replacement. Existing GUI raster and archived
+Ponder decisions are unchanged. See the
+[impact assessment and staged plan](research/RENDER_CALL_INVENTORY_AND_BENCHMARKS.md#2026-09-25-full-scene-pt-optimization-impact-and-implementation-plan).
+
+The [implementation and measurements](DEVELOPMENT_LEDGER.md#2026-09-25-direct-native-input-and-lossless-source-format-experiment)
+replace the proposed Java lease with synchronous native-owned per-submission staging. The 100-byte
+layout preserves all payload precision but did not improve frame time over direct input alone.
+Do not enable it by default merely because bytes fall 21.875%. A small producer refinement was
+measured and withdrawn after failing to show benefit. Chunk ownership is not expanded by this work.
+
+Continuation-queue assessment has started, without changing the ray dispatch or integrator.
+Current whole-module GPU timing and CPU submit time do not prove a GPU traversal bottleneck;
+per-pass GPU timing, active continuation counts and CPU record/wait attribution are prerequisites
+to a queue prototype. No remaining-frame subtraction is treated as pure Java work. Preserve
+fallback, material/face/history, generation and retirement contracts. Do not import normal/UV
+quantization, visibility pruning, frame-count loading throttles, raster world routing or another
+volume-light estimator as an equivalent optimization. Broader visuals and long-duration behavior
+remain unaccepted; no unrelated renderer roadmap item is closed.

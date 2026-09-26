@@ -7,6 +7,7 @@ import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_GLINT_UV;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_LIGHT_UV;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_NORM;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_OVERLAY_UV;
+import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_PACKED_MODES;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_POS;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_POST_BASE;
 import static com.radiance.client.vertex.PBRVertexFormatElements.PBR_TEXTURE_ID;
@@ -58,6 +59,7 @@ public class PBRVertexConsumer implements VertexConsumer {
     private static final int ALPHA_MODE_ADDITIVE = 11;
     // Shared with MCVR's existing multiplicative crumbling hit-shader branch.
     private static final int ALPHA_MODE_CRUMBLING = 22;
+    private static final int ALPHA_MODE_MAX = 22;
     // Keep text modes outside the material alpha-mode range. These values are
     // packed alongside the regular alpha mode and are consumed by both the
     // post-text raster path and world text hit shaders.
@@ -88,10 +90,12 @@ public class PBRVertexConsumer implements VertexConsumer {
     private final int writableMask;
     private final int requiredMask;
     private final int[] offsetsByElementId;
+    private final boolean compactV1;
     private float defaultAlbedoEmission = 0.0F;
     private long vertexPointer = -1L;
     private int vertexCount = 0;
     private int currentMask = 0;
+    private int currentPackedModes;
     private boolean building = true;
     private int textureID;
     private final int alphaMode;
@@ -112,23 +116,49 @@ public class PBRVertexConsumer implements VertexConsumer {
             alphaMode);
     }
 
+    /**
+     * Creates a PBR consumer with an explicit source-format choice. Existing constructors
+     * intentionally remain on the legacy format; integration callers opt in at their boundary.
+     */
+    public static PBRVertexConsumer dynamic(ByteBufferBuilder allocator, RenderType renderLayer,
+        boolean compactV1) {
+        return dynamic(allocator, renderLayer, compactV1, getAlphaMode(renderLayer));
+    }
+
+    static PBRVertexConsumer dynamic(ByteBufferBuilder allocator, RenderType renderLayer,
+        boolean compactV1, int alphaMode) {
+        VertexFormat sourceFormat = compactV1
+            ? PBRVertexFormats.PBR_COMPACT_V1
+            : PBRVertexFormats.PBR_TRIANGLE;
+        return new PBRVertexConsumer(allocator, VertexFormat.Mode.QUADS, sourceFormat,
+            renderLayer, alphaMode);
+    }
+
     private PBRVertexConsumer(ByteBufferBuilder allocator, VertexFormat.Mode drawMode,
         VertexFormat format, RenderType renderLayer, int alphaMode) {
         this.allocator = allocator;
         this.drawMode = drawMode;
         this.format = format;
+        this.compactV1 = format == PBRVertexFormats.PBR_COMPACT_V1;
 
         this.vertexSizeByte = format.getVertexSize();
-        this.writableMask = format.getElementsMask() & ~PBR_POS.mask();
+        // Mode setters remain one-shot logical elements when compact v1 combines them in one word.
+        this.writableMask = PBRVertexFormats.PBR_TRIANGLE.getElementsMask() & ~PBR_POS.mask();
         this.requiredMask = 0;
         this.offsetsByElementId = format.getOffsetsByElement();
 
-        if (this.vertexSizeByte != 128) {
+        int expectedVertexSize = this.compactV1 ? 100 : 128;
+        if (this.vertexSizeByte != expectedVertexSize) {
             throw new IllegalStateException(
-                "PBR vertex stride must be 128, got " + this.vertexSizeByte);
+                "PBR vertex stride must be " + expectedVertexSize + ", got "
+                    + this.vertexSizeByte);
         }
         if (!format.contains(PBR_POS)) {
             throw new IllegalArgumentException("PBR format must contain POSITION element");
+        }
+        if (this.compactV1 && (alphaMode < 0 || alphaMode > ALPHA_MODE_MAX)) {
+            throw new IllegalArgumentException("PBR alpha mode must be in [0, "
+                + ALPHA_MODE_MAX + "], got " + alphaMode);
         }
 
         if (renderLayer instanceof RenderType.CompositeRenderType) {
@@ -317,8 +347,14 @@ public class PBRVertexConsumer implements VertexConsumer {
             MemoryUtil.memPutFloat(ptr + offBase, baseX);
             MemoryUtil.memPutFloat(ptr + offBase + 4L, baseY);
             MemoryUtil.memPutFloat(ptr + offBase + 8L, baseZ);
-            // Reuse the trailing padding word after postBase for alpha mode.
-            putInt(ptr + offBase + 12L, effectiveAlphaMode());
+            if (!compactV1) {
+                // Reuse the trailing padding word after postBase for alpha mode.
+                putInt(ptr + offBase + 12L, effectiveAlphaMode());
+            }
+        }
+
+        if (compactV1) {
+            currentPackedModes = effectiveAlphaMode() << 16;
         }
 
         return ptr;
@@ -352,8 +388,14 @@ public class PBRVertexConsumer implements VertexConsumer {
             MemoryUtil.memPutFloat(ptr + offBase, baseX);
             MemoryUtil.memPutFloat(ptr + offBase + 4L, baseY);
             MemoryUtil.memPutFloat(ptr + offBase + 8L, baseZ);
-            // Reuse the trailing padding word after postBase for alpha mode.
-            putInt(ptr + offBase + 12L, effectiveAlphaMode());
+            if (!compactV1) {
+                // Reuse the trailing padding word after postBase for alpha mode.
+                putInt(ptr + offBase + 12L, effectiveAlphaMode());
+            }
+        }
+
+        if (compactV1) {
+            currentPackedModes = effectiveAlphaMode() << 16;
         }
 
         if (glintTextureID != 0) {
@@ -367,10 +409,15 @@ public class PBRVertexConsumer implements VertexConsumer {
     }
 
     private int effectiveAlphaMode() {
-        return PBRMaterialContext.entityTransmissionActive()
+        int effective = PBRMaterialContext.entityTransmissionActive()
             || blockTransmissionLayer && PBRMaterialContext.blockTransmissionActive()
             ? ALPHA_MODE_TRANSMISSION
             : alphaMode;
+        if (compactV1 && (effective < 0 || effective > ALPHA_MODE_MAX)) {
+            throw new IllegalArgumentException("PBR alpha mode must be in [0, "
+                + ALPHA_MODE_MAX + "], got " + effective);
+        }
+        return effective;
     }
 
     private long beginElement(VertexFormatElement element) {
@@ -396,6 +443,36 @@ public class PBRVertexConsumer implements VertexConsumer {
         return base + off;
     }
 
+    private void writeMode(VertexFormatElement logicalElement, int value, int shift,
+        int width) {
+        int valueMask = (1 << width) - 1;
+        if (value < 0 || value > valueMask) {
+            throw new IllegalArgumentException("PBR mode value must be in [0, "
+                + valueMask + "], got " + value);
+        }
+
+        if (!compactV1) {
+            long pointer = beginElement(logicalElement);
+            if (pointer != -1L) {
+                putInt(pointer, value);
+            }
+            return;
+        }
+
+        int mask = currentMask;
+        int bit = logicalElement.mask();
+        if ((mask & bit) == 0) {
+            return;
+        }
+        currentMask = mask & ~bit;
+
+        if (vertexPointer == -1L) {
+            throw new IllegalStateException("Not currently building vertex");
+        }
+        int fieldMask = valueMask << shift;
+        currentPackedModes = (currentPackedModes & ~fieldMask) | (value << shift);
+    }
+
     private void endVertex() {
         if (vertexCount == 0) {
             return;
@@ -409,6 +486,14 @@ public class PBRVertexConsumer implements VertexConsumer {
                     .map(format::getElementName)
                     .collect(Collectors.joining(", "));
             throw new IllegalStateException("Missing elements in vertex: " + s);
+        }
+
+        if (compactV1 && vertexPointer != -1L) {
+            int offset = offsetsByElementId[PBR_PACKED_MODES.id()];
+            if (offset < 0) {
+                throw new IllegalStateException("Packed mode element is missing from compact format");
+            }
+            putInt(vertexPointer + offset, currentPackedModes);
         }
     }
 
@@ -487,10 +572,7 @@ public class PBRVertexConsumer implements VertexConsumer {
     }
 
     private VertexConsumer setColorLayer(int red, int green, int blue, int alpha, int mode) {
-        long f = beginElement(PBR_USE_COLOR_LAYER);
-        if (f != -1L) {
-            putInt(f, mode);
-        }
+        writeMode(PBR_USE_COLOR_LAYER, mode, 1, 2);
 
         long p = beginElement(PBR_COLOR_LAYER);
         if (p != -1L) {
@@ -504,10 +586,7 @@ public class PBRVertexConsumer implements VertexConsumer {
 
     @Override
     public VertexConsumer setUv(float u, float v) {
-        long f = beginElement(PBR_USE_TEXTURE);
-        if (f != -1L) {
-            putInt(f, 1);
-        }
+        writeMode(PBR_USE_TEXTURE, 1, 3, 1);
 
         long p = beginElement(PBR_TEXTURE_UV);
         if (p != -1L) {
@@ -519,10 +598,7 @@ public class PBRVertexConsumer implements VertexConsumer {
 
     @Override
     public VertexConsumer setUv1(int u, int v) {
-        long f = beginElement(PBR_USE_OVERLAY);
-        if (f != -1L) {
-            putInt(f, 1);
-        }
+        writeMode(PBR_USE_OVERLAY, 1, 4, 1);
 
         long p = beginElement(PBR_OVERLAY_UV);
         if (p != -1L) {
@@ -534,10 +610,7 @@ public class PBRVertexConsumer implements VertexConsumer {
 
     @Override
     public VertexConsumer setUv2(int u, int v) {
-        long f = beginElement(PBR_USE_LIGHT);
-        if (f != -1L) {
-            putInt(f, 1);
-        }
+        writeMode(PBR_USE_LIGHT, 1, 7, 1);
 
         long p = beginElement(PBR_LIGHT_UV);
         if (p != -1L) {
@@ -549,10 +622,7 @@ public class PBRVertexConsumer implements VertexConsumer {
 
     @Override
     public VertexConsumer setNormal(float x, float y, float z) {
-        long f = beginElement(PBR_USE_NORM);
-        if (f != -1L) {
-            putInt(f, 1);
-        }
+        writeMode(PBR_USE_NORM, 1, 0, 1);
 
         long p = beginElement(PBR_NORM);
         if (p != -1L) {
@@ -612,10 +682,7 @@ public class PBRVertexConsumer implements VertexConsumer {
         public VertexConsumer setUv(float u, float v) {
             delegate.setUv(u, v);
 
-            long f = delegate.beginElement(PBR_USE_GLINT);
-            if (f != -1L) {
-                putInt(f, this.glintMode);
-            }
+            delegate.writeMode(PBR_USE_GLINT, this.glintMode, 5, 2);
 
             long p = delegate.beginElement(PBR_GLINT_UV);
             if (p != -1L) {
@@ -725,10 +792,7 @@ public class PBRVertexConsumer implements VertexConsumer {
             vector3f2.rotateX((float) (-Math.PI / 2));
             vector3f2.rotate(direction.getRotation());
 
-            long f = delegate.beginElement(PBR_USE_GLINT);
-            if (f != -1L) {
-                putInt(f, GLINT_MODE_ITEM);
-            }
+            delegate.writeMode(PBR_USE_GLINT, GLINT_MODE_ITEM, 5, 2);
 
             long p = delegate.beginElement(PBR_GLINT_UV);
             if (p != -1L) {
