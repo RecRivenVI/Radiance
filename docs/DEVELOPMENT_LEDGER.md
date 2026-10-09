@@ -6824,3 +6824,46 @@ only after both remote states verify; older backup inventory awaits user cleanup
 No build/game/performance test is repeated for this content-preserving history operation. Existing
 visual, GPU-root-cause, long-stability and vendor binary-license gates remain open; no tag/Release
 or binary distribution is authorized. All ignored acceptance evidence remains in place.
+
+
+## 2026-10-04: Portable consolidation mapping and frozen-period static inventories
+
+Status: investigating; documentation/tooling implemented; analysis-tool automated checks only.
+Evidence: static source/artifact/API inspection and tool fixtures. This completes the A1–A8 static
+work started on 2026-10-03; no product build, GPU/client run, performance experiment or deployment.
+Observed Radiance HEAD `e69a1e8ad8bd88663c5918896aa356cbdb42d006`, original parent
+`414d8e330a2fc6cb1e8630cc95f2302b2b97a0e8`, committed tree `99af1e44b74255dc0a42d78c6a28aced43ea6a2b`.
+Existing product sources and necessary files remain unchanged; prior relay edits are preserved.
+
+The earlier consolidation record depended on a non-portable receipt for part of the self-SHA
+mapping. The following portable mapping records the already-completed rewrite; it does not
+perform another rewrite or claim the individual historical trees equal the combined tree. Old
+Initial-port/V1–V4 checkpoints plus the then-reviewed worktree were folded into one Initial port.
+
+| Historical checkpoint | Consolidated Initial port |
+| --- | --- |
+| `46824990b8c2afed693e0d909803b6783b8ede56` | `e69a1e8ad8bd88663c5918896aa356cbdb42d006` |
+| `5f7128a582fb7f01d5bc2062ed8853369e5b2b99` | `e69a1e8ad8bd88663c5918896aa356cbdb42d006` |
+| `b203acad22df125dfb56f3090e03594187fcffd3` | `e69a1e8ad8bd88663c5918896aa356cbdb42d006` |
+| `8ad46a0967d66c4ed5e9b0b9c3a938409e4905bc` | `e69a1e8ad8bd88663c5918896aa356cbdb42d006` |
+| `ed32fd33a2c3773ad2faab7abad92d452a739b6d` | `e69a1e8ad8bd88663c5918896aa356cbdb42d006` |
+
+The original 2026-10-01 operation receipt remains at
+`D:/Workspaces/Artifacts/RadianceCommitMaintenance/20261001-193043-collapse-initial/receipt.json`
+(non-portable). Complete reviewed candidate/worktree tree equals the receipt's committed tree;
+that is historical verification, not a new backup/remote/signature operation. Both upstream parents
+and one-Initial-port ancestry were checked locally. No refs/index/history were changed this task.
+
+See [static-task summary](relay/2026-10-04-01-gpt-to-claude-static-tasks-summary.md) and [dated current facts](research/2026-10-03-current-rendering-facts.md). Offline inputs
+are pinned in `D:/Workspaces/Artifacts/RadianceReference/20261003-static-a1/MANIFEST.json`
+(non-portable); the user explicitly identified and authorized reuse of
+`D:/Workspaces/References/minecraft-references`. Raw inventories/hashes and tool verification live
+in Radiance `run/inventory-20261003/`; analysis sources live in `tools/inventory/`.
+
+The draw directory preserves UNKNOWN for unreviewed sites. Cloud baked face shading, particle
+packed-light emission, failed DLSS viewport cleanup and option-authority asymmetry are findings,
+not repairs. Default bilateral source behavior is separate from future imaging/participation;
+reflection remains undecided. Ponder PT stays archived, and historical failed/accepted candidates
+retain their identities. Public NVIDIA/other runtime permission, GPU fault cause, complete G3,
+long stability and generated-frame visual acceptance remain open. No staging, commit/amend,
+push, tag, release, binary publication, cleanup or new temporary backup.

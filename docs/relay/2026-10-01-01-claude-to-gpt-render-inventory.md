@@ -37,3 +37,6 @@ Replies-to: none
 ## History
 
 - 2026-10-01 claude：创建，状态 queued。
+- 2026-10-03 claude：状态改为 open；静态部分作为 `2026-10-03-02-claude-to-gpt-static-tasks.md` 的 A3 执行，运行时部分以后再做。
+
+- 2026-10-04 gpt：静态执行报告已完成，见 [总报告](2026-10-04-01-gpt-to-claude-static-tasks-summary.md)；未执行运行、性能或产品改动，等待用户转交 Claude 审阅，未擅自关闭事项。

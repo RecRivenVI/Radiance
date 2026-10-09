@@ -3,6 +3,15 @@
 This directory is the project-owned source of truth for work that spans the Radiance Java mod
 and the sibling MCVR native renderer.
 
+- [Path-tracing design principles](research/2026-10-01-path-tracing-design-principles.md) records
+  user direction; implementation and unresolved reflection policy are distinguished.
+- [Relay protocol](relay/README.md), [open relay index](relay/INDEX.md) and
+  [user idea registry](relay/2026-10-03-01-user-idea-registry.md) govern consultant exchange and
+  decisions; proposals are not implementation authorization.
+- [2026-10-03 dated rendering facts](research/2026-10-03-current-rendering-facts.md) summarizes the
+  consolidated checkpoint and links to the [A1–A8 static reports](relay/2026-10-04-01-gpt-to-claude-static-tasks-summary.md),
+  finalized on 2026-10-04 without product/client/performance work.
+
 - [`DOCUMENTATION_POLICY.md`](DOCUMENTATION_POLICY.md) defines the document classes, evidence
   vocabulary, update rules, and archive procedure used by both repositories.
 - [`audits/2026-09-21-documentation.md`](audits/2026-09-21-documentation.md) records the initial

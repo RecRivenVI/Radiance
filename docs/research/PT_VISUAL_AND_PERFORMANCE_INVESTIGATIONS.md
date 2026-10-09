@@ -306,6 +306,8 @@ tests are sufficient to establish correct light transport.
 
 ### Authoritative meaning
 
+> [gpt 2026-10-04] **Superseded; retained history only.** The 2026-10-01 bilateral reset replaces both the earlier photon-direction rule A and the per-ray product contract below. Future imaging/participation is governed by the [design principles](2026-10-01-path-tracing-design-principles.md#4-full-path-tracing-participation-is-separate-from-imaging); reflection is undecided. See the [bilateral decision](#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates). Do not infer a current repair instruction from the historical wording.
+
 > **Superseded by the user’s 2026-10-01 two-sided-geometry decision; single-sided semantics
 > are reserved for later research.** This section preserves historical evidence and must not
 > be treated as the current implementation instruction. See the
@@ -338,6 +340,8 @@ integrator implements this project's direction-dependent ignore rule.
 
 ### Coverage and dispositions
 
+> [gpt 2026-10-04] **Superseded; retained history only.** The 2026-10-01 bilateral reset replaces both the earlier photon-direction rule A and the per-ray product contract below. Future imaging/participation is governed by the [design principles](2026-10-01-path-tracing-design-principles.md#4-full-path-tracing-participation-is-separate-from-imaging); reflection is undecided. See the [bilateral decision](#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates). Do not infer a current repair instruction from the historical wording.
+
 > **Superseded by the user’s 2026-10-01 two-sided-geometry decision; single-sided semantics
 > are reserved for later research.** This section preserves historical evidence and must not
 > be treated as the current implementation instruction. See the
@@ -366,6 +370,8 @@ exhaustive behavior certification of every renderer, resource pack or runtime st
 | Sampled emissive surfaces | **Source-side identity gap.** `ChunkBuildData::buildLightInfos`, `LightInfo`/`LightData`, and `sampleAreaLightPoint` use winding-derived normals without carrying source face flags. The light cosine has the correct outgoing sign for the assumed normal, but CULL_FRONT/CW authoring can select the opposite visible side while the sampler keeps the default side. Source double-sided behavior is likewise not represented by a sidedness field. Ordinary CCW/BACK emission is not proven wrong by this gap. |
 
 ### Why shadow-only inversion cannot certify the absolute rule
+
+> [gpt 2026-10-04] **Superseded; retained history only.** The 2026-10-01 bilateral reset replaces both the earlier photon-direction rule A and the per-ray product contract below. Future imaging/participation is governed by the [design principles](2026-10-01-path-tracing-design-principles.md#4-full-path-tracing-participation-is-separate-from-imaging); reflection is undecided. See the [bilateral decision](#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates). Do not infer a current repair instruction from the historical wording.
 
 > **Superseded by the user’s 2026-10-01 two-sided-geometry decision; single-sided semantics
 > are reserved for later research.** This section preserves historical evidence and must not
@@ -410,6 +416,8 @@ batch rather than silently expanding this review into implementation.
 
 ### New evidence, limitations and corrective scope
 
+> [gpt 2026-10-04] **Superseded; retained history only.** The 2026-10-01 bilateral reset replaces both the earlier photon-direction rule A and the per-ray product contract below. Future imaging/participation is governed by the [design principles](2026-10-01-path-tracing-design-principles.md#4-full-path-tracing-participation-is-separate-from-imaging); reflection is undecided. See the [bilateral decision](#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates). Do not infer a current repair instruction from the historical wording.
+
 A standalone Release C++ audit executable includes the **current production**
 `core/render/material_faces.hpp`. It compares the same physical segment evaluated forward and
 as the currently unadjusted receiver-to-light query. All eight one-sided cases (BACK/FRONT,
@@ -437,6 +445,8 @@ any-hit function or only the shadow ray flag. The independent Flywheel cutoff/sa
 spring nonplanar reverse-quad candidate remain as separately recorded findings.
 
 ### Proposed complete correction, following the physical-direction audit
+
+> [gpt 2026-10-04] **Superseded; retained history only.** The 2026-10-01 bilateral reset replaces both the earlier photon-direction rule A and the per-ray product contract below. Future imaging/participation is governed by the [design principles](2026-10-01-path-tracing-design-principles.md#4-full-path-tracing-participation-is-separate-from-imaging); reflection is undecided. See the [bilateral decision](#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates). Do not infer a current repair instruction from the historical wording.
 
 > **Superseded by the user’s 2026-10-01 two-sided-geometry decision; single-sided semantics
 > are reserved for later research.** This section preserves historical evidence and must not
@@ -587,6 +597,8 @@ all of these cases or the entire rendering system.
 
 
 ## 2026-10-01: Accepted per-ray one-sided visibility contract
+
+> [gpt 2026-10-04] **Superseded; retained history only.** The 2026-10-01 bilateral reset replaces both the earlier photon-direction rule A and the per-ray product contract below. Future imaging/participation is governed by the [design principles](2026-10-01-path-tracing-design-principles.md#4-full-path-tracing-participation-is-separate-from-imaging); reflection is undecided. See the [bilateral decision](#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates). Do not infer a current repair instruction from the historical wording.
 
 > **Superseded by the user’s 2026-10-01 two-sided-geometry decision; single-sided semantics
 > are reserved for later research.** This section preserves historical evidence and must not

@@ -3,6 +3,18 @@
 Only user-approved or explicitly deferred work belongs here. An item is not permission to begin it
 automatically; it preserves scope, constraints, and evidence for a later request.
 
+## 2026-10-04: Frozen-period inventory and specification boundary
+
+Status: investigating; A1–A8 static inventories and documentation completed. Product/shader changes,
+clients and performance experiments remain frozen; no implementation plan is authorized by the
+findings. See [dated facts](research/2026-10-03-current-rendering-facts.md) and
+[reports/decisions](relay/2026-10-04-01-gpt-to-claude-static-tasks-summary.md).
+The [design principles](research/2026-10-01-path-tracing-design-principles.md),
+[relay protocol](relay/README.md) and [idea registry](relay/2026-10-03-01-user-idea-registry.md)
+are the navigation points for the upcoming specification phase. Reflection/imaging policy,
+raster-effect dispositions, SDK/API eligibility, public binary permissions and migration-history
+policy still need decisions. Historical runtime evidence is not renewed by static inventory.
+
 ## Standalone same-scene MCVR comparison
 
 Status: archived by user decision on 2026-09-24. The one-shot capture/native replay/free-camera
@@ -1084,12 +1096,16 @@ introduce a fan-specific fix. No repair or fresh fan visual acceptance is claime
 > deferred one-sided research are recorded in the
 > [decision and audit gates](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates).
 
+> [gpt 2026-10-04] **Superseded historical scope below.** Neither rule A nor the per-ray single-sided candidate is the current world contract. See [bilateral decision](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates) and [design principles](research/2026-10-01-path-tracing-design-principles.md). No old proposed implementation or acceptance gate is reactivated.
+
 Current candidate status (2026-10-01): per-ray source-facing repair implemented, build/automated-
 verified, bounded runtime-observed and delivered to Prism. Foreground opacity, rejected warped
 spring and broader visual acceptance remain pending. See the
 [final corrective ledger](DEVELOPMENT_LEDGER.md#2026-10-01-per-ray-single-sided-correction-replacing-the-rejected-transparent-candidate).
 The following older rejected/nonreciprocal statements are historical corrections, not the current
 implementation contract.
+
+> [gpt 2026-10-04] **Superseded historical scope below.** Neither rule A nor the per-ray single-sided candidate is the current world contract. See [bilateral decision](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates) and [design principles](research/2026-10-01-path-tracing-design-principles.md). No old proposed implementation or acceptance gate is reactivated.
 
 2026-10-01 accepted correction: each PT ray applies source-facing rules to its own travel
 direction. One side invokes the original material; the other is not an intersection. This
@@ -1112,6 +1128,8 @@ The implemented query roles, directional endpoint/identity operator, emitter sou
 legacy strip repair require user examination of the rejected twisted pose, temporal behavior and
 cost. Quantitative complete production-SBT forward-reference equivalence is not claimed.
 
+> [gpt 2026-10-04] **Superseded historical scope below.** Neither rule A nor the per-ray single-sided candidate is the current world contract. See [bilateral decision](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates) and [design principles](research/2026-10-01-path-tracing-design-principles.md). No old proposed implementation or acceptance gate is reactivated.
+
 Required scope: preserve authoritative source sidedness independently of TLAS optimization;
 distinguish forward-light and receiver-to-light visibility, correcting uniform hardware and
 mixed-geometry any-hit together; cover sun/moon, area, volumetric/cloud shadows; separate
@@ -1121,6 +1139,8 @@ force all geometry non-opaque/double-sided, or alter source materials/first-pers
 The discovered legacy TRIANGLE_STRIP diagonal/attribute divergence and odd-count bounds defect
 also need a bounded repair using the existing correct topology helper; no unsafe runtime test.
 
+> [gpt 2026-10-04] **Superseded historical scope below.** Neither rule A nor the per-ray single-sided candidate is the current world contract. See [bilateral decision](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates) and [design principles](research/2026-10-01-path-tracing-design-principles.md). No old proposed implementation or acceptance gate is reactivated.
+
 Acceptance: the same physical light segment evaluated forward/reverse; BACK/FRONT, CCW/CW,
 mirrors, mixed opaque/cutout/coverage/transmission, every listed light class, foreground and
 background light across an isolated one-sided sheet, reflected/indirect paths, source-visible
@@ -1129,12 +1149,16 @@ camera faces and matching estimator/history behavior. Explicit-index versus lega
 The rejected spring pose, original dual-surface topology, unrelated GPU losses and existing
 Flywheel threshold/filtering gaps remain separately identified; none is silently closed here.
 
+> [gpt 2026-10-04] **Superseded historical scope below.** Neither rule A nor the per-ray single-sided candidate is the current world contract. See [bilateral decision](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates) and [design principles](research/2026-10-01-path-tracing-design-principles.md). No old proposed implementation or acceptance gate is reactivated.
+
 The [complete correction design](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#proposed-complete-correction-following-the-physical-direction-audit)
 is proposed, not implemented: establish a forward-light reference and matching backward
 directional material operator, then integrate role-specific traversal, emission and history.
 The literal rule permits back-originating light to pass toward a front-side observer alongside
 front reflection; ordinary opaque raster appearance cannot be promised unchanged. A shadow-only
 flip does not close this contract, and helper tests cannot replace production hit-group tests.
+
+> [gpt 2026-10-04] **Superseded historical scope below.** Neither rule A nor the per-ray single-sided candidate is the current world contract. See [bilateral decision](research/PT_VISUAL_AND_PERFORMANCE_INVESTIGATIONS.md#2026-10-01-two-sided-geometry-decision-and-topology-audit-gates) and [design principles](research/2026-10-01-path-tracing-design-principles.md). No old proposed implementation or acceptance gate is reactivated.
 
 User sequencing decision, 2026-09-27: the complete one-sided correction is recorded and
 **deferred; do not implement it in the next performance batch**. Preserve its exact physical
