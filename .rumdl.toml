@@ -1,0 +1,11 @@
+[global]
+# 中文段落不按字符数换行。
+disable = ["MD013"]
+# CLAUDE.md 只有导入指令，没有标题；第三方源码与验证结果保持原样（D-04、C-09）。
+exclude = ["CLAUDE.md", "components/*/third_party/**", "validations/*/result/**"]
+# 缓存默认写在根目录的 .rumdl_cache，那里不允许出现其他条目（L-01）。
+cache = false
+
+# 更新日志的每个版本都有"新增""修复"等同名小节，只禁止同一层级内重名。
+[MD024]
+siblings-only = true

@@ -1,0 +1,17 @@
+[create]
+version = "6.0.10"
+description = "create 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/LNytGWDc/versions/UjX6dr61/create-1.21.1-6.0.10.jar"
+sha256 = ["ef87fe5709f1ba1f5b8bb20a2925b5afb4669e178fd6d8bf10c167759eefe37a"]
+
+[sable]
+version = "2.0.5"
+description = "sable 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/T9PomCSv/versions/U678xqle/sable-neoforge-1.21.1-2.0.5.jar"
+sha256 = ["c8710f85bc780bbf523e6726ceaaf76dd0b8c61479db497b382c6bb34317e7ab"]
+
+[aeronautics_bundled]
+version = "1.3.2"
+description = "aeronautics_bundled 兼容测试发行包"
+source = "https://cdn.modrinth.com/data/oWaK0Q19/versions/44pLdPGg/create-aeronautics-bundled-1.21.1-1.3.2.jar"
+sha256 = ["a3f330d4757640f8715d991a43eedb826e4d0e51558d859c843ae6693bd35f1e"]

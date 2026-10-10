@@ -1,0 +1,44 @@
+Radiance 采用 GPL-3.0-only 许可，见 LICENSE。
+
+这些许可材料不构成 NVIDIA 等权利人的公开二进制分发批准。
+第三方许可审查与公开分发门禁见 documents/research/audit-third_party_runtime.md。
+
+Raven's Mod Template
+文件：AGENTS.md、CLAUDE.md、.rumdl.toml、.editorconfig、.github/workflows/specification.yml、components/configuration/、components/conventions/、components/compliance/ 及 documents/ 中的通用文档
+来源：1.2.1，https://github.com/RecRivenVI/Ravens-Mod-Template
+版权声明：Copyright (c) 2026 RavenYin
+许可：MIT，licenses/ravens_mod_template-mit.txt
+SPDX-License-Identifier: MIT
+
+Gradle Wrapper
+文件：gradlew、gradlew.bat、gradle/wrapper/gradle-wrapper.jar
+来源：Gradle 9.8.1，https://gradle.org
+版权声明：Copyright 2015 the original author or authors.
+许可：Apache License, Version 2.0，https://www.apache.org/licenses/LICENSE-2.0
+SPDX-License-Identifier: Apache-2.0
+
+MCVR
+文件：components/native_renderer/
+许可：保留原组件 LICENSE.md，副本见 licenses/mcvr-gpl_3.0.txt
+
+NeoForge FML earlydisplay
+许可：LGPL-2.1，原文见 licenses/fml_earlydisplay-lgpl_2.1.txt
+
+Monocraft 字体
+许可：OFL-1.1，原文见 licenses/monocraft-ofl_1.1.txt
+
+加载界面归属
+版权声明：见 licenses/radiance_loading_assets-notice.txt
+
+NVIDIA DLSS
+文件：固定子模块 components/native_renderer/third_party/DLSS/
+许可：见 licenses/nvidia_dlss-nvidia.txt
+
+Streamline
+文件：dlss/ 中的运行库许可与第三方声明；固定版本原文副本同时保留在 licenses/
+来源：2.14.1
+许可：licenses/nvidia_streamline-nvidia.txt；第三方声明见 licenses/nvidia_streamline_third_party-notices.md
+
+Intel XeSS
+文件：运行库同时携带 XESS_LICENCE.txt
+许可：见 licenses/intel_xess-intel.txt

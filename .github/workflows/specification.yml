@@ -1,0 +1,46 @@
+name: Specification
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  template:
+    # 模板仓库本身就是对照的来源，不需要复核。
+    if: github.repository != 'RecRivenVI/Ravens-Mod-Template'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Read the specification version
+        id: specification
+        run: echo "version=$(sed -n 's/^规范版本：//p' AGENTS.md | head -n 1)" >> "$GITHUB_OUTPUT"
+      - name: Check that the template version is released
+        env:
+          VERSION: ${{ steps.specification.outputs.version }}
+        run: |
+          if ! git ls-remote --exit-code --tags https://github.com/RecRivenVI/Ravens-Mod-Template "refs/tags/$VERSION" > /dev/null; then
+            echo "::error file=AGENTS.md::Template tag $VERSION does not exist, so template files cannot be compared. Wait for the template to release it, or upgrade to a released version (procedure-upgrade_template)."
+            exit 1
+          fi
+      - uses: actions/checkout@v7
+        with:
+          repository: RecRivenVI/Ravens-Mod-Template
+          ref: refs/tags/${{ steps.specification.outputs.version }}
+          path: .template
+      - name: Compare template files
+        run: |
+          status=0
+          for path in AGENTS.md CLAUDE.md .rumdl.toml .github/workflows/specification.yml \
+              components/configuration components/conventions components/compliance; do
+            if [ "$path" = CLAUDE.md ] && [ ! -e CLAUDE.md ]; then
+              continue
+            fi
+            if ! diff -r ".template/$path" "$path"; then
+              echo "::error file=$path::Differs from template ${{ steps.specification.outputs.version }}; template files change only with template versions (G-08)."
+              status=1
+            fi
+          done
+          exit "$status"

@@ -1,0 +1,19 @@
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.jar binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ogg binary
+*.raw binary
+*.spv binary
+*.nbt binary
+*.mca binary
+
+# 验证工具写入的结果与证据保持原样，不转换换行符（C-09）。
+validations/*/result/** -text

@@ -1,0 +1,23 @@
+[all]
+memory-max = "4G"
+
+[variants.client-s1]
+base = "client"
+
+[variants.client-create]
+base = "client"
+
+[client-create]
+mods = ["create"]
+
+[variants.client-sable]
+base = "client"
+
+[client-sable]
+mods = ["create", "sable"]
+
+[variants.client-aeronautics]
+base = "client"
+
+[client-aeronautics]
+mods = ["create", "sable", "aeronautics_bundled"]
