@@ -18,6 +18,40 @@ jobs:
       - uses: actions/checkout@v7
         with:
           submodules: recursive
+      - name: Read build tool versions
+        id: tools
+        shell: pwsh
+        run: |
+          $catalog = Get-Content gradle/libs.versions.toml -Raw
+          foreach ($name in @('python', 'vulkan-sdk')) {
+            $pattern = '(?m)^' + [regex]::Escape($name) + '\s*=\s*"([^"]+)"\s*$'
+            $match = [regex]::Match($catalog, $pattern)
+            if (-not $match.Success) { throw "Missing build tool version: $name" }
+            "$($name.Replace('-', '_'))=$($match.Groups[1].Value)" >> $env:GITHUB_OUTPUT
+          }
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ steps.tools.outputs.python }}
+      - name: Install inventory dependencies
+        run: python -m pip install -r components/render_diagnostics/inventory/requirements.txt
+      - name: Install Vulkan SDK
+        shell: pwsh
+        env:
+          SDK_VERSION: ${{ steps.tools.outputs.vulkan_sdk }}
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'vulkan-sdk-installer.exe'
+          $sdk = Join-Path $env:RUNNER_TEMP 'vulkan-sdk'
+          $url = "https://sdk.lunarg.com/sdk/download/$env:SDK_VERSION/windows/vulkan_sdk.exe?Human=true"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $arguments = "--root `"$sdk`" --accept-licenses --default-answer --confirm-command install copy_only=1"
+          $process = Start-Process -FilePath $installer -ArgumentList $arguments -WindowStyle Hidden -Wait -PassThru
+          if ($process.ExitCode -ne 0) { throw "Vulkan SDK installation failed: $($process.ExitCode)" }
+          foreach ($file in @('Include/vulkan/vulkan.h', 'Include/shaderc/shaderc.hpp', 'Lib/vulkan-1.lib', 'Lib/shaderc_combined.lib', 'Bin/glslangValidator.exe')) {
+            if (-not (Test-Path (Join-Path $sdk $file))) { throw "Vulkan SDK file missing: $file" }
+          }
+          "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+          (Join-Path $sdk 'Bin') >> $env:GITHUB_PATH
+          & (Join-Path $sdk 'Bin/glslangValidator.exe') --version
       - uses: actions/setup-java@v6
         with:
           distribution: temurin

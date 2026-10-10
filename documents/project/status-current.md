@@ -114,3 +114,13 @@ NOTICE 保留原有来源、许可与审查引用，按来源逐段排列并先�
 本次手工进程日志为 14:23:56 至 14:25:54，记录 Radiance 加载、集成服务端启动、全部维度保存与 `Stopping!`。反馈只表明本次游玩未观察到问题；没有逐项补写 Ponder、FG、长期稳定性或 GPU 故障根因验收通过。
 
 使用者决定后续性能测试改用项目内验证实例与探针，操作规则写入项目规范 X-03。Prism 中已禁用的 `RadianceAudit-0.1.5-alpha.jar.disabled` 经模组 ID 与哈希确认后移入 Windows 回收站；Radiance 本体、其他模组、实例配置、世界及已有证据保留，没有启动游戏。移除回执与本次手工日志副本位于 `D:/Workspaces/Artifacts/Radiance/radiance-audit-removal-20261010-143434/`。
+
+## 托管 CI 前置条件修正
+
+2026-10-10 核对 `develop` 的 `92dd71054d21e5b94a259dba5980cba7f049f63b`：[Specification](https://github.com/RecRivenVI/Radiance/actions/runs/38033538400) 成功，[Check](https://github.com/RecRivenVI/Radiance/actions/runs/38033538329) 失败。失败来自托管 Windows 未安装 Vulkan SDK，以及 Python 盘点工具缺少 PyYAML；不是模板规则、产品编译逻辑或运行验收失败。
+
+项目的 `check.yml` 补充固定版本的 Python、盘点依赖与官方完整 Vulkan SDK。版本来自版本目录和工具的 requirements 文件，SDK 提取到运行器临时目录；仍只上传合规报告。没有修改受保护的模板文件、产品渲染逻辑或公开二进制许可门禁。
+
+干净 Python 虚拟环境先确认没有 PyYAML，按 requirements 安装后盘点行为测试 8/8 通过。本次失败日志、依赖安装与后续本地验证保存在 `D:/Workspaces/Artifacts/Radiance/ci-fix-20261010-153325/`；修正后的托管结果以对应提交的实际 Actions 记录为准，不沿用历史本地构建结果宣称云端通过。不启动游戏，不运行 GPU 或性能实验。
+
+官方安装器的 `copy_only` 模式本地执行成功，独立 CMake 检查从该临时 SDK 找到 Vulkan 与 shaderc 的头文件、链接库和 glslangValidator。`spotlessApply`、`check verifyRelease` 本轮通过；后者 137 项任务中 43 项执行、94 项复用。原生非 GPU 测试 62/62、诊断采集器 2/2 实际执行通过，严格合规检查覆盖新增文件共 1,767 项，失败 0、警告 0。Java 已有的 Unsafe 与 Gradle 弃用警告保留，不将合规零警告扩大为所有工具无警告。
