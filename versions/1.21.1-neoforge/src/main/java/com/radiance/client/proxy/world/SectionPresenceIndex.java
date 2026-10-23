@@ -7,9 +7,11 @@ import java.util.TreeMap;
 
 /** Presence only: never filters by camera, distance, geometry layers or block-entity animation. */
 final class SectionPresenceIndex<S, C> {
-    record Entry<S, C>(S section, C compiled) {}
+    private record Owner(int slot) {}
 
-    private final Map<S, Integer> owners = new IdentityHashMap<>();
+    record Entry<S, C>(S section, C compiled, Owner owner) {}
+
+    private final Map<S, Owner> owners = new IdentityHashMap<>();
     private final Map<Integer, Entry<S, C>> active = new TreeMap<>();
     private List<Entry<S, C>> snapshot = List.of();
     private boolean changed;
@@ -17,22 +19,31 @@ final class SectionPresenceIndex<S, C> {
     synchronized void reset(List<S> sections) {
         owners.clear();
         active.clear();
-        for (int i = 0; i < sections.size(); i++) owners.put(sections.get(i), i);
+        for (int i = 0; i < sections.size(); i++) owners.put(sections.get(i), new Owner(i));
         snapshot = List.of();
         changed = false;
     }
 
     synchronized void publish(S section, C compiled, boolean present) {
-        Integer slot = owners.get(section);
-        if (slot == null) return; // External sections and retired world owners have separate paths.
-        if (present) active.put(slot, new Entry<>(section, compiled));
-        else active.remove(slot);
+        Owner owner = owners.get(section);
+        if (owner == null)
+            return; // External sections and retired world owners have separate paths.
+        if (present) active.put(owner.slot, new Entry<>(section, compiled, owner));
+        else active.remove(owner.slot);
         changed = true;
     }
 
     synchronized void remove(S section) {
-        Integer slot = owners.get(section);
-        if (slot != null && active.remove(slot) != null) changed = true;
+        Owner owner = owners.get(section);
+        if (owner == null) return;
+        // Reset/reposition ends ownership; ordinary recompilation does not. A frame may
+        // finish reading its immutable old compiled list after a worker publishes the new one.
+        owners.put(section, new Owner(owner.slot));
+        if (active.remove(owner.slot) != null) changed = true;
+    }
+
+    synchronized boolean isCurrent(Entry<S, C> entry) {
+        return owners.get(entry.section) == entry.owner;
     }
 
     synchronized List<Entry<S, C>> snapshot() {

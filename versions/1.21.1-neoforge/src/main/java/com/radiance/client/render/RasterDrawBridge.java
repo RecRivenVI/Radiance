@@ -66,37 +66,47 @@ public final class RasterDrawBridge {
             throw new IllegalStateException("Raster draw metadata is incomplete");
         }
 
-        DrawTargetContract.BufferDrawDecision decision = RenderCaptureContract.classifyBufferDraw();
-        if (decision.route() != DrawTargetContract.BufferDrawRoute.VULKAN_UI
-                && decision.route() != DrawTargetContract.BufferDrawRoute.VULKAN_WORLD_RASTER
-                && decision.route() != DrawTargetContract.BufferDrawRoute.VULKAN_CUSTOM_TARGET) {
-            RenderAuditBridge.transition(
-                    0L, "REJECTED", decision.route().name(), decision.reason(), true);
-            throw RenderCaptureContract.reject(decision, "VertexBuffer raster draw");
-        }
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "RASTER",
+                        shader.getName(),
+                        "VULKAN_RASTER",
+                        RenderCaptureContract.currentScope().kind().name())) {
+            DrawTargetContract.BufferDrawDecision decision =
+                    RenderCaptureContract.classifyBufferDraw();
+            if (decision.route() != DrawTargetContract.BufferDrawRoute.VULKAN_UI
+                    && decision.route() != DrawTargetContract.BufferDrawRoute.VULKAN_WORLD_RASTER
+                    && decision.route()
+                            != DrawTargetContract.BufferDrawRoute.VULKAN_CUSTOM_TARGET) {
+                RenderAuditBridge.transition(
+                        0L, "REJECTED", decision.route().name(), decision.reason(), true);
+                com.radiance.api.audit.DrawingAudit.unknown(decision.reason());
+                throw RenderCaptureContract.reject(decision, "VertexBuffer raster draw");
+            }
 
-        ShaderDefinition definition = ShaderRegistry.getOrCreate(shader, mode);
-        try (MemoryStack stack = MemoryStack.stackPush()) {
-            ShaderProxy.UniformHandle uniform =
-                    ShaderProxy.createUniform(definition, shader, stack);
-            ShaderProxy.draw(
-                    buffers,
-                    definition.nativeId(),
-                    indexCount,
-                    Constants.IndexTypes.getValue(indexType),
-                    uniform.addr(),
-                    uniform.size());
+            ShaderDefinition definition = ShaderRegistry.getOrCreate(shader, mode);
+            try (MemoryStack stack = MemoryStack.stackPush()) {
+                ShaderProxy.UniformHandle uniform =
+                        ShaderProxy.createUniform(definition, shader, stack);
+                ShaderProxy.draw(
+                        buffers,
+                        definition.nativeId(),
+                        indexCount,
+                        Constants.IndexTypes.getValue(indexType),
+                        uniform.addr(),
+                        uniform.size());
+            }
+            if (indexCount > 0) {
+                ShaderRegistry.recordSuccessfulUse(shader, mode);
+            }
+            // A producer can submit more than one raster draw (fire is two quads, for example).
+            // Record route evidence without closing the producer; its semantic hook owns the end.
+            RenderAuditBridge.transition(
+                    0L,
+                    "TRANSLATED",
+                    decision.route().name(),
+                    "submitted through ShaderProxy.draw",
+                    false);
         }
-        if (indexCount > 0) {
-            ShaderRegistry.recordSuccessfulUse(shader, mode);
-        }
-        // A producer can submit more than one raster draw (fire is two quads, for example).
-        // Record route evidence without closing the producer; its semantic hook owns the end.
-        RenderAuditBridge.transition(
-                0L,
-                "TRANSLATED",
-                decision.route().name(),
-                "submitted through ShaderProxy.draw",
-                false);
     }
 }

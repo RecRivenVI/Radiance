@@ -42,10 +42,10 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_compatibility_voxy_VoxyNative_secti
 /*
  * Class:     com_radiance_compatibility_voxy_VoxyNative
  * Method:    select
- * Signature: (J[J[J)V
+ * Signature: (J[J[III)V
  */
 JNIEXPORT void JNICALL Java_com_radiance_compatibility_voxy_VoxyNative_select
-  (JNIEnv *, jclass, jlong, jlongArray, jlongArray);
+  (JNIEnv *, jclass, jlong, jlongArray, jintArray, jint, jint);
 
 /*
  * Class:     com_radiance_compatibility_voxy_VoxyNative

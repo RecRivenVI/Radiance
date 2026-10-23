@@ -5,9 +5,10 @@ import json
 import os
 
 
-def main():
+def main(distance=1):
     import fixture
     repository = Path(__file__).resolve().parents[3]
+    if not 1 <= distance <= 64: raise ValueError('Supported Voxy source radius is 1..64 root cells')
     parent = repository / 'validations/regression-voxy_integration/instance/1.21.1-neoforge'
     instance = parent / 'client'
     if instance.exists():
@@ -43,7 +44,7 @@ def main():
     config.mkdir(exist_ok=True)
     # Explicitly bounded functional distance. Product/source defaults are untouched.
     (config / 'voxy-config.json').write_text(json.dumps(dict(enabled=True, enable_rendering=True,
-        ingest_enabled=True, section_render_distance=1, sub_division_size=64,
+        ingest_enabled=True, section_render_distance=distance, sub_division_size=64,
         service_threads=2, gpu_debug=False), indent=2) + '\n', encoding='utf8')
     pipeline = instance / 'radiance'
     pipeline.mkdir(exist_ok=True)
@@ -62,7 +63,7 @@ def main():
                 pipeline / 'options.properties', pipeline / 'pipeline.yaml', pack / 'build.mcfunction',
                 instance / 'saves/Audit Benchmark/level.dat']
     manifest = dict(purpose='Voxy functional integration, not a performance fixture',
-                    render_distance=4, voxy_distance_blocks=512, width=1920, height=1080,
+                    render_distance=4, voxy_distance_blocks=distance*512, width=1920, height=1080,
                     master_volume=0, files={str(p.relative_to(instance)): hashlib.sha256(p.read_bytes()).hexdigest()
                     for p in controls if p.is_file()})
     (instance / 'FIXTURE.json').write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf8')
@@ -70,4 +71,7 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    import argparse
+    parser=argparse.ArgumentParser()
+    parser.add_argument('--distance',type=int,default=1)
+    main(parser.parse_args().distance)

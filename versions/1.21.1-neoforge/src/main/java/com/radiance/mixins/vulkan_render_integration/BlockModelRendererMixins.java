@@ -37,6 +37,8 @@ public class BlockModelRendererMixins {
             net.neoforged.neoforge.client.model.data.ModelData data,
             net.minecraft.client.renderer.RenderType layer,
             com.llamalad7.mixinextras.injector.wrapoperation.Operation<Void> original) {
+        if (com.radiance.client.vertex.BakedModelTakeover.block(
+                model, r, g, b, light, overlay, pose, consumer)) return;
         com.radiance.client.vertex.RigidModelCapture.render(
                 model,
                 pose,

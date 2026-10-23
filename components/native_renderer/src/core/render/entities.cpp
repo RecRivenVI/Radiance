@@ -717,7 +717,8 @@ Entities::Entities(std::shared_ptr<Framework> framework) {
 }
 
 std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rigid::SubmissionRecord &record,
-                                                                 const char *group) {
+                                                                 const char *const *groups,
+                                                                 std::span<const mcvr::rigid::ModelBinding> bindings) {
     auto framework = Renderer::instance().framework();
     auto &frr = framework->frameResourceRetainer();
     auto found = rigidModels_.find(record.model);
@@ -731,12 +732,31 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
                             static_cast<uint64_t>(record.vertexCount) * 128);
     auto build = EntityBuildDataBatch::create();
     const auto start = entityBuildDataBatch_->datas.size();
-    int hash = 0, post = 0, prebuilt = -1, geometryCount = 1;
-    int format = World::PBR_TRIANGLE, mode = static_cast<int>(World::DrawMode::QUADS);
-    int geometryType = record.type, texture = record.texture, vertexCount = record.vertexCount, mask = record.mask;
+    int hash = 0, post = 0, prebuilt = -1, geometryCount = bindings.empty() ? 1 : static_cast<int>(bindings.size());
+    std::vector<int> formats(geometryCount, World::PBR_TRIANGLE),
+        modes(geometryCount, static_cast<int>(World::DrawMode::QUADS));
+    std::vector<int> types, textures, counts;
+    std::vector<void *> inputs;
+    std::vector<const char *> names, contents(geometryCount, "");
+    std::vector<glm::vec4> colours;
+    if (bindings.empty()) {
+        types.push_back(record.type);
+        textures.push_back(record.texture);
+        counts.push_back(record.vertexCount);
+        inputs.push_back(reinterpret_cast<void *>(record.vertices));
+        names.push_back(groups[record.group]);
+        colours.push_back(glm::vec4(1));
+    } else
+        for (const auto &binding : bindings) {
+            types.push_back(binding.type);
+            textures.push_back(binding.texture);
+            counts.push_back(binding.vertexCount);
+            inputs.push_back(reinterpret_cast<void *>(binding.vertices));
+            names.push_back(groups[binding.group]);
+            colours.push_back(glm::make_vec4(binding.drawColour));
+        }
+    int mask = record.mask;
     double origin = 0;
-    const char *content = "";
-    void *input = reinterpret_cast<void *>(record.vertices);
     try {
         // Use the existing material/conversion contract; a nonzero world token disables
         // the deferred dynamic-vertex path. This local mesh is expanded only on a miss.
@@ -752,17 +772,22 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
                                      .entityPrebuiltBLASs = &prebuilt,
                                      .entityPosts = &post,
                                      .entityGeometryCounts = &geometryCount,
-                                     .geometryTypes = &geometryType,
-                                     .geometryGroupNames = &group,
-                                     .geometryContentNames = &content,
-                                     .geometryTextures = &texture,
-                                     .vertexFormats = &format,
-                                     .indexFormats = &mode,
-                                     .vertexCounts = &vertexCount,
-                                     .vertices = &input,
+                                     .geometryTypes = types.data(),
+                                     .geometryGroupNames = names.data(),
+                                     .geometryContentNames = contents.data(),
+                                     .geometryTextures = textures.data(),
+                                     .vertexFormats = formats.data(),
+                                     .indexFormats = modes.data(),
+                                     .vertexCounts = counts.data(),
+                                     .vertices = inputs.data(),
+                                     // Declared local coatings use the same composition as captured
+                                     // owners, once at resource creation. Their CPU input is copied
+                                     // before returning to Java, never retained as borrowed pointers.
                                      .worldToken = activeWorldToken_,
                                      .frameToken = activeFrameToken_,
-                                     .resourceGeneration = activeResourceGeneration_});
+                                     .resourceGeneration = activeResourceGeneration_,
+                                     .geometryDrawColours = colours.data(),
+                                     .localModelResource = true});
         if (entityBuildDataBatch_->datas.size() != start + 1)
             throw std::logic_error("Rigid model conversion did not produce one model");
         build->datas.push_back(entityBuildDataBatch_->datas.back());
@@ -772,18 +797,57 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
         throw;
     }
     build->build();
+    auto content = std::make_shared<mcvr::RigidGeometryContent>();
+    const auto &converted = *build->datas.front();
+    const mcvr::faces::ModelRules shapeFaces(converted.geometryMaterialFlags);
+    for (size_t g = 0; g < converted.geometryCount; ++g) {
+        auto positions = vk::Vertex::buildPositionVertices(converted.vertices[g]);
+        if (!converted.topologyVertexFlags[g].empty())
+            for (size_t v = 0; v < positions.size(); ++v) positions[v].pad0 = converted.topologyVertexFlags[g][v];
+        const bool opaque = converted.geometryTypes[g] == World::WORLD_SOLID &&
+                            !shapeFaces.needsAnyHit(converted.geometryMaterialFlags[g]);
+        content->append(opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : VK_GEOMETRY_NO_DUPLICATE_ANY_HIT_INVOCATION_BIT_KHR,
+                        std::as_bytes(std::span(positions)), converted.indices[g]);
+    }
+    const auto geometryHash = content->hash();
+    std::shared_ptr<RigidModelResource> geometryOwner;
+    const auto candidates = rigidGeometries_.equal_range(geometryHash);
+    for (auto it = candidates.first; it != candidates.second; ++it) {
+        auto candidate = it->second.lock();
+        if (candidate && candidate->world == activeWorldToken_ && candidate->generation == activeResourceGeneration_ &&
+            *candidate->geometryContent == *content) {
+            geometryOwner = std::move(candidate);
+            break;
+        }
+    }
+    if (geometryOwner) {
+        const auto &original = *geometryOwner->batch->entities.front();
+        auto &data = *build->datas.front();
+        data.blas = geometryOwner->blas;
+        data.indexBufferAddresses = *original.indexBufferAddresses;
+        data.positionBufferAddresses = *original.positionBufferAddresses;
+        build->indexBuffer = geometryOwner->batch->indexBuffer;
+        build->positionBuffer = geometryOwner->batch->positionBuffer;
+        // The newly allocated AS has never been recorded. Only the material is
+        // published; the original traversal input and BLAS stay owned by the root.
+        build->blasBatchBuilder.reset();
+        if (mcvr::profile::enabled()) mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.geometry-reuse", 1, 0);
+    }
     auto buffers = Renderer::instance().buffers();
-    buffers->queueImportantWorldUpload(build->indexBuffer);
-    buffers->queueImportantWorldUpload(build->positionBuffer);
+    if (!geometryOwner) {
+        buffers->queueImportantWorldUpload(build->indexBuffer);
+        buffers->queueImportantWorldUpload(build->positionBuffer);
+    }
     buffers->queueImportantWorldUpload(build->materialBuffer);
     auto resource = std::make_shared<RigidModelResource>();
-    resource->build = build;
+    resource->build = geometryOwner ? nullptr : build;
+    resource->geometryOwner = geometryOwner;
+    resource->geometryContent = geometryOwner ? geometryOwner->geometryContent : std::move(content);
     resource->batch = EntityBatch::create(build);
     resource->world = activeWorldToken_;
     resource->generation = activeResourceGeneration_;
     const auto &geometry = *resource->batch->entities.front();
-    if (geometry.geometryCount != 1 || geometry.geometryMaterialFlags.size() != 1 || !geometry.blas)
-        throw std::logic_error("Rigid model must convert to exactly one geometry with a BLAS");
+    if (!geometry.geometryCount || !geometry.blas) throw std::logic_error("Rigid model must produce a BLAS");
     resource->blas = geometry.blas;
     resource->groupId = mcvr::hitgroups::intern(geometry.geometryGroupNames && !geometry.geometryGroupNames->empty() ?
                                                     std::string_view(geometry.geometryGroupNames->front()) :
@@ -793,17 +857,47 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
     resource->indexAddress = geometry.indexBufferAddresses->front();
     resource->positionAddress = geometry.positionBufferAddresses->front();
     resource->materialAddress = geometry.materialBufferAddresses->front();
-    resource->vertexCount = geometry.vertexCounts->front();
-    resource->indexCount = geometry.indexCounts->front();
-    if (found != rigidModels_.end()) frr.retain(found->second);
-    // The CPU owner bounds recipes at 512. Face-state variants are additionally bounded
-    // here; evicting an entry does not destroy queued instances or in-flight ownership.
-    if (rigidModels_.size() >= 1024 && found == rigidModels_.end()) {
-        auto oldest = std::min_element(rigidModels_.begin(), rigidModels_.end(),
-                                       [](const auto &a, const auto &b) { return a.second->used < b.second->used; });
+    resource->vertexCount = 0;
+    resource->indexCount = 0;
+    for (size_t g = 0; g < geometry.geometryCount; ++g) {
+        resource->vertexCount += (*geometry.vertexCounts)[g];
+        resource->indexCount += (*geometry.indexCounts)[g];
+        resource->geometries.push_back(RigidModelResource::Geometry{
+            mcvr::hitgroups::intern((*geometry.geometryGroupNames)[g]), geometry.geometryMaterialFlags[g],
+            (*geometry.vertexCounts)[g], (*geometry.indexCounts)[g], (*geometry.indexBufferAddresses)[g],
+            (*geometry.positionBufferAddresses)[g], (*geometry.materialBufferAddresses)[g],
+            g < geometry.surfaceLayerAddresses.size() ? geometry.surfaceLayerAddresses[g] : 0,
+            g < geometry.geometryDrawColours.size() ? geometry.geometryDrawColours[g] : glm::vec4(1),
+            g < geometry.geometryEyeColours.size() ? geometry.geometryEyeColours[g] : glm::vec4(1)});
+    }
+    resource->residentBytes = build->indexBuffer->size() + build->positionBuffer->size() +
+                              build->materialBuffer->size() + resource->blas->blasBuffer()->size();
+    // Charge shared ownership conservatively, including the canonical CPU key;
+    // cache eviction can never drop the geometry retained by a material view.
+    resource->residentBytes += resource->geometryContent->storageBytes();
+    if (geometryOwner) resource->residentBytes += geometryOwner->residentBytes;
+    if (geometry.surfaceLayerBuffer) resource->residentBytes += geometry.surfaceLayerBuffer->size();
+    if (!geometryOwner) rigidGeometries_.emplace(geometryHash, resource);
+    if (found != rigidModels_.end()) {
+        rigidModelBytes_ -= found->second->residentBytes;
+        frr.retain(found->second);
+        rigidModels_.erase(found);
+    }
+    // Budget resident bytes rather than model count: small, live appearance variants must
+    // not evict each other in the same frame. Queued/in-flight batches retain evicted owners.
+    constexpr size_t budget = 64u * 1024 * 1024;
+    while (rigidModelBytes_ + resource->residentBytes > budget) {
+        auto oldest = rigidModels_.end();
+        for (auto it = rigidModels_.begin(); it != rigidModels_.end(); ++it)
+            if (it->second->used != activeFrameToken_ &&
+                (oldest == rigidModels_.end() || it->second->used < oldest->second->used))
+                oldest = it;
+        if (oldest == rigidModels_.end()) return resource;
+        rigidModelBytes_ -= oldest->second->residentBytes;
         frr.retain(oldest->second);
         rigidModels_.erase(oldest);
     }
+    rigidModelBytes_ += resource->residentBytes;
     rigidModels_[record.model] = resource;
     return resource;
 }
@@ -811,7 +905,8 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
 void Entities::queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
                                 size_t count,
                                 const char *const *groups,
-                                size_t groupCount) {
+                                size_t groupCount,
+                                std::span<const mcvr::rigid::ModelBinding> bindings) {
     mcvr::profile::Scope timing("entity-rigid-queue");
     if (!worldMeshFrameOpen_ || !activeWorldToken_ || (count && (!records || !groups || !groupCount)))
         throw std::invalid_argument("Invalid rigid model submission batch");
@@ -819,10 +914,13 @@ void Entities::queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
         if (!groups[g]) throw std::invalid_argument("Missing rigid model group name");
     // Validate the complete batch first so a rejected record cannot leave a partial frame.
     for (size_t i = 0; i < count; ++i) mcvr::rigid::validate(records[i], groupCount);
+    const auto recipes = mcvr::rigid::bindings(bindings, groupCount);
     rigidInstances_.reserve(rigidInstances_.size() + count);
     for (size_t i = 0; i < count; ++i) {
         const auto &record = records[i];
-        auto resource = residentRigidModel(record, groups[record.group]);
+        const auto recipe = recipes.find(record.model);
+        auto resource = residentRigidModel(
+            record, groups, recipe == recipes.end() ? std::span<const mcvr::rigid::ModelBinding>{} : recipe->second);
         if (resource->used != activeFrameToken_) {
             rigidUsed_.push_back(resource);
             resource->used = activeFrameToken_;
@@ -839,11 +937,14 @@ std::shared_ptr<RigidInstanceBatch> Entities::rigidInstanceBatch() {
 }
 
 void Entities::recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &commands) {
+    if (mcvr::profile::enabled())
+        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.resident", rigidModels_.size(), rigidModelBytes_);
     for (auto &model : rigidUsed_) {
-        model->lifecycle.record([&] {
-            model->build->blasBatchBuilder->submit(commands);
+        auto &geometry = model->geometryResource();
+        geometry.lifecycle.record([&] {
+            geometry.build->blasBatchBuilder->submit(commands);
             if (mcvr::profile::enabled())
-                mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.blas-build", model->batch->entities.size(),
+                mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.blas-build", geometry.batch->entities.size(),
                                     0);
         });
     }
@@ -852,9 +953,10 @@ void Entities::recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &comma
 void Entities::commitRigidModels() {
     auto &frr = Renderer::instance().framework()->frameResourceRetainer();
     for (auto &model : rigidUsed_) {
-        if (model->lifecycle.submitted()) {
-            frr.retain(model->build);
-            model->build.reset();
+        auto &geometry = model->geometryResource();
+        if (geometry.lifecycle.submitted()) {
+            frr.retain(geometry.build);
+            geometry.build.reset();
         }
     }
 }
@@ -960,15 +1062,17 @@ void Entities::resetFrame() {
     auto &frr = framework->frameResourceRetainer();
     for (auto &model : rigidUsed_) {
         frr.retain(model);
-        model->lifecycle.beginFrame();
+        model->geometryResource().lifecycle.beginFrame();
     }
     rigidUsed_.clear();
     rigidInstances_.clear();
     std::erase_if(rigidModels_, [&](const auto &entry) {
         if (activeFrameToken_ <= entry.second->used + 120) return false;
+        rigidModelBytes_ -= entry.second->residentBytes;
         frr.retain(entry.second);
         return true;
     });
+    std::erase_if(rigidGeometries_, [](const auto &entry) { return entry.second.expired(); });
     frr.retain(cloudBuildData_);
     frr.retain(cloudBlasBuilder_);
     cloudBuildData_.reset();
@@ -1173,6 +1277,8 @@ void Entities::invalidateWorldMeshGeneration(uint64_t resourceGeneration) {
     auto &retainer = Renderer::instance().framework()->frameResourceRetainer();
     for (const auto &[key, model] : rigidModels_) retainer.retain(model);
     rigidModels_.clear();
+    rigidGeometries_.clear();
+    rigidModelBytes_ = 0;
     rigidInstances_.clear();
     activeResourceGeneration_ = resourceGeneration;
     worldMeshFrameOpen_ = false;
@@ -1303,7 +1409,7 @@ void Entities::queueBuild(EntitiesBuildTask task) {
         bool layerOwner = false;
         for (uint32_t i = 0; i < geometryCountIncludeGlint; ++i)
             layerOwner |= (uint32_t(task.geometryTypes[geometryIndex + i]) & mcvr::abi::SOURCE_SURFACE_LAYER_BIT) != 0;
-        layerOwner = layerOwner && !post && task.worldToken == 0;
+        layerOwner = layerOwner && !post && (task.worldToken == 0 || task.localModelResource);
         bool eyeLayer = false;
         for (uint32_t i = 0; i < geometryCountIncludeGlint; ++i)
             eyeLayer |= mcvr::surface::eyeOverlay(
@@ -1937,7 +2043,7 @@ void Entities::queueBuild(EntitiesBuildTask task) {
         {
             mcvr::profile::Scope overlayProfile(overlayPhase);
             if (eyeLayer) rawGeometry.clear();
-            if (!post && task.worldToken == 0 && !layerOwner) {
+            if (!post && (task.worldToken == 0 || task.localModelResource) && !layerOwner) {
                 composeEmissiveEyeOverlays(geometryMaterialFlags, geometryEmissionPolicies, geometryEyeColours,
                                            geometryDrawColours, authoredQuads, geometryTypes, geometryGroupNames,
                                            geometryContentNames, vertices, indices, emissiveOverlayTextureIDs);
@@ -2192,6 +2298,8 @@ void Entities::build() {
 
 void Entities::releaseScene() {
     rigidModels_.clear();
+    rigidGeometries_.clear();
+    rigidModelBytes_ = 0;
     rigidInstances_.clear();
     rigidUsed_.clear();
     rigidBatch_ = nullptr;
@@ -2210,6 +2318,8 @@ void Entities::releaseScene() {
 void Entities::close() {
     cpuPreparation_.reset();
     rigidModels_.clear();
+    rigidGeometries_.clear();
+    rigidModelBytes_ = 0;
     rigidInstances_.clear();
     rigidUsed_.clear();
     rigidBatch_ = nullptr;

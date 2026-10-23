@@ -1,4 +1,5 @@
 #include "core/render/chunk_scene_metadata.hpp"
+#include "core/render/scene_resource_version.hpp"
 #include <map>
 #include <cstring>
 #include <iostream>
@@ -45,6 +46,16 @@ void appendCheck(const std::shared_ptr<mcvr::ChunkSceneMetadata> &metadata, cons
 }
 } // namespace
 int main() {
+    using mcvr::scene::Completion;
+    using mcvr::scene::mayPublish;
+    using mcvr::scene::ResourceVersion;
+    const ResourceVersion oldVersion{3, 5, 1}, nextVersion{3, 5, 2}, reusedVersion{4, 5, 2};
+    check(!mayPublish(nextVersion, nextVersion, 1, Completion::pending));
+    check(!mayPublish(nextVersion, oldVersion, 1, Completion::gpuComplete));
+    check(!mayPublish(reusedVersion, nextVersion, 1, Completion::gpuComplete));
+    check(mayPublish(nextVersion, nextVersion, 1, Completion::gpuComplete));
+    check(mayPublish(nextVersion, nextVersion, 1, Completion::orderedFrame));
+    check(!mayPublish(nextVersion, nextVersion, 2, Completion::gpuComplete));
     mcvr::ChunkSceneCache cache;
     auto source = std::make_shared<Published>();
     std::weak_ptr<Published> oldOwner = source;

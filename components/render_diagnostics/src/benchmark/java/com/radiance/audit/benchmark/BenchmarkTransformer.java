@@ -48,6 +48,16 @@ public final class BenchmarkTransformer implements ClassFileTransformer {
                                     "com.radiance.client.pipeline.config",
                                     "com.radiance.client.option"))
                         if (module.getPackages().contains(p)) opened.put(p, Set.of(hooks));
+                if (Boolean.getBoolean("radiance.audit.optimizeWorld"))
+                    for (String p :
+                            Set.of(
+                                    "net.minecraft.client.gui.screens",
+                                    "net.minecraft.client.gui.screens.worldselection",
+                                    "net.minecraft.world.level.storage",
+                                    "net.minecraft.util.worldupdate",
+                                    "net.minecraft.network.chat",
+                                    "net.minecraft.network.chat.contents"))
+                        if (module.getPackages().contains(p)) opened.put(p, Set.of(hooks));
                 instrumentation.redefineModule(
                         module, Set.of(hooks), Map.of(), opened, Set.of(), Map.of());
             }

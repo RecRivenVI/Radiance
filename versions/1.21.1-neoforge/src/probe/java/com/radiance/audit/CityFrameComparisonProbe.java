@@ -18,12 +18,30 @@ public final class CityFrameComparisonProbe {
     private static int captureIndex;
     private static ProfileMode[] modes;
     private static long betweenUntil;
+    private static long nextProgress;
+    private static boolean screenshotCaptured;
+    private static final java.util.List<Object> partWindows = new java.util.ArrayList<>();
+
+    private static void startCensus(long now) {
+        ProducerCensus.start(
+                java.nio.file.Path.of(System.getProperty("validation.result"), "route-census"),
+                true,
+                true);
+        betweenUntil = now + 3_000_000_000L;
+        step = 6;
+    }
 
     static ProfileMode[] captureModes(String plan) {
         return switch (plan) {
             case "functional" -> new ProfileMode[0];
             case "standard" -> new ProfileMode[] {ProfileMode.TIMED};
             case "throughput" -> new ProfileMode[] {ProfileMode.FRAME_ONLY};
+            case "takeover" -> new ProfileMode[] {ProfileMode.FRAME_ONLY, ProfileMode.TIMED};
+            case "vanilla" ->
+                    new ProfileMode[] {
+                        ProfileMode.FRAME_ONLY, ProfileMode.TIMED, ProfileMode.JFR_ONLY
+                    };
+            case "producers" -> new ProfileMode[] {ProfileMode.PRODUCERS};
             case "calibration" ->
                     new ProfileMode[] {
                         ProfileMode.FRAME_ONLY,
@@ -65,6 +83,10 @@ public final class CityFrameComparisonProbe {
     }
 
     public static void poll(Minecraft mc) {
+        if (CrouchRegressionProbe.enabled()) {
+            CrouchRegressionProbe.poll(mc);
+            return;
+        }
         if (!ENABLED || !ExperimentAccess.permitted() || step == 5) return;
         long now = System.nanoTime();
         try {
@@ -80,7 +102,9 @@ public final class CityFrameComparisonProbe {
                 if (!viewportReady(mc, now)) return;
                 step = 1;
                 mc.createWorldOpenFlows()
-                        .openWorld("Newport City", () -> mc.setScreen(new TitleScreen()));
+                        .openWorld(
+                                System.getProperty("radiance.audit.cityWorld", "Newport City"),
+                                () -> mc.setScreen(new TitleScreen()));
                 LOG.info("CITY_COMPARISON open-world");
             }
             if (mc.level == null || mc.player == null) return;
@@ -96,11 +120,21 @@ public final class CityFrameComparisonProbe {
                         mc.player.getZ(),
                         mc.player.getYRot(),
                         mc.player.getXRot());
+                LOG.info(
+                        "CITY_COMPARISON source-contract baked={} painting={} parts={}",
+                        System.getProperty("radiance.internal.bakedSource", "absent"),
+                        System.getProperty("radiance.internal.paintingSource", "absent"),
+                        System.getProperty("radiance.internal.partSource", "absent"));
             }
             if (step == 2 && now >= nextPoll) {
                 nextPoll = now + 1_000_000_000L;
                 var state = new Properties();
                 BenchmarkChunkState.capture(state);
+                if (Boolean.getBoolean("radiance.audit.vanillaPerformance")
+                        && now >= nextProgress) {
+                    LOG.info("CITY_COMPARISON waiting-for-quiet state={}", state);
+                    nextProgress = now + 15_000_000_000L;
+                }
                 if (!quiet(state)) quietSince = 0;
                 else if (quietSince == 0) quietSince = now;
                 if (now - entered >= 60_000_000_000L
@@ -118,9 +152,25 @@ public final class CityFrameComparisonProbe {
                     String label =
                             System.getProperty("radiance.audit.cityLabel", "city-comparison");
                     if (now < betweenUntil) return;
+                    if (Boolean.getBoolean("radiance.audit.cityScreenshot")
+                            && !screenshotCaptured) {
+                        screenshotCaptured = true;
+                        net.minecraft.client.Screenshot.grab(
+                                mc.gameDirectory,
+                                "city-diagnostic.png",
+                                mc.getMainRenderTarget(),
+                                message -> {});
+                        // Keep the readback and its short settling interval outside timing.
+                        betweenUntil = now + 3_000_000_000L;
+                        return;
+                    }
                     int seconds = Integer.getInteger("radiance.audit.cityProfileSeconds", 60);
+                    if (modes[captureIndex] == ProfileMode.TIMED
+                            && Boolean.getBoolean("radiance.audit.vanillaPerformance"))
+                        seconds = Math.min(seconds, 10);
                     if (seconds < 1 || seconds > 120)
                         throw new IllegalArgumentException("City profile seconds must be 1..120");
+                    partWindows.add(partCounters());
                     if (FrameProfiler.request(
                                     seconds,
                                     label + "-" + captureIndex + "-" + modes[captureIndex],
@@ -131,12 +181,26 @@ public final class CityFrameComparisonProbe {
                     LOG.info("CITY_COMPARISON capture-request label={} state={}", label, state);
                 }
             } else if (step == 3 && !FrameProfiler.requested()) {
+                partWindows.add(partCounters());
                 if (++captureIndex < modes.length) {
                     step = 2;
                     betweenUntil = now + 5_000_000_000L;
                     quietSince = 0;
                     return;
                 }
+                if (Boolean.getBoolean("radiance.audit.vanillaPerformance")) {
+                    step = 4;
+                    entered = now;
+                    reload = mc.reloadResourcePacks();
+                } else startCensus(now); // Counts-only observation, outside timed windows.
+            } else if (step == 6) {
+                if (now < betweenUntil) {
+                    ProducerCensus.frame();
+                    return;
+                }
+                ProducerCensus
+                        .frame(); // poll runs at runTick RETURN: include the final completed frame.
+                ProducerCensus.finish();
                 step = 4;
                 PaintingModelProbe.checkpoint("before-reload");
                 LOG.info("CITY_COMPARISON capture-finished; requesting resource reload");
@@ -153,6 +217,7 @@ public final class CityFrameComparisonProbe {
                             FontSourceProbe.violations());
                     if (FontSourceProbe.violations() != 0)
                         throw new IllegalStateException("Font lifecycle regression");
+                    writeSourceObservations();
                     mc.stop();
                 }
             }
@@ -163,7 +228,46 @@ public final class CityFrameComparisonProbe {
         }
     }
 
-    private static boolean viewportReady(Minecraft mc, long now) {
+    private static Object partCounters() {
+        try {
+            return Class.forName("com.radiance.client.vertex.PartModelCapture")
+                    .getMethod("counters")
+                    .invoke(null);
+        } catch (ClassNotFoundException | NoSuchMethodException absentInFrozenBaseline) {
+            return "unavailable-in-frozen-product";
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException(failure);
+        }
+    }
+
+    private static void writeSourceObservations() throws java.io.IOException {
+        Object coverage;
+        try {
+            coverage =
+                    Class.forName("com.radiance.mixin_related.SourceCompatibility")
+                            .getMethod("coverage")
+                            .invoke(null);
+        } catch (ClassNotFoundException absentInFrozenBaseline) {
+            coverage = "unavailable-in-frozen-product";
+        } catch (ReflectiveOperationException failure) {
+            throw new IllegalStateException(failure);
+        }
+        var path =
+                java.nio.file.Path.of(
+                        System.getProperty("validation.result"), "source-observations.json");
+        java.nio.file.Files.writeString(
+                path,
+                new com.google.gson.Gson()
+                                .toJson(
+                                        java.util.Map.of(
+                                                "partWindowEndpoints", partWindows,
+                                                "partCounterLayout",
+                                                        "registrations,builds,draws,sources,versions,sourceBytes,meshBytes",
+                                                "coverage", coverage))
+                        + "\n");
+    }
+
+    static boolean viewportReady(Minecraft mc, long now) {
         int width = Integer.getInteger("radiance.audit.cityWidth", 0);
         int height = Integer.getInteger("radiance.audit.cityHeight", 0);
         if (width == 0 && height == 0) return true;

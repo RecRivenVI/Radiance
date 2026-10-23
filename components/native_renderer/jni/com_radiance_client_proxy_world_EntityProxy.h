@@ -141,6 +141,14 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_build
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_queueRigidModelsV2
   (JNIEnv *, jclass, jint, jint, jint, jlong, jint, jlong, jint);
 
+/*
+ * Class:     com_radiance_client_proxy_world_EntityProxy
+ * Method:    queueRigidModelsV3
+ * Signature: (IIIJIJIIIJI)V
+ */
+JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityProxy_queueRigidModelsV3
+  (JNIEnv *, jclass, jint, jint, jint, jlong, jint, jlong, jint, jint, jint, jlong, jint);
+
 #ifdef __cplusplus
 }
 #endif

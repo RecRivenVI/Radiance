@@ -136,6 +136,9 @@ public class RendererProxy {
     /** Returns true only when the Vulkan UI context recorded the blur candidate. */
     public static native boolean postBlur();
 
+    /** Changes the role for subsequent recorded GUI draws and returns the previous role. */
+    public static native int setGuiDrawRole(int role);
+
     /** Returns true only when the Vulkan UI context recorded the entity-effect candidate. */
     public static native boolean postEntityEffect(int effect);
 
@@ -242,7 +245,7 @@ public class RendererProxy {
         }
     }
 
-    public static native void shouldRenderWorld(boolean renderWorld);
+    public static native void shouldRenderWorld(boolean renderWorld, boolean allowFrameGeneration);
 
     private static native int takeScreenshotNative(
             boolean withUI, int width, int height, int channel, long pointer);

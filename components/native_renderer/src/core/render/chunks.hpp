@@ -7,6 +7,7 @@
 
 #include "core/render/emission.hpp"
 #include "core/render/chunk_scene_metadata.hpp"
+#include "core/render/scene_resource_version.hpp"
 #include "core/render/static_chunk_scene.hpp"
 #include "core/render/external_chunk_handle.hpp"
 #include "core/render/world.hpp"
@@ -58,6 +59,7 @@ struct ChunkBuildTask {
 struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     int64_t id;
     uint32_t slotGeneration = 0;
+    mcvr::scene::Completion completion = mcvr::scene::Completion::pending;
     int priority = 0;
     std::chrono::steady_clock::time_point queuedAt = std::chrono::steady_clock::now();
     int x, y, z;

@@ -46,6 +46,7 @@ import org.joml.Vector3f;
 import org.lwjgl.system.MemoryUtil;
 
 public class PBRVertexConsumer implements VertexConsumer {
+    StorageVertexConsumerProvider particleOwner;
     StorageVertexConsumerProvider rigidOwner;
     RenderType rigidLayer;
 
@@ -53,7 +54,18 @@ public class PBRVertexConsumer implements VertexConsumer {
         return textureID;
     }
 
+    MaterialPolicy rigidPolicy() {
+        return materialPolicy;
+    }
+
     boolean rigidEligible() {
+        return declaredModelEligible()
+                && PBRMaterialContext.albedoEmission() == 0
+                && !PBRMaterialContext.entityTransmissionActive()
+                && !PBRMaterialContext.blockTransmissionActive();
+    }
+
+    boolean declaredModelEligible() {
         return materialPolicy.allowRigidCapture()
                 && !primaryUvTransform
                 && building
@@ -61,9 +73,6 @@ public class PBRVertexConsumer implements VertexConsumer {
                 && baseY == 0
                 && baseZ == 0
                 && defaultAlbedoEmission == 0
-                && PBRMaterialContext.albedoEmission() == 0
-                && !PBRMaterialContext.entityTransmissionActive()
-                && !PBRMaterialContext.blockTransmissionActive()
                 && !textPolygonOffsetLayer;
     }
 
@@ -662,9 +671,24 @@ public class PBRVertexConsumer implements VertexConsumer {
         private final PBRVertexConsumer delegate;
         private final int glintMode;
         private int glintTextureID;
+        private final RenderType sourceLayer;
+        private final com.radiance.client.texture.TextureTasks.Owner textureOwner;
+
+        public PBRVertexConsumer delegate() {
+            return delegate;
+        }
+
+        public RenderType sourceLayer() {
+            return sourceLayer;
+        }
+
+        public com.radiance.client.texture.TextureTasks.Owner textureOwner() {
+            return textureOwner;
+        }
 
         public GLint(PBRVertexConsumer delegate, RenderType glintRenderLayer) {
             this.delegate = delegate;
+            this.sourceLayer = glintRenderLayer;
             this.glintMode = glintMode(glintRenderLayer);
             if (glintRenderLayer instanceof RenderType.CompositeRenderType) {
                 ResourceLocation identifier =
@@ -676,6 +700,8 @@ public class PBRVertexConsumer implements VertexConsumer {
                 glintTextureID =
                         Minecraft.getInstance().getTextureManager().getTexture(identifier).getId();
             }
+            textureOwner =
+                    com.radiance.client.proxy.vulkan.TextureProxy.TASKS.owner(glintTextureID);
         }
 
         @Override

@@ -7,30 +7,103 @@ import com.radiance.client.texture.TextureTasks;
 import java.util.*;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.renderer.RenderType;
+import net.minecraft.client.renderer.SpriteCoordinateExpander;
+import net.minecraft.client.renderer.texture.TextureAtlasSprite;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 
 /**
- * Opt-in local ModelPart geometry. Animation, render callbacks and unsupported consumers remain
- * original.
+ * Source-declared local ModelPart geometry. Pose traversal and unsupported consumers stay original.
  */
 public final class PartModelCapture {
     public static final boolean ENABLED =
-            RigidModelCapture.ENABLED && Boolean.getBoolean("radiance.rigidParts");
-    private static final int CAPACITY = 512;
+            RigidModelCapture.ENABLED
+                    && Boolean.parseBoolean(System.getProperty("radiance.rigidParts", "true"));
     private static final long BYTE_CAPACITY = 16L * 1024 * 1024;
+    private static final long SOURCE_BYTE_CAPACITY = 8L * 1024 * 1024;
     private static final IdentityHashMap<Object, Source> SOURCES = new IdentityHashMap<>();
     private static final List<Entry> CACHE = new ArrayList<>();
+    private static final Map<VersionKey, Entry> VERSIONS = new HashMap<>();
+    private static final IdentityHashMap<Object, Owner> OWNERS = new IdentityHashMap<>();
     private static Object level;
-    private static long reload, frame, nextPart;
+    private static long reload, frame, nextPart, nextOwner, bytes, sourceBytes;
+    private static long registrations, builds, draws;
+
+    /** Set only by the real PartDefinition baker; no renderer/class-name stability inference. */
+    public interface SourceAccess {
+        void radiance$declarePart();
+
+        boolean radiance$declaredPart();
+
+        List<ModelPart.Cube> radiance$cubes();
+
+        Map<String, ModelPart> radiance$children();
+    }
+
+    public interface SpriteAccess {
+        VertexConsumer radiance$delegate();
+
+        TextureAtlasSprite radiance$sprite();
+    }
+
+    private record VersionKey(
+            Snapshot source,
+            RenderType layer,
+            TextureTasks.Owner texture,
+            TextureAtlasSprite sprite,
+            com.radiance.render.contract.SurfaceMaterial.MaterialPolicy policy,
+            int light,
+            int overlay,
+            int color,
+            RenderType glint,
+            TextureTasks.Owner glintTexture,
+            PBRMaterialContext.State context) {}
+
+    private record Binding(RenderType layer, TextureAtlasSprite sprite) {}
+
+    private static final class Owner {
+        final long id = ++nextOwner;
+        long used;
+    }
+
+    public static void declare(ModelPart part) {
+        if ((Object) part instanceof SourceAccess source) source.radiance$declarePart();
+    }
+
+    public static boolean sourceCompatible() {
+        return com.radiance.mixin_related.SourceCompatibility.compatible(
+                com.radiance.mixin_related.SourceCompatibility.Source.PARTS);
+    }
+
+    /** Separate history namespace for block entities; object hashes are not resource identities. */
+    static long blockOwner(Object value) {
+        Owner owner = OWNERS.get(value);
+        if (owner == null) {
+            if (OWNERS.size() >= 8192 || nextOwner >= 0xffff_ffffL) return -1;
+            owner = new Owner();
+            OWNERS.put(value, owner);
+        }
+        owner.used = frame;
+        return owner.id;
+    }
 
     private PartModelCapture() {}
+
+    public static long[] counters() {
+        return new long[] {
+            registrations, builds, draws, SOURCES.size(), CACHE.size(), sourceBytes, bytes
+        };
+    }
 
     static void invalidate() {
         CACHE.forEach(Entry::close);
         CACHE.clear();
+        VERSIONS.clear();
         SOURCES.clear();
+        OWNERS.clear();
+        bytes = sourceBytes = 0;
         level = null;
+        BoundPartCapture.invalidate();
     }
 
     static void beginFrame(Object currentLevel, long epoch) {
@@ -41,13 +114,23 @@ public final class PartModelCapture {
             reload = epoch;
         }
         ++frame;
+        BoundPartCapture.beginFrame(frame);
         CACHE.removeIf(
                 e -> {
                     if (frame - e.used <= 120) return false;
+                    VERSIONS.remove(e.key);
+                    bytes -= (long) e.snapshot.vertices() * 128;
                     e.close();
                     return true;
                 });
-        SOURCES.values().removeIf(s -> frame - s.used > 120);
+        SOURCES.values()
+                .removeIf(
+                        s -> {
+                            if (frame - s.used <= 120) return false;
+                            sourceBytes -= s.snapshot.data.length * 4L;
+                            return true;
+                        });
+        OWNERS.values().removeIf(o -> frame - o.used > 120);
     }
 
     public static boolean capture(
@@ -61,69 +144,146 @@ public final class PartModelCapture {
         if (!ENABLED
                 || cubes.isEmpty()
                 || part.getClass() != ModelPart.class
-                || consumer.getClass() != PBRVertexConsumer.class
+                || !sourceCompatible()
+                || !((Object) part instanceof SourceAccess sourceAccess)
+                || !sourceAccess.radiance$declaredPart()
                 || RasterPreviewScope.active()
                 || !RigidModelCapture.uniformPose(pose)) return false;
+        TextureAtlasSprite sprite = null;
+        if (consumer.getClass() == SpriteCoordinateExpander.class
+                && consumer instanceof SpriteAccess expanded) {
+            sprite = expanded.radiance$sprite();
+            consumer = expanded.radiance$delegate();
+        }
+        if (consumer.getClass() != PBRVertexConsumer.class) return false;
         PBRVertexConsumer pbr = (PBRVertexConsumer) consumer;
-        if (pbr.rigidOwner == null || !pbr.rigidEligible()) return false;
+        if (pbr.rigidOwner == null || !pbr.rigidOwner.partCaptureEnabled || !pbr.rigidEligible())
+            return false;
         var owner = pbr.rigidOwner;
         TextureTasks.Owner texture = TextureProxy.TASKS.owner(pbr.rigidTexture());
         if (texture == null) return false;
 
-        Source source = SOURCES.get(part);
-        if (source == null || !source.snapshot.matches(cubes)) {
-            Snapshot snapshot = Snapshot.read(cubes);
-            if (snapshot == null || snapshot.vertices() == 0) return false;
-            if (source == null) {
-                if (SOURCES.size() >= CAPACITY) return false;
-                source = new Source(snapshot);
-                SOURCES.put(part, source);
-            } else source.snapshot = snapshot;
-        }
-        source.used = frame;
-        PartIdentity identity = source.identity(pbr.rigidLayer, frame);
+        Source source = localSource(part, cubes);
+        if (source == null) return false;
+        PartIdentity identity = source.identity(new Binding(pbr.rigidLayer, sprite), frame);
         if (identity == null) return false;
         var state = owner.partState();
         int occurrence = state.occurrences.getOrDefault(identity, 0);
         if (occurrence >= 32) return false;
-        Entry found = null;
-        for (Entry entry : CACHE) {
-            if (entry.snapshot == source.snapshot
-                    && entry.layer == pbr.rigidLayer
-                    && entry.texture.equals(texture)
-                    && entry.light == light
-                    && entry.overlay == overlay
-                    && entry.color == color) {
-                found = entry;
-                break;
-            }
+        Entry found =
+                localVersion(
+                        source.snapshot,
+                        pbr.rigidLayer,
+                        texture,
+                        sprite,
+                        pbr.rigidPolicy(),
+                        light,
+                        overlay,
+                        color);
+        if (found == null) return false;
+        state.occurrences.put(identity, occurrence + 1);
+        owner.rigidDraws.add(
+                new RigidModelCapture.Draw(
+                                found,
+                                new Matrix4f(pose.pose()),
+                                historyIdentity(owner.rigidInstance, identity.id, occurrence)
+                                        | owner.partHistoryDomain)
+                        .capturedBy(pbr));
+        ++draws;
+        return true;
+    }
+
+    static Source localSource(Object part, List<ModelPart.Cube> cubes) {
+        Source source = SOURCES.get(part);
+        if (source == null || !source.snapshot.matchesStructure(cubes)) {
+            long oldBytes = source == null ? 0 : source.snapshot.data.length * 4L;
+            long requiredSource = Snapshot.requiredBytes(cubes);
+            if (requiredSource <= 0
+                    || sourceBytes - oldBytes + requiredSource > SOURCE_BYTE_CAPACITY) return null;
+            Snapshot snapshot = Snapshot.read(cubes);
+            if (snapshot == null || snapshot.vertices() == 0) return null;
+            // A changed local topology gets fresh part identities, even at equal vertex count.
+            source = new Source(snapshot);
+            SOURCES.put(part, source);
+            ++registrations;
+            sourceBytes += snapshot.data.length * 4L - oldBytes;
         }
+        source.used = frame;
+        return source;
+    }
+
+    static Entry localVersion(
+            Snapshot snapshot,
+            RenderType layer,
+            TextureTasks.Owner texture,
+            TextureAtlasSprite sprite,
+            com.radiance.render.contract.SurfaceMaterial.MaterialPolicy policy,
+            int light,
+            int overlay,
+            int color) {
+        return localVersion(
+                snapshot, layer, texture, sprite, policy, light, overlay, color, null, null);
+    }
+
+    static Entry localVersion(
+            Snapshot snapshot,
+            RenderType layer,
+            TextureTasks.Owner texture,
+            TextureAtlasSprite sprite,
+            com.radiance.render.contract.SurfaceMaterial.MaterialPolicy policy,
+            int light,
+            int overlay,
+            int color,
+            RenderType glint,
+            TextureTasks.Owner glintTexture) {
+        VersionKey key =
+                new VersionKey(
+                        snapshot,
+                        layer,
+                        texture,
+                        sprite,
+                        policy,
+                        light,
+                        overlay,
+                        color,
+                        glint,
+                        glintTexture,
+                        PBRMaterialContext.snapshot());
+        Entry found = VERSIONS.get(key);
         if (found == null) {
-            long required = (long) source.snapshot.vertices() * 128;
-            if (required > BYTE_CAPACITY) return false;
-            long bytes = CACHE.stream().mapToLong(e -> (long) e.snapshot.vertices() * 128).sum();
-            while (CACHE.size() >= CAPACITY || bytes + required > BYTE_CAPACITY) {
+            long required = (long) snapshot.vertices() * 128;
+            if (required > BYTE_CAPACITY) return null;
+            while (bytes + required > BYTE_CAPACITY) {
                 Entry oldest =
                         CACHE.stream()
                                 .filter(e -> e.used != frame)
                                 .min(Comparator.comparingLong(e -> e.used))
                                 .orElse(null);
-                if (oldest == null) return false;
+                if (oldest == null) return null;
                 CACHE.remove(oldest);
+                VERSIONS.remove(oldest.key);
                 oldest.close();
                 bytes -= (long) oldest.snapshot.vertices() * 128;
             }
-            found = new Entry(source.snapshot, pbr.rigidLayer, texture, light, overlay, color);
+            found =
+                    new Entry(
+                            snapshot,
+                            layer,
+                            texture,
+                            light,
+                            overlay,
+                            color,
+                            sprite,
+                            policy,
+                            glint,
+                            glintTexture);
             CACHE.add(found);
+            ++builds;
+            VERSIONS.put(key, found);
+            bytes += required;
         }
         found.used = frame;
-        state.occurrences.put(identity, occurrence + 1);
-        owner.rigidDraws.add(
-                new RigidModelCapture.Draw(
-                        found,
-                        new Matrix4f(pose.pose()),
-                        historyIdentity(owner.rigidInstance, identity.id, occurrence)));
-        return true;
+        return found;
     }
 
     // Separate from baked-model count/ordinal keys. Removing another part cannot transfer its
@@ -148,8 +308,9 @@ public final class PartModelCapture {
     }
 
     static final class Source {
-        final Map<Object, PartIdentity> layers = new IdentityHashMap<>();
-        Snapshot snapshot;
+        final Map<Object, PartIdentity> layers = new HashMap<>();
+        final Snapshot snapshot;
+        net.minecraft.world.phys.shapes.VoxelShape outline;
         long used;
 
         Source(Snapshot snapshot) {
@@ -170,21 +331,63 @@ public final class PartModelCapture {
         }
     }
 
-    /**
-     * Immutable input snapshot, compared before use; no transformed output or per-frame full mesh
-     * hash.
-     */
+    public static void outline(
+            ModelPart part,
+            PoseStack.Pose pose,
+            StorageOutlineVertexConsumerProvider.WorldOutlineVertexConsumer consumer) {
+        var cubes = ((SourceAccess) (Object) part).radiance$cubes();
+        if (cubes.isEmpty()) return;
+        var source = ENABLED ? localSource(part, cubes) : null;
+        var shape = source == null ? null : source.outline;
+        if (shape == null) {
+            shape = net.minecraft.world.phys.shapes.Shapes.empty();
+            for (var cube : cubes)
+                shape =
+                        net.minecraft.world.phys.shapes.Shapes.or(
+                                shape,
+                                net.minecraft.world.phys.shapes.Shapes.create(
+                                        new net.minecraft.world.phys.AABB(
+                                                cube.minX / 16F,
+                                                cube.minY / 16F,
+                                                cube.minZ / 16F,
+                                                cube.maxX / 16F,
+                                                cube.maxY / 16F,
+                                                cube.maxZ / 16F)));
+            if (source != null) source.outline = shape;
+        }
+        com.radiance.client.render.WorldOutlineGeometry.emitShapeEdges(
+                pose, consumer.outlineDelegate(), shape, consumer.outlineColor());
+    }
+
+    /** Local geometry declared by a qualified baker; only structural identities are checked hot. */
     static final class Snapshot {
         final float[] data; // per quad: normal xyz; four vertices each xyz (model units), uv
-        final int[] polygonCounts;
+        final ModelPart.Cube[] cubeIdentities;
 
-        Snapshot(float[] data, int[] polygonCounts) {
+        Snapshot(float[] data, ModelPart.Cube[] cubeIdentities) {
             this.data = data;
-            this.polygonCounts = polygonCounts;
+            this.cubeIdentities = cubeIdentities;
         }
 
         int vertices() {
             return data.length / 23 * 4;
+        }
+
+        static long requiredBytes(List<ModelPart.Cube> cubes) {
+            long count = 0;
+            for (var cube : cubes) {
+                if (cube == null || cube.getClass() != ModelPart.Cube.class) return -1;
+                count += cube.polygons.length;
+                if (count > 32768) return -1;
+            }
+            return count * 23 * 4;
+        }
+
+        boolean matchesStructure(List<ModelPart.Cube> cubes) {
+            if (cubeIdentities == null || cubes.size() != cubeIdentities.length) return false;
+            for (int i = 0; i < cubeIdentities.length; ++i)
+                if (cubes.get(i) != cubeIdentities[i]) return false;
+            return true;
         }
 
         static Snapshot read(List<ModelPart.Cube> cubes) {
@@ -195,10 +398,8 @@ public final class PartModelCapture {
                 if (count > 32768) return null;
             }
             float[] data = new float[count * 23];
-            int[] counts = new int[cubes.size()];
-            int at = 0, ci = 0;
+            int at = 0;
             for (var cube : cubes) {
-                counts[ci++] = cube.polygons.length;
                 for (var polygon : cube.polygons) {
                     if (polygon == null || polygon.vertices.length != 4) return null;
                     data[at++] = polygon.normal.x;
@@ -215,33 +416,7 @@ public final class PartModelCapture {
                 }
             }
             for (float value : data) if (!Float.isFinite(value)) return null;
-            return new Snapshot(data, counts);
-        }
-
-        boolean matches(List<ModelPart.Cube> cubes) {
-            if (cubes.size() != polygonCounts.length) return false;
-            int at = 0, ci = 0;
-            for (var cube : cubes) {
-                if (cube == null
-                        || cube.getClass() != ModelPart.Cube.class
-                        || cube.polygons.length != polygonCounts[ci++]) return false;
-                for (var p : cube.polygons) {
-                    if (p == null
-                            || p.vertices.length != 4
-                            || p.normal.x != data[at++]
-                            || p.normal.y != data[at++]
-                            || p.normal.z != data[at++]) return false;
-                    for (var v : p.vertices) {
-                        if (v == null
-                                || v.pos.x != data[at++]
-                                || v.pos.y != data[at++]
-                                || v.pos.z != data[at++]
-                                || v.u != data[at++]
-                                || v.v != data[at++]) return false;
-                    }
-                }
-            }
-            return true;
+            return new Snapshot(data, cubes.toArray(ModelPart.Cube[]::new));
         }
 
         void emit(VertexConsumer consumer, PoseStack.Pose pose, int light, int overlay, int color) {
@@ -276,7 +451,11 @@ public final class PartModelCapture {
         final Snapshot snapshot;
         final RenderType layer;
         final TextureTasks.Owner texture;
+        final TextureTasks.Owner glintTexture;
         final int light, overlay, color;
+        final TextureAtlasSprite sprite;
+        final com.radiance.render.contract.SurfaceMaterial.MaterialPolicy policy;
+        final VersionKey key;
         final ByteBufferBuilder allocator;
         final MeshData mesh;
         long used;
@@ -288,16 +467,86 @@ public final class PartModelCapture {
                 int light,
                 int overlay,
                 int color) {
+            this(snapshot, layer, texture, light, overlay, color, null);
+        }
+
+        Entry(
+                Snapshot snapshot,
+                RenderType layer,
+                TextureTasks.Owner texture,
+                int light,
+                int overlay,
+                int color,
+                TextureAtlasSprite sprite) {
+            this(
+                    snapshot,
+                    layer,
+                    texture,
+                    light,
+                    overlay,
+                    color,
+                    sprite,
+                    com.radiance.render.contract.SurfaceMaterial.ordinaryPolicy(
+                            PBRVertexConsumer.getAlphaMode(layer)));
+        }
+
+        Entry(
+                Snapshot snapshot,
+                RenderType layer,
+                TextureTasks.Owner texture,
+                int light,
+                int overlay,
+                int color,
+                TextureAtlasSprite sprite,
+                com.radiance.render.contract.SurfaceMaterial.MaterialPolicy policy) {
+            this(snapshot, layer, texture, light, overlay, color, sprite, policy, null, null);
+        }
+
+        Entry(
+                Snapshot snapshot,
+                RenderType layer,
+                TextureTasks.Owner texture,
+                int light,
+                int overlay,
+                int color,
+                TextureAtlasSprite sprite,
+                com.radiance.render.contract.SurfaceMaterial.MaterialPolicy policy,
+                RenderType glint,
+                TextureTasks.Owner glintTexture) {
             this.snapshot = snapshot;
             this.layer = layer;
             this.texture = texture;
+            this.glintTexture = glintTexture;
             this.light = light;
             this.overlay = overlay;
             this.color = color;
+            this.sprite = sprite;
+            this.policy = policy;
+            key =
+                    new VersionKey(
+                            snapshot,
+                            layer,
+                            texture,
+                            sprite,
+                            policy,
+                            light,
+                            overlay,
+                            color,
+                            glint,
+                            glintTexture,
+                            PBRMaterialContext.snapshot());
             allocator = new ByteBufferBuilder(snapshot.vertices() * 128);
             try {
-                PBRVertexConsumer consumer = new PBRVertexConsumer(allocator, layer);
-                snapshot.emit(consumer, new PoseStack().last(), light, overlay, color);
+                PBRVertexConsumer consumer =
+                        PBRVertexConsumer.dynamicMaterial(allocator, layer, false, policy);
+                VertexConsumer decorated =
+                        glint == null ? consumer : new PBRVertexConsumer.GLint(consumer, glint);
+                snapshot.emit(
+                        sprite == null ? decorated : sprite.wrap(decorated),
+                        new PoseStack().last(),
+                        light,
+                        overlay,
+                        color);
                 mesh = consumer.end();
             } catch (Throwable failure) {
                 allocator.close();
@@ -315,6 +564,10 @@ public final class PartModelCapture {
 
         public TextureTasks.Owner texture() {
             return texture;
+        }
+
+        public List<TextureTasks.Owner> textures() {
+            return glintTexture == null ? List.of(texture) : List.of(texture, glintTexture);
         }
 
         public MeshData mesh() {

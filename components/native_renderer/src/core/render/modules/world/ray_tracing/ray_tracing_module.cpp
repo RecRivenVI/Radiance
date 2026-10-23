@@ -1,5 +1,6 @@
 #include "core/logging.hpp"
 #include "core/diagnostics/frame_profile.hpp"
+#include "core/diagnostics/sharc_audit.hpp"
 #include "core/failure_state.hpp"
 #include "core/diagnostics/device_loss_trace.hpp"
 #include "core/render/scene_scope.hpp"
@@ -754,6 +755,7 @@ RayTracingModule::findRuntimeBuffer(std::string_view name) {
 
 void RayTracingModule::initSharc() {
     sharcConfigBuffers_.clear();
+    sharcAudits_.clear();
     sharcHashEntriesBuffer_ = nullptr;
     sharcLockBuffer_ = nullptr;
     sharcAccumulationBuffer_ = nullptr;
@@ -767,6 +769,7 @@ void RayTracingModule::initSharc() {
     uint32_t size = framework->recordingContextCount();
 
     sharcConfigBuffers_.resize(size);
+    sharcAudits_.resize(size);
 
     const VkBufferUsageFlags sharcStorageUsage =
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
@@ -897,6 +900,13 @@ void RayTracingModule::updateSharcConfig(uint32_t frameIndex) {
     config.useLockBuffer = 0;
     config.debugMode = sharcDebugMode_;
     config.updateDownsampleFactor = sharcUpdateDownsampleFactor_;
+    if (mcvr::diagnostics::SharcAudit::enabled() && mcvr::profile::enabled() && !SceneRecordingScope::active()) {
+        auto audit = mcvr::diagnostics::SharcAudit::create(Renderer::instance().framework());
+        const auto address = splitAddress(audit->buffer->bufferAddress());
+        config.auditAddress[0] = address[0];
+        config.auditAddress[1] = address[1];
+        sharcAudits_[frameIndex] = std::move(audit);
+    }
 
     sharcConfigBuffers_[frameIndex]->uploadToBuffer(&config);
 
@@ -1100,12 +1110,14 @@ RayTracingModule::collectRayTracingPassShaderRequests(RayTracingPass &pass,
     if (pass.querySharcEnabled) {
         queryDefinitions["USE_SHARC"] = "1";
         queryDefinitions["SHARC_QUERY"] = "1";
+        queryDefinitions["MCVR_SHARC_AUDIT"] = mcvr::diagnostics::SharcAudit::enabled() ? "1" : "0";
     }
 
     std::unordered_map<std::string, std::string> updateDefinitions = definitions;
     if (pass.isSharcUpdatePass) {
         updateDefinitions["USE_SHARC"] = "1";
         updateDefinitions["SHARC_UPDATE"] = "1";
+        updateDefinitions["MCVR_SHARC_AUDIT"] = mcvr::diagnostics::SharcAudit::enabled() ? "1" : "0";
     }
 
     requests.push_back({
@@ -1967,6 +1979,7 @@ void RayTracingModuleContext::render() {
     auto framework = context->framework.lock();
     auto worldCommandBuffer = context->worldCommandBuffer;
     auto mainQueueIndex = framework->physicalDevice()->mainQueueIndex();
+    if (context->frameIndex < module->sharcAudits_.size()) module->sharcAudits_[context->frameIndex].reset();
 
     auto buffers = Renderer::instance().buffers();
     auto chunks = Renderer::instance().world()->chunks();
@@ -2074,6 +2087,8 @@ void RayTracingModuleContext::render() {
                                          RayTracingModule::executionLoopLimit, executePass);
 
     profile.next("pt.execution-finish");
+    if (context->frameIndex < module->sharcAudits_.size())
+        if (const auto &audit = module->sharcAudits_[context->frameIndex]) audit->seal(worldCommandBuffer);
     for (auto &[name, value] : module->globalVariables_) {
         auto iter = variables.find(name);
         if (iter != variables.end()) { value = iter->second.value; }

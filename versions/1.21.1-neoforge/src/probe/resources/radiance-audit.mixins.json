@@ -5,6 +5,10 @@
     "plugin": "com.radiance.audit.mixin.AuditMixinPlugin",
     "compatibilityLevel": "JAVA_21",
     "client": [
+        "TakeoverPartComparisonMixin",
+        "UnregisteredPartMutationMixin",
+        "TakeoverBakedComparisonMixin",
+        "TakeoverFlywheelSourceMixin",
         "BufferUploaderAuditMixin",
         "FontProviderLifetimeMixin",
         "FontImageLifetimeMixin",
@@ -17,6 +21,7 @@
         "LevelRendererAuditMixin",
         "LevelRendererAccessor",
         "MinecraftAuditMixin",
+        "TakeoverParticleComparisonMixin",
         "VanillaMinecraftAuditMixin",
         "RenderTypeAuditMixin",
         "RendererLifecycleAuditMixin",
@@ -38,6 +43,9 @@
         "ProfileRendererMixin",
         "ProfileSectionCompilerMixin",
         "ProfileEntityProxyMixin",
+        "InstanceCensusMixins$Provider",
+        "InstanceCensusMixins$Bindings",
+        "InstanceCensusMixins$Versions",
         "ProfileProducerEntityMixin",
         "ProfileProducerBlockEntityMixin",
         "ProfileProducerModelMixin",
@@ -58,7 +66,9 @@
         "ProfileLightEngineMixin",
         "ProfileRenderStageMixin",
         "ProfileRigidModelMixin",
-        "ProfilePaintingModelMixin"
+        "ProfilePbrMeshMixin",
+        "ProfilePaintingModelMixin",
+        "ReplacementInputComparisonMixin"
     ],
     "injectors": {
         "defaultRequire": 1

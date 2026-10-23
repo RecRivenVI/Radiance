@@ -63,6 +63,8 @@ public abstract class ProfileEntityProxyMixin {
                 post,
                 data);
         com.radiance.audit.ProducerCensus.produced(provider, data, first);
+        com.radiance.audit.InstanceInputCensus.produced(provider, data, first);
+        com.radiance.audit.PartModelProbe.captured(hash, data, first);
     }
 
     @WrapOperation(
@@ -184,6 +186,7 @@ public abstract class ProfileEntityProxyMixin {
             Operation<Void> original) {
         try (var census = com.radiance.audit.ProducerCensus.submit(entityRenderDataList);
                 var ignored = FrameProfiler.span(Stage.GEOMETRY_MARSHAL)) {
+            com.radiance.audit.InstanceInputCensus.submitted(entityRenderDataList);
             original.call(
                     storageVertexConsumerProviders,
                     entityRenderDataList,

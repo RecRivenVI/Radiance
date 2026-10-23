@@ -31,7 +31,7 @@
 
 33 个原文件保留，包括原始 JFR、14 份源码 ZIP、当前文档明确列出的分析文本/JSON和少量不能证明可再生的二进制测试记录。其余画面与场景捕获缓冲只改变存储形式，索引可恢复原路径和原字节。源码 ZIP、程序 DLL/JAR/PDB 不混入冷证据 ZIP。
 
-当前证据根为 `D:/Workspaces/Artifacts/Radiance/history-archive/MCVRSceneReplay/20260924/`。原研究中旧绝对路径保留历史含义；当前入口在[项目现状](../project/status-current.md#存储清理)更新，迁移对应关系、保留原文件和逐组索引见补充清单，不重新启用已退休的回放产品。
+当前证据根为 `D:/Workspaces/Artifacts/Radiance/history-archive/MCVRSceneReplay/20260924/`。原研究中旧绝对路径保留历史含义；当前入口在[项目现状](../project/phase-1-before_vanilla_closeout.md#存储清理)更新，迁移对应关系、保留原文件和逐组索引见补充清单，不重新启用已退休的回放产品。
 
 ### 占用与保留边界
 

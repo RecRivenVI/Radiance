@@ -298,7 +298,10 @@ VkResult Framework::acquireContext() {
     currentContext_ = contexts_[imageIndex];
     currentContext_->worldRenderRequired = false;
     currentContext_->worldRendered = false;
+    currentContext_->fgGameFrame = false;
     currentContext_->fgHudlessCaptured = false;
+    currentContext_->fgGuiRole = mcvr::ui::GuiRole::Foreground;
+    currentContext_->fgGui = {};
     currentContext_->fgBackgroundDependentDraws = 0;
     currentContext_->fgAffineBackgroundDraws = 0;
     currentContext_->fgWeightedBlurPasses = 0;
@@ -647,6 +650,33 @@ VkResult Framework::present() {
     auto &sl = mcvr::StreamlineRuntime::get();
     sl.marker(sl::PCLMarker::ePresentEnd);
     const auto outputCount = sl.presentedFrames();
+    if (mcvr::audit::enabled(MCVR_AUDIT_CAPTURE)) {
+        auto nativeWindow = window_->window();
+        auto evidence = mcvr::log::info("RenderFramework");
+        evidence << "FG_WINDOW serial=" << frameSerial_ << " glfwWindow=" << nativeWindow
+                 << " glfwFocused=" << GLFW_GetWindowAttrib(nativeWindow, GLFW_FOCUSED)
+                 << " glfwVisible=" << GLFW_GetWindowAttrib(nativeWindow, GLFW_VISIBLE)
+                 << " glfwIconified=" << GLFW_GetWindowAttrib(nativeWindow, GLFW_ICONIFIED)
+                 << " swapchain=" << (uint64_t)swapchain_->vkSwapchain();
+#ifdef _WIN32
+        const HWND application = p_glfwGetWin32Window ? p_glfwGetWin32Window(nativeWindow) : nullptr;
+        const HWND foreground = GetForegroundWindow();
+        DWORD applicationPid = 0, foregroundPid = 0;
+        if (application) GetWindowThreadProcessId(application, &applicationPid);
+        if (foreground) GetWindowThreadProcessId(foreground, &foregroundPid);
+        evidence << " appHwnd=" << application
+                 << " appRoot=" << (application ? GetAncestor(application, GA_ROOT) : nullptr)
+                 << " foregroundHwnd=" << foreground
+                 << " foregroundRoot=" << (foreground ? GetAncestor(foreground, GA_ROOT) : nullptr)
+                 << " appPid=" << applicationPid << " foregroundPid=" << foregroundPid;
+#endif
+        evidence << std::endl;
+    }
+    if (mcvr::audit::enabled(MCVR_AUDIT_CAPTURE))
+        mcvr::log::info("RenderFramework")
+            << "FG_PRESENT serial=" << frameSerial_ << " frame=" << currentContext_->frameIndex
+            << " game=" << currentContext_->fgGameFrame << " world=" << currentContext_->worldRendered
+            << " accepted=" << firstAccepted << " output=" << outputCount << std::endl;
     mcvr::presentationRates.recordCounts(firstAccepted,
                                          Renderer::options.dlssFrameGeneration ? outputCount : uint32_t(firstAccepted));
     static const bool vmaResidencyLog = [] {
@@ -756,7 +786,13 @@ VkResult Framework::recreate(bool forcePresentation, bool checkSurface) {
 
     try {
         const bool surfaceStateHandled = checkSurface || forcePresentation;
-        const bool presentation = forcePresentation || (checkSurface && swapchain_->needsReconstruction());
+        auto &sl = mcvr::StreamlineRuntime::get();
+        // An unloaded optional plugin cannot change the current surface's mode.
+        // Apply its requested state even when the old swapchain still fits.
+        const bool fgStateChanged =
+            mcvr::optionalFeaturePresentationChanged(sl.ready(), sl.fgLoaded(), Renderer::options.dlssFrameGeneration);
+        const bool presentation =
+            forcePresentation || (checkSurface && (fgStateChanged || swapchain_->needsReconstruction()));
         const bool worldChanged = Renderer::options.needRecreate || pipeline_->isRecreationNeeded;
         radianceDiag("[radiance-recreate] enter forcePresentation=" + std::to_string(forcePresentation) +
                      " checkSurface=" + std::to_string(checkSurface) + " presentation=" + std::to_string(presentation) +

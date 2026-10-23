@@ -41,6 +41,34 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_EntityPro
     });
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_radiance_client_proxy_world_EntityProxy_queueRigidModelsV3(JNIEnv *env,
+                                                                    jclass,
+                                                                    jint abiVersion,
+                                                                    jint recordStride,
+                                                                    jint byteCount,
+                                                                    jlong records,
+                                                                    jint count,
+                                                                    jlong groups,
+                                                                    jint groupCount,
+                                                                    jint bindingVersion,
+                                                                    jint bindingBytes,
+                                                                    jlong bindings,
+                                                                    jint bindingCount) {
+    jni::invokeVoid(env, "Queue declared local model bindings", [&] {
+        mcvr::rigid::validateBatch(abiVersion, recordStride, byteCount, count);
+        mcvr::rigid::validateBindingBatch(bindingVersion, bindingBytes, bindingCount);
+        if (groupCount < 0 || (bindingCount && !bindings))
+            throw std::invalid_argument("Missing local model binding input");
+        auto world = Renderer::instance().world();
+        if (!world) throw std::logic_error("Local model submitted without a world");
+        world->entities()->queueRigidModels(
+            reinterpret_cast<const mcvr::rigid::SubmissionRecord *>(records), size_t(count),
+            reinterpret_cast<const char *const *>(groups), size_t(groupCount),
+            {reinterpret_cast<const mcvr::rigid::ModelBinding *>(bindings), size_t(bindingCount)});
+    });
+}
+
 JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_world_EntityProxy_beginCachedCloud(
     JNIEnv *env, jclass, jlong revision, jdouble x, jdouble y, jdouble z) {
     return jni::invoke<jboolean>(env, "Queue cached cloud geometry", JNI_FALSE, [&]() -> jboolean {

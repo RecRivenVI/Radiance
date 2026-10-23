@@ -83,7 +83,15 @@ void main() {
             && !queryIncludes(queryOverlay,queryDirect,true) && queryIncludes(queryOverlay,queryPriority,true)
             && queryIncludes(queryOverlay,queryTransport,true)
             && advanceQuery(advanceQuery(queryDirect,2u),2u)==queryDirect
-            && advanceQuery(advanceQuery(queryDirect,1u),2u)==queryTransport;
+            && advanceQuery(advanceQuery(queryDirect,1u),2u)==queryTransport
+            && (cacheUpdateMask(queryDirect,true)&querySelf)==0u
+            && (cacheUpdateMask(queryDirect,false)&querySelf)!=0u
+            && (cacheUpdateMask(advanceQuery(queryDirect,0u),true)&querySelf)!=0u
+            && (cacheUpdateMask(advanceQuery(queryDirect,2u),true)&querySelf)==0u
+            && (cacheUpdateMask(queryDirect,true)&queryReceiveOnly)==0u
+            && (cacheUpdateMask(queryTransport,true)&queryReceiveOnly)==0u
+            && (cacheUpdateMask(queryDirect,true)&queryParticle)!=0u
+            && (cacheUpdateMask(queryTransport,true)&queryParticle)!=0u;
         if (rayQueryGetIntersectionTypeEXT(ray,true)==gl_RayQueryCommittedIntersectionTriangleEXT) {
             bool hitFront=rayQueryGetIntersectionFrontFaceEXT(ray,true);
             uint coating=42u|EYE_CULL_BACK_BIT;

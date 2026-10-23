@@ -48,21 +48,21 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_compatibility_voxy_VoxyNative_secti
     });
 }
 JNIEXPORT void JNICALL Java_com_radiance_compatibility_voxy_VoxyNative_select(
-    JNIEnv *env, jclass, jlong epoch, jlongArray keys, jlongArray roots) {
+    JNIEnv *env, jclass, jlong epoch, jlongArray keys, jintArray roots, jint minY, jint maxY) {
     jni::invokeVoid(env, "Publish Voxy LOD cut", [&] {
         if (!keys || !roots) throw std::invalid_argument("Voxy selection is null");
         const auto count = env->GetArrayLength(keys);
         const auto rootCount = env->GetArrayLength(roots);
-        if (count > 8192 || rootCount > 8192) throw std::length_error("Voxy selection budget");
+        if (count > 8192 || rootCount > mcvr::voxy::RootCoverage::maxRows * 3)
+            throw std::length_error("Voxy selection budget");
         std::vector<jlong> values(size_t(count), 0);
         env->GetLongArrayRegion(keys, 0, count, values.data());
         if (env->ExceptionCheck()) return;
         std::vector<uint64_t> unsignedValues(values.begin(), values.end());
-        std::vector<jlong> rootValues(size_t(rootCount), 0);
-        env->GetLongArrayRegion(roots, 0, rootCount, rootValues.data());
+        std::vector<jint> rootValues(size_t(rootCount), 0);
+        env->GetIntArrayRegion(roots, 0, rootCount, rootValues.data());
         if (env->ExceptionCheck()) return;
-        const std::vector<uint64_t> unsignedRoots(rootValues.begin(), rootValues.end());
-        backend()->select(uint64_t(epoch), unsignedValues, unsignedRoots);
+        backend()->select(uint64_t(epoch), unsignedValues, mcvr::voxy::RootCoverage(rootValues, minY, maxY));
     });
 }
 JNIEXPORT jlongArray JNICALL Java_com_radiance_compatibility_voxy_VoxyNative_counters(JNIEnv *env,

@@ -87,6 +87,11 @@ public abstract class MinecraftAuditMixin {
         Minecraft minecraft = (Minecraft) (Object) this;
         if (com.radiance.audit.ExperimentAccess.permitted()) {
             com.radiance.audit.SmokeProbe.poll(minecraft);
+            com.radiance.audit.TakeoverFeasibilityProbe.poll(minecraft);
+            com.radiance.audit.TakeoverBoundaryProbe.poll(minecraft);
+            com.radiance.audit.TakeoverStageProbe.poll(minecraft);
+            com.radiance.audit.DrawingCensusProbe.poll(minecraft);
+            com.radiance.audit.EntityTakeoverProbe.poll(minecraft);
             com.radiance.audit.CityFrameComparisonProbe.poll(minecraft);
             com.radiance.audit.SpringMenuProbe.poll(minecraft);
             com.radiance.audit.DiagramParityProbe.poll(minecraft);

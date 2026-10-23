@@ -143,6 +143,14 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_p
 
 /*
  * Class:     com_radiance_client_proxy_vulkan_RendererProxy
+ * Method:    setGuiDrawRole
+ * Signature: (I)I
+ */
+JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_setGuiDrawRole
+  (JNIEnv *, jclass, jint);
+
+/*
+ * Class:     com_radiance_client_proxy_vulkan_RendererProxy
  * Method:    postEntityEffect
  * Signature: (I)Z
  */
@@ -248,10 +256,10 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_endRe
 /*
  * Class:     com_radiance_client_proxy_vulkan_RendererProxy
  * Method:    shouldRenderWorld
- * Signature: (Z)V
+ * Signature: (ZZ)V
  */
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_shouldRenderWorld
-  (JNIEnv *, jclass, jboolean);
+  (JNIEnv *, jclass, jboolean, jboolean);
 
 /*
  * Class:     com_radiance_client_proxy_vulkan_RendererProxy

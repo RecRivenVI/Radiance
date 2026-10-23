@@ -31,7 +31,8 @@ public abstract class OpenGlFramebufferCompatibilityMixins {
             int mask,
             int filter,
             CallbackInfo ci) {
-        FramebufferProxy.blit(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
+        com.radiance.client.render.AttachmentOperations.blit(
+                srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
         ci.cancel();
     }
 

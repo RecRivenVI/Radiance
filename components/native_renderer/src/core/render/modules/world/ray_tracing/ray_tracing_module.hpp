@@ -28,6 +28,9 @@ struct RayTracingModuleContext;
 
 class WorldPrepare;
 struct WorldPrepareContext;
+namespace mcvr::diagnostics {
+struct SharcAudit;
+}
 
 class RayTracingModule : public WorldModule, public SharedObject<RayTracingModule> {
     friend RayTracingModuleContext;
@@ -102,6 +105,7 @@ class RayTracingModule : public WorldModule, public SharedObject<RayTracingModul
         uint32_t useLockBuffer;
         uint32_t debugMode;
         uint32_t updateDownsampleFactor;
+        uint32_t auditAddress[2];
     };
 
     using ExecutionVariable = ShaderPack::ExecutionVariable;
@@ -212,6 +216,7 @@ class RayTracingModule : public WorldModule, public SharedObject<RayTracingModul
     std::shared_ptr<vk::DeviceLocalBuffer> sharcAccumulationBuffer_;
     std::shared_ptr<vk::DeviceLocalBuffer> sharcResolvedBuffer_;
     std::vector<std::shared_ptr<vk::HostVisibleBuffer>> sharcConfigBuffers_;
+    std::vector<std::shared_ptr<mcvr::diagnostics::SharcAudit>> sharcAudits_;
 
     glm::dvec3 sharcPrevCameraPos_ = glm::dvec3(0.0);
     uint32_t sharcFrameIndex_ = 0;

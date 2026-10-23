@@ -63,4 +63,22 @@ final class RadianceAuditAdapter implements RenderAuditSink {
             ChunkBuildCounter.INSTANCE.recordPerformance(event, amount);
         }
     }
+
+    @Override
+    public long beginDrawing(String family, String source, String conclusion, String target) {
+        return DrawingCensus.ENABLED
+                ? DrawingCensus.INSTANCE.begin(
+                        DrawingCensus.INSTANCE.scene(
+                                net.minecraft.client.Minecraft.getInstance().level),
+                        family,
+                        source,
+                        conclusion,
+                        target)
+                : 0;
+    }
+
+    @Override
+    public void drawingEvent(long request, String event, String detail) {
+        DrawingCensus.INSTANCE.event(request, event, detail);
+    }
 }

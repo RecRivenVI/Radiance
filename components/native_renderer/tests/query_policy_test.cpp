@@ -33,6 +33,14 @@ int main() {
         require(queryIncludes(queryOverlay, queryTransport, firstPerson));
         require(!queryIncludes(queryWorld, queryPriority, firstPerson));
         require((queryMask(queryTransport, firstPerson) & 128u) == 0u);
+        // A camera-launched SHARC path must not start inside the hidden local head.
+        require(((cacheUpdateMask(queryDirect, firstPerson) & querySelf) != 0u) == !firstPerson);
+        require((cacheUpdateMask(queryDirect, firstPerson) & queryOverlay) == 0u);
+        require((cacheUpdateMask(queryTransport, firstPerson) & querySelf) != 0u);
+        for (auto purpose : {queryDirect, queryTransport}) {
+            require((cacheUpdateMask(purpose, firstPerson) & queryWorld) != 0u);
+            require((cacheUpdateMask(purpose, firstPerson) & queryReceiveOnly) == 0u);
+        }
     }
     uint purpose = queryDirect;
     for (unsigned step = 0; step < 64; ++step) purpose = advanceQuery(purpose, 2);
@@ -40,6 +48,8 @@ int main() {
     purpose = advanceQuery(purpose, 1);
     require(advanceQuery(purpose, 2) == queryTransport);
     require(advanceQuery(advanceQuery(queryDirect, 0), 2) == queryTransport);
+    require((cacheUpdateMask(advanceQuery(queryDirect, 2), true) & querySelf) == 0u);
+    require((cacheUpdateMask(advanceQuery(queryDirect, 0), true) & querySelf) != 0u);
 
     // Same producer helper used by Entity: source mesh -> local convex planes.
     const std::array<glm::vec3, 8> positions{

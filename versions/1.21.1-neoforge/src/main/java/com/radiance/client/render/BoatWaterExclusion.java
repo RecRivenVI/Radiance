@@ -14,6 +14,16 @@ public final class BoatWaterExclusion {
 
     private BoatWaterExclusion() {}
 
+    public static void request(
+            ModelPart patch,
+            ModelPart floor,
+            PoseStack pose,
+            VertexConsumer output,
+            int light,
+            int overlay) {
+        render(patch, floor, pose, output, light, overlay, true);
+    }
+
     public static void render(
             ModelPart patch,
             ModelPart floor,
@@ -21,8 +31,35 @@ public final class BoatWaterExclusion {
             VertexConsumer output,
             int light,
             int overlay) {
+        render(patch, floor, pose, output, light, overlay, false);
+    }
+
+    private static void emit(
+            ModelPart patch,
+            PoseStack pose,
+            VertexConsumer output,
+            int light,
+            int overlay,
+            boolean request) {
+        if (request)
+            com.radiance.client.vertex.BoundPartCapture.emitTemplate(
+                    com.radiance.compatibility.vanilla.VanillaModelPose.extract(patch, pose, -1),
+                    output,
+                    light,
+                    overlay);
+        else patch.render(pose, output, light, overlay);
+    }
+
+    private static void render(
+            ModelPart patch,
+            ModelPart floor,
+            PoseStack pose,
+            VertexConsumer output,
+            int light,
+            int overlay,
+            boolean request) {
         if (floor == null || !patch.visible || !floor.visible || floor.skipDraw) {
-            patch.render(pose, output, light, overlay);
+            emit(patch, pose, output, light, overlay, request);
             return;
         }
         PoseStack local = new PoseStack();
@@ -45,7 +82,7 @@ public final class BoatWaterExclusion {
                 || !bottom.finite()
                 || high - low <= 1e-6f
                 || (newLow == low && newHigh == high)) {
-            patch.render(pose, output, light, overlay);
+            emit(patch, pose, output, light, overlay, request);
             return;
         }
         Matrix4f toWorld = new Matrix4f(pose.last().pose()).mul(patchToParent);
@@ -88,7 +125,7 @@ public final class BoatWaterExclusion {
                         return this;
                     }
                 };
-        patch.render(pose, mapped, light, overlay);
+        emit(patch, pose, mapped, light, overlay, request);
     }
 
     private static Bounds bounds(ModelPart part, Matrix4f transform) {

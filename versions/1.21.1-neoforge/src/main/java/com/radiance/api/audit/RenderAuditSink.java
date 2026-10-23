@@ -26,4 +26,10 @@ public interface RenderAuditSink {
      * Records an aggregate-friendly event without allocating an intent or writing one row per unit.
      */
     default void counter(String category, String event, long amount, String detail) {}
+
+    default long beginDrawing(String family, String source, String conclusion, String target) {
+        return 0;
+    }
+
+    default void drawingEvent(long request, String event, String detail) {}
 }

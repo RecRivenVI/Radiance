@@ -892,6 +892,7 @@ void ChunkBuildScheduler::tryCheckBatchesFinish() {
             for (auto chunkBuildData : (*iterBatch)->batchData) {
                 mcvr::chunkTrace::note("gpu-complete", chunkBuildData->id, chunkBuildData->version, 0,
                                        chunkBuildData->slotGeneration);
+                chunkBuildData->completion = mcvr::scene::Completion::gpuComplete;
                 if (!externalHandles_.isCurrent(static_cast<uint32_t>(chunkBuildData->id),
                                                 chunkBuildData->slotGeneration)) {
                     releaseChunkBuildDataStaging(chunkBuildData);
@@ -954,6 +955,7 @@ void ChunkBuildScheduler::waitAllBatchesFinish() {
                     releaseChunkBuildDataStaging(chunkBuildData);
                     continue;
                 }
+                chunkBuildData->completion = mcvr::scene::Completion::gpuComplete;
                 bool wasEnqueued = chunks_[chunkBuildData->id]->enqueue(chunkBuildData);
                 releaseChunkBuildDataStaging(chunkBuildData);
                 if (!wasEnqueued) { continue; }
@@ -1061,6 +1063,7 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
                                                 chunkBuildData->slotGeneration)) {
                     continue;
                 }
+                chunkBuildData->completion = mcvr::scene::Completion::empty;
                 if (!chunks_[chunkBuildData->id]->enqueue(chunkBuildData)) { continue; }
 
                 storeChunkPackedData(
@@ -1272,7 +1275,11 @@ bool Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
 
     lastUpdate = std::chrono::steady_clock::now();
 
-    if (chunkBuildData->version == desiredVersion && chunkBuildData->version > blasVersion) {
+    const mcvr::scene::ResourceVersion built{chunkBuildData->slotGeneration, uint64_t(chunkBuildData->id),
+                                             chunkBuildData->version};
+    const mcvr::scene::ResourceVersion desired{chunkBuildData->slotGeneration, uint64_t(chunkBuildData->id),
+                                               desiredVersion};
+    if (mcvr::scene::mayPublish(desired, built, blasVersion, chunkBuildData->completion)) {
         if (scenePublications) scenePublications->changed(sceneSlot, bool(chunkBuildData->blas));
         sceneMetadataCache.reset();
         blasVersion = chunkBuildData->version;
@@ -1770,6 +1777,7 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
                     importantBLASBuilders_->push_back(chunkBuildData->blasBuilder);
                 }
 
+                chunkBuildData->completion = mcvr::scene::Completion::orderedFrame;
                 if (!chunks_[task.id]->enqueue(chunkBuildData)) { return; }
 
                 storeChunkPackedData(

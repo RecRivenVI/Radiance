@@ -26,10 +26,23 @@ Thumbs.db
 
 # 验证实例
 /validations/*/instance/
+/validations/conformance-benchmark/result/
+/validations/conformance-boundaries/result/
+/validations/conformance-render_takeover/result/
+/validations/conformance-renderer/result/
+/validations/conformance-vanilla/result/
+/validations/performance-vanilla/result/
+/validations/regression-query_visibility/result/
 /validations/performance-chunk_loading/result/
 /validations/performance-scene_diagnosis/result/
 /validations/regression-line_capture/result/
 /validations/regression-voxy_integration/result/
+/validations/conformance-takeover/result/
+/validations/performance-takeover/result/
+/validations/performance-entity_takeover/result/
+/validations/conformance-entity_takeover/result/
+/validations/migration-city_world/result/
+/validations/visual-takeover_stages/result/
 
 # Preserved runtime evidence and legacy local development directories.
 /dev/

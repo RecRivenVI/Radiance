@@ -16,6 +16,7 @@ public final class ProducerCensus {
     private static final IdentityHashMap<MeshData, Row> meshes = new IdentityHashMap<>();
     private static final IdentityHashMap<Object, Row> rigidOwners = new IdentityHashMap<>();
     private static boolean active;
+    private static boolean countsOnly;
     private static Thread owner;
     private static Path directory;
     private static Row rendering, face;
@@ -40,7 +41,12 @@ public final class ProducerCensus {
     }
 
     static void start(Path output, boolean requested) {
+        start(output, requested, false);
+    }
+
+    static void start(Path output, boolean requested, boolean onlyCounts) {
         if (!ENABLED && !requested) return;
+        countsOnly = onlyCounts;
         rows.clear();
         providers.clear();
         meshes.clear();
@@ -141,6 +147,7 @@ public final class ProducerCensus {
             for (var layer : data.get(i)) {
                 MeshData mesh = layer.builtBuffer();
                 if (meshes.putIfAbsent(mesh, r) == null) {
+                    r.capturePolicies.add(capturePolicy(provider));
                     r.geometries++;
                     r.vertices += mesh.drawState().vertexCount();
                     r.bytes +=
@@ -148,6 +155,20 @@ public final class ProducerCensus {
                                     * mesh.drawState().format().getVertexSize();
                 }
             }
+    }
+
+    private static String capturePolicy(Object provider) {
+        var parts = new ArrayList<String>();
+        for (String key : List.of("surfaceRole", "rigidEnabled", "partCaptureEnabled")) {
+            try {
+                parts.add(key + "=" + RigidModelProbe.field(provider, key));
+            } catch (ReflectiveOperationException absent) {
+                parts.add(key + "=unavailable-in-frozen-product");
+            }
+        }
+        parts.add("partSource=" + System.getProperty("radiance.internal.partSource", "absent"));
+        parts.add("bakedSource=" + System.getProperty("radiance.internal.bakedSource", "absent"));
+        return String.join("/", parts);
     }
 
     public static Scope submit(EntityRenderDataList data) {
@@ -180,10 +201,31 @@ public final class ProducerCensus {
                 MeshData mesh = (MeshData) RigidModelProbe.field(entry, "mesh");
                 r.persistentDraws++;
                 r.persistentVertices += mesh.drawState().vertexCount();
+                if (directSource(entry)) {
+                    r.directSourceDraws++;
+                    r.directSourceVertices += mesh.drawState().vertexCount();
+                }
             } catch (ReflectiveOperationException failure) {
                 throw new IllegalStateException("Rigid census contract", failure);
             }
         }
+    }
+
+    private static boolean directSource(Object entry) throws ReflectiveOperationException {
+        String name = entry.getClass().getName();
+        if (name.equals("com.radiance.client.vertex.PartModelCapture$Entry")
+                || name.equals("com.radiance.client.vertex.PaintingModelCapture$Entry"))
+            return true;
+        try {
+            var type = Class.forName("com.radiance.client.vertex.BakedModelTakeover");
+            var versions = type.getDeclaredField("VERSIONS");
+            versions.setAccessible(true);
+            for (Object version : (List<?>) versions.get(null))
+                if (RigidModelProbe.field(version, "geometry") == entry) return true;
+        } catch (ClassNotFoundException absentInFrozenBaseline) {
+            // The baseline can reuse a legacy recipe cache. That is not source-intent takeover.
+        }
+        return false;
     }
 
     public static Scope providerFaces(Object provider) {
@@ -213,15 +255,15 @@ public final class ProducerCensus {
         Row r = face;
         r.faceCalls++;
         if (r.layers.size() < LIMIT) r.layers.add(layer);
-        long start = System.nanoTime();
+        long start = countsOnly ? 0 : System.nanoTime();
         return () -> {
-            r.faceNs += System.nanoTime() - start;
+            if (!countsOnly) r.faceNs += System.nanoTime() - start;
             face = previous;
         };
     }
 
     public static Scope phase(int index) {
-        if (!enabled() || face == null) return null;
+        if (!enabled() || face == null || countsOnly) return null;
         Row r = face;
         long start = System.nanoTime();
         return () -> r.phaseNs[index] += System.nanoTime() - start;
@@ -232,7 +274,7 @@ public final class ProducerCensus {
         active = false;
         StringBuilder csv =
                 new StringBuilder(
-                        "producer,frames,renderer_calls,renderer_inclusive_ns,renderer_self_ns,model_calls,model_unique,model_ns,geometries,vertices,generated_bytes,submitted_geometries,entity_inputs,blas_candidates,face_calls,unique_layers,face_ns,setup_ns,clear_ns,backup_ns,restore_ns,consumer_classes,persistent_draws,persistent_vertices\n");
+                        "producer,frames,renderer_calls,renderer_inclusive_ns,renderer_self_ns,model_calls,model_unique,model_ns,geometries,vertices,generated_bytes,submitted_geometries,entity_inputs,blas_candidates,face_calls,unique_layers,face_ns,setup_ns,clear_ns,backup_ns,restore_ns,consumer_classes,persistent_draws,persistent_vertices,direct_source_draws,direct_source_vertices,capture_policies\n");
         for (Row r : rows.values())
             csv.append(r.name)
                     .append(',')
@@ -281,6 +323,12 @@ public final class ProducerCensus {
                     .append(r.persistentDraws)
                     .append(',')
                     .append(r.persistentVertices)
+                    .append(',')
+                    .append(r.directSourceDraws)
+                    .append(',')
+                    .append(r.directSourceVertices)
+                    .append(',')
+                    .append(String.join(";", r.capturePolicies))
                     .append('\n');
         rows.clear();
         providers.clear();
@@ -292,6 +340,7 @@ public final class ProducerCensus {
         explicitFaceOwner = null;
         Path output = directory;
         String text = csv.toString();
+        countsOnly = false;
         Thread writer =
                 new Thread(
                         () -> {
@@ -312,7 +361,7 @@ public final class ProducerCensus {
 
     static final class Timer implements AutoCloseable {
         final Timer parent = top;
-        final long start = clock.getAsLong();
+        final long start = countsOnly ? 0 : clock.getAsLong();
         long children, elapsed, self;
 
         Timer() {
@@ -320,7 +369,7 @@ public final class ProducerCensus {
         }
 
         public void close() {
-            elapsed = clock.getAsLong() - start;
+            elapsed = countsOnly ? 0 : clock.getAsLong() - start;
             self = elapsed - children;
             top = parent;
             if (parent != null) parent.children += elapsed;
@@ -347,11 +396,12 @@ public final class ProducerCensus {
                 blasCandidates,
                 faceCalls,
                 faceNs;
-        long persistentDraws, persistentVertices;
+        long persistentDraws, persistentVertices, directSourceDraws, directSourceVertices;
         final long[] phaseNs = new long[4];
         final Set<Object> parts = Collections.newSetFromMap(new IdentityHashMap<>());
         final Set<Object> layers = Collections.newSetFromMap(new IdentityHashMap<>());
         final Set<String> consumers = new TreeSet<>();
+        final Set<String> capturePolicies = new TreeSet<>();
 
         Row(String name) {
             this.name = name;

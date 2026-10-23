@@ -48,7 +48,7 @@ final class VoxyPtSession implements AutoCloseable {
     private long frames;
     private final AtomicLong generations = new AtomicLong();
     private Set<Long> previousCut = Set.of();
-    private Set<Long> previousRoots = Set.of();
+    private VoxyRootCoverage previousRoots;
     private boolean budgetReported;
     private boolean nativeBudgetReported;
 
@@ -213,8 +213,12 @@ final class VoxyPtSession implements AutoCloseable {
                 try {
                     long before = stableRevision();
                     var section = world.acquireIfExists(node.key);
-                    if (section == null)
+                    if (section == null) {
+                        // Unknown requests are not resident meshes. Never retire a valid old
+                        // version when storage is temporarily unavailable.
+                        if (!node.ready) nodes.remove(node.key, node);
                         continue; // Unknown storage data is never published as empty.
+                    }
                     try {
                         synchronized (modelLock) {
                             mesh = mesher.generateMesh(section);
@@ -316,39 +320,42 @@ final class VoxyPtSession implements AutoCloseable {
             }
         }
         Set<Long> cut = new HashSet<>();
-        Set<Long> roots = new HashSet<>();
         var minecraft = Minecraft.getInstance();
         var camera = minecraft.gameRenderer.getMainCamera().getPosition();
         double distance = VoxyConfig.CONFIG.sectionRenderDistance * 512.0;
-        if (!Double.isFinite(distance) || distance <= 0 || distance > 32768)
-            throw new IllegalArgumentException(
-                    "Voxy PT distance outside supported source range (0, 32768]");
-        int minX = Math.floorDiv((int) Math.floor(camera.x - distance), 512);
-        int maxX = Math.floorDiv((int) Math.floor(camera.x + distance), 512);
-        int minZ = Math.floorDiv((int) Math.floor(camera.z - distance), 512);
-        int maxZ = Math.floorDiv((int) Math.floor(camera.z + distance), 512);
-        int minY = Math.floorDiv(level.getMinBuildHeight(), 512);
-        int maxY = Math.floorDiv(level.getMaxBuildHeight() - 1, 512);
+        var roots =
+                VoxyRootCoverage.create(
+                        camera.x,
+                        camera.z,
+                        distance,
+                        level.getMinBuildHeight(),
+                        level.getMaxBuildHeight());
         double pixels =
                 minecraft.getWindow().getHeight()
                         / (2 * Math.tan(Math.toRadians(minecraft.options.fov().get()) * 0.5));
-        for (int x = minX; x <= maxX; x++)
-            for (int z = minZ; z <= maxZ; z++) {
-                double dx = Math.max(0, Math.abs(x * 512.0 + 256 - camera.x) - 256);
-                double dz = Math.max(0, Math.abs(z * 512.0 + 256 - camera.z) - 256);
-                if (dx * dx + dz * dz > distance * distance) continue;
-                for (int y = minY; y <= maxY; y++) {
-                    roots.add(WorldEngine.getWorldSectionId(4, x, y, z));
-                    choose(4, x, y, z, camera.x, camera.y, camera.z, pixels, cut);
-                }
-            }
+        roots.visitNearFirst(
+                camera.x,
+                camera.z,
+                (x, z) -> {
+                    for (int y = roots.minY; y <= roots.maxY; y++) {
+                        choose(4, x, y, z, camera.x, camera.y, camera.z, pixels, cut);
+                    }
+                });
         if (!cut.equals(previousCut) || !roots.equals(previousRoots)) {
+            if (previousRoots == null)
+                LOGGER.info(
+                        "Voxy PT requested domain: roots={} rows={} residentBudget={}",
+                        roots.rootCount(),
+                        roots.rows().length / 3,
+                        MAX_NODES);
             VoxyNative.select(
                     epoch,
                     cut.stream().mapToLong(Long::longValue).toArray(),
-                    roots.stream().mapToLong(Long::longValue).toArray());
+                    roots.rows(),
+                    roots.minY,
+                    roots.maxY);
             previousCut = Set.copyOf(cut);
-            previousRoots = Set.copyOf(roots);
+            previousRoots = roots;
         }
         if (frames % 60 == 0
                 && nodes.values()

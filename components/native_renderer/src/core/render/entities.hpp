@@ -6,6 +6,7 @@
 #include "core/render/entity_conversion.hpp"
 #include "core/render/rigid_build_lifecycle.hpp"
 #include "core/render/rigid_instances.hpp"
+#include "core/render/rigid_geometry.hpp"
 #include "core/render/material_faces.hpp"
 #include "core/render/hit_groups.hpp"
 #include "core/render/cpu_preparation_batch.hpp"
@@ -72,6 +73,7 @@ struct EntitiesBuildTask {
     bool directEntityInput = false;
     const std::byte *geometryLineStyles = nullptr;
     const glm::vec4 *geometryDrawColours = nullptr;
+    bool localModelResource = false;
 };
 
 struct WorldMeshBuildTask {
@@ -280,9 +282,15 @@ struct EntityPostBatch : public SharedObject<EntityPostBatch> {
 
 // One resident local model: shared buffers/BLAS plus the scene metadata every instance repeats.
 struct RigidModelResource {
+    std::shared_ptr<const mcvr::RigidGeometryContent> geometryContent;
+    std::shared_ptr<RigidModelResource> geometryOwner;
+    RigidModelResource &geometryResource() {
+        return geometryOwner ? *geometryOwner : *this;
+    }
     std::shared_ptr<EntityBatch> batch;
     std::shared_ptr<EntityBuildDataBatch> build;
     uint64_t world = 0, generation = 0, used = 0;
+    size_t residentBytes = 0;
     mcvr::RigidBuildLifecycle lifecycle;
     // Immutable after creation; derived once from the single converted geometry.
     std::shared_ptr<vk::BLAS> blas;
@@ -291,6 +299,15 @@ struct RigidModelResource {
     mcvr::faces::ModelRules faces{std::span<const uint32_t>{}};
     VkDeviceAddress indexAddress = 0, positionAddress = 0, materialAddress = 0;
     uint32_t vertexCount = 0, indexCount = 0;
+    // One BLAS can contain the declared base/coating components left after local composition.
+    // The batch owns their buffers and layer records for all in-flight placements.
+    struct Geometry {
+        mcvr::hitgroups::Id group;
+        uint32_t flags, vertexCount, indexCount;
+        VkDeviceAddress index, position, material, surfaceLayers;
+        glm::vec4 colour, eyeColour;
+    };
+    std::vector<Geometry> geometries;
 };
 
 // Per-frame placement of a resident model. The batch owns the models; instances borrow them.
@@ -321,7 +338,8 @@ class Entities : public SharedObject<Entities> {
     void queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
                           size_t count,
                           const char *const *groups,
-                          size_t groupCount);
+                          size_t groupCount,
+                          std::span<const mcvr::rigid::ModelBinding> bindings = {});
     std::shared_ptr<RigidInstanceBatch> rigidInstanceBatch();
     void recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &commands);
     void commitRigidModels();
@@ -355,8 +373,11 @@ class Entities : public SharedObject<Entities> {
   private:
     std::unique_ptr<mcvr::CpuPreparationBatch> cpuPreparation_;
     std::shared_ptr<RigidModelResource> residentRigidModel(const mcvr::rigid::SubmissionRecord &record,
-                                                           const char *group);
+                                                           const char *const *groups,
+                                                           std::span<const mcvr::rigid::ModelBinding> bindings);
     std::unordered_map<uint64_t, std::shared_ptr<RigidModelResource>> rigidModels_;
+    std::unordered_multimap<uint64_t, std::weak_ptr<RigidModelResource>> rigidGeometries_;
+    size_t rigidModelBytes_ = 0;
     std::vector<RigidInstance> rigidInstances_;
     std::vector<std::shared_ptr<RigidModelResource>> rigidUsed_;
     std::shared_ptr<RigidInstanceBatch> rigidBatch_;

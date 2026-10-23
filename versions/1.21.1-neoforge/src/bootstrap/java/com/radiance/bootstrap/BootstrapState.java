@@ -4,6 +4,22 @@ import java.nio.file.Path;
 
 /** Public, loader-neutral bridge from the GAME module to the SERVICE bootstrap. */
 public final class BootstrapState {
+    private static final boolean DRAWING_AUDIT = Boolean.getBoolean("radiance.audit.drawingCensus");
+    private static long drawingRequests, drawingConsumers;
+
+    static synchronized void drawingRequest() {
+        if (DRAWING_AUDIT) drawingRequests++;
+    }
+
+    static synchronized void drawingConsumed() {
+        if (DRAWING_AUDIT) drawingConsumers++;
+    }
+
+    /** SERVICE is created before the GAME observer can attach. Counts include that interval. */
+    public static synchronized long[] drawingCounts() {
+        return new long[] {drawingRequests, drawingConsumers};
+    }
+
     private static volatile RadianceImmediateWindowProvider provider;
 
     private BootstrapState() {}

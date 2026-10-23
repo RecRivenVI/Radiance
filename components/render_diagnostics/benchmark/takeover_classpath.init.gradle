@@ -1,0 +1,15 @@
+// Read the same late-bound classpath that ModDevGradle installs in RunGameTask.exec().
+gradle.projectsEvaluated {
+    def reference = rootProject.findProject(':version:1.21.1-neoforge')
+    if (reference == null) return
+    rootProject.tasks.register('dumpTakeoverLaunchClasspath') {
+        doLast {
+            def launch = reference.tasks.named('runPackagedClient', JavaExec).get()
+            def output = rootProject.layout.buildDirectory.file('takeover-stages/packaged-launch-classpath.json').get().asFile
+            output.parentFile.mkdirs()
+            output.text = groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([
+                task: launch.path, files: launch.classpathProvider.files.collect { it.absolutePath }
+            ])) + '\n'
+        }
+    }
+}

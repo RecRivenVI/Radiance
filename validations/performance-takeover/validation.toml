@@ -1,0 +1,16 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+
+[comparison]
+baseline = "components/render_diagnostics/build/takeover-baseline/radiance.jar"
+warmup-seconds = 30
+sample-seconds = 20
+order = ["baseline", "candidate", "candidate", "baseline"]
+
+[instances.client]
+memory-max = "4G"
+width = 1920
+height = 1080
+mods = []
+jvm-args = ["-Dradiance.audit.experiments=true", "-Dradiance.audit.takeoverStages=true", "-Dradiance.audit.takeoverPerformance=true", "-Dradiance.audit.benchmark=true", "-Dradiance.audit.benchmark.version=1.21.1-neoforge", "-Dradiance.audit.unattended=true", "-javaagent:../../../../../components/render_diagnostics/build/benchmark-support/radiance-benchmark-agent.jar"]
+game-args = ["--quickPlaySingleplayer", "Audit Benchmark"]

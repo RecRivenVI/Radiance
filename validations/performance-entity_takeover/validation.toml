@@ -1,0 +1,20 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+
+[comparison]
+fixture = "validations/migration-city_world/result/vanilla-city-fixture.zip"
+baseline = "components/render_diagnostics/build/takeover-baseline/radiance.jar"
+baseline-sha256 = "47f3cda39b061cef4706d1d7f8f24a609ab98354a2109cca5daf761db0527b1a"
+stage2 = "components/render_diagnostics/build/takeover-candidate/radiance-1.21.1-neoforge-0.1.5-alpha.jar"
+stage2-sha256 = "03439c84058c273b7d42a3e2abe067ee10df11f59ffc179fe3493c4fb17f0a8f"
+warmup-seconds = 60
+sample-seconds = 60
+order = ["A", "B", "C", "C", "B", "A"]
+
+[instances.client]
+memory-max = "8G"
+width = 1920
+height = 1080
+player-name = "RecRivenVI"
+mods = []
+jvm-args = ["-Dradiance.audit.experiments=true", "-Dradiance.audit.entityTakeover=true", "-Dradiance.audit.cityComparison=true", "-Dradiance.audit.cityProfilePlan=takeover", "-Dradiance.audit.cityProfileSeconds=60", "-Dradiance.audit.correctnessOnly=true", "-Dradiance.audit.benchmark=true", "-Dradiance.audit.benchmark.version=1.21.1-neoforge", "-Dradiance.audit.unattended=true", "-Dradiance.audit.nativePerformance=true"]

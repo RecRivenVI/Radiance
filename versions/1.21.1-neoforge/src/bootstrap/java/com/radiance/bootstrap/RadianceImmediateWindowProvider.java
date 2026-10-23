@@ -578,6 +578,7 @@ public final class RadianceImmediateWindowProvider implements ImmediateWindowPro
             float opacity,
             boolean gameFrame,
             boolean paintBackground) {
+        BootstrapState.drawingRequest();
         NativeRuntime.renderFrame(
                 frame.vertices(),
                 frame.batches(),
@@ -590,6 +591,7 @@ public final class RadianceImmediateWindowProvider implements ImmediateWindowPro
                 opacity,
                 gameFrame,
                 paintBackground);
+        BootstrapState.drawingConsumed();
     }
 
     @Override

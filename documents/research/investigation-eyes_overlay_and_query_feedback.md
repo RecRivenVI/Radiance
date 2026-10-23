@@ -6,7 +6,7 @@
 
 原版的眼睛覆盖层如何产生，是否本来会照亮模型内部；当前向内照明与已接受的物理发光／双面传光规则有什么关系。其他验收失败按事实登记，浮空水晶相关崩溃留待后续，不把假设写成根因。
 
-最新安装 JAR 再核对为 `FB3908DB0B83BE9BD71D6DC7FFB3538116D07DEB0D7359E1EBA6682F4030A8CD`。其构建及内嵌身份沿[修复记录](experiment-companion_surface_repair.md)，本次未重新证明运行时 DLL 的加载身份。完整反馈由[现状](../project/status-current.md#本轮合并手工验收反馈)与[验收表](../development/testing-render_unification.md#2026-10-17-手工反馈)维护。
+最新安装 JAR 再核对为 `FB3908DB0B83BE9BD71D6DC7FFB3538116D07DEB0D7359E1EBA6682F4030A8CD`。其构建及内嵌身份沿[修复记录](experiment-companion_surface_repair.md)，本次未重新证明运行时 DLL 的加载身份。完整反馈由[现状](../project/phase-1-before_vanilla_closeout.md#本轮合并手工验收反馈)与[验收表](../development/testing-render_unification.md#2026-10-17-手工反馈)维护。
 
 ## 方法
 

@@ -176,7 +176,25 @@ class CapturedDrawBoundaryTest {
         var provider = new Provider();
         try {
             // This test exercises ownership transfer before native submission.
-            var draw = new RigidModelCapture.Draw(null, new org.joml.Matrix4f(), 41, 0);
+            var geometry =
+                    new RigidModelCapture.Geometry() {
+                        public long id() {
+                            return 1;
+                        }
+
+                        public net.minecraft.client.renderer.RenderType layer() {
+                            return null;
+                        }
+
+                        public com.radiance.client.texture.TextureTasks.Owner texture() {
+                            return null;
+                        }
+
+                        public com.mojang.blaze3d.vertex.MeshData mesh() {
+                            return null;
+                        }
+                    };
+            var draw = new RigidModelCapture.Draw(geometry, new org.joml.Matrix4f(), 41, 0);
             provider.rigidDraws.add(draw);
             assertTrue(provider.hasCapturedRigidModels());
             var data = new EntityProxy.EntityRenderDataList();

@@ -29,7 +29,50 @@ public final class AuditMixinPlugin implements IMixinConfigPlugin {
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
         if (!com.radiance.audit.AuditConfiguration.enabled()) return false;
         String name = mixinClassName.substring(mixinClassName.lastIndexOf('.') + 1);
+        if (name.startsWith("InstanceCensusMixins$")
+                && !Boolean.getBoolean("radiance.audit.instanceCensus")) return false;
+        if (name.equals("ReplacementInputComparisonMixin")
+                && !Boolean.getBoolean("radiance.audit.rendererReplacement")) return false;
+        // These observers modify ModelPart/ItemRenderer/ModelBlockRenderer and correctly make
+        // the product reject direct takeover. Performance attribution must retain normal inputs.
+        if (Boolean.getBoolean("radiance.audit.vanillaPerformance")
+                && (name.startsWith("ProfileProducer")
+                        || Set.of("LevelRendererAccessor", "ProfileLevelSetupMixin")
+                                .contains(name))) return false;
+        if (Boolean.getBoolean("radiance.audit.drawingCensus") && name.startsWith("Profile"))
+            return false;
+        if (Boolean.getBoolean("radiance.audit.drawingCensus")
+                && name.equals("LevelRendererAccessor")) return false;
+        if (name.equals("TakeoverParticleComparisonMixin")
+                && !Boolean.getBoolean("radiance.audit.particleVerify")) return false;
         boolean radiance = classExists("com.radiance.client.proxy.vulkan.RendererProxy");
+        if (name.equals("UnregisteredPartMutationMixin")
+                && (!radiance || !Boolean.getBoolean("radiance.audit.unregisteredSource")))
+            return false;
+        if (name.equals("ProfileProducerModelMixin")
+                && Boolean.getBoolean("radiance.audit.entityTakeover")) return false;
+        if (name.equals("TakeoverPartComparisonMixin")
+                && (!radiance
+                        || !Boolean.getBoolean("radiance.audit.entityTakeover")
+                        || !Boolean.getBoolean("radiance.audit.partVerify"))) return false;
+        // This sample has only FRAME_ONLY/TIMED windows. Do not weave dormant producer
+        // census wrappers into the source methods whose independence it is validating.
+        if ((Boolean.getBoolean("radiance.audit.takeoverStages")
+                        || Boolean.getBoolean("radiance.audit.entityTakeover"))
+                && Set.of("ProfileProducerItemMixin", "ProfileProducerBakedMixin").contains(name))
+            return false;
+        if (name.equals("TakeoverBakedComparisonMixin")
+                && (!radiance
+                        || !Boolean.getBoolean("radiance.audit.takeoverCompare")
+                        || !classExists("com.radiance.client.vertex.BakedModelTakeover")))
+            return false;
+        if (name.equals("TakeoverFlywheelSourceMixin")
+                && (!radiance
+                        || !classExists("dev.engine_room.flywheel.api.backend.Engine")
+                        || !"1"
+                                .equals(
+                                        com.radiance.audit.ExperimentAccess.getenv(
+                                                "RADIANCE_TAKEOVER_SOURCES")))) return false;
         if (Set.of(
                                 "FontProviderLifetimeMixin",
                                 "FontImageLifetimeMixin",

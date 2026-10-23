@@ -14,7 +14,7 @@ public final class VoxyNative {
     public static native boolean section(
             long epoch, long key, long revision, long quads, int quadCount);
 
-    public static native void select(long epoch, long[] keys, long[] roots);
+    public static native void select(long epoch, long[] keys, int[] rootRows, int minY, int maxY);
 
     public static native void retain(long epoch, long[] keys);
 

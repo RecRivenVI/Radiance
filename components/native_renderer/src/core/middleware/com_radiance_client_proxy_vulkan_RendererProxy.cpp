@@ -405,6 +405,22 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_c
     return recorded;
 }
 
+JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_setGuiDrawRole(JNIEnv *env,
+                                                                                          jclass,
+                                                                                          jint role) {
+    jint previous = 0;
+    jni::invokeVoid(env, "GUI draw role", [&] {
+        if (role < 0 || role > 2) throw std::invalid_argument("Unknown GUI draw role");
+        auto framework = Renderer::instance().framework();
+        if (!framework || !framework->isRunning()) return;
+        auto context = framework->safeAcquireCurrentContext();
+        if (!context) return;
+        previous = static_cast<jint>(context->fgGuiRole);
+        context->fgGuiRole = static_cast<mcvr::ui::GuiRole>(role);
+    });
+    return previous;
+}
+
 JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_postBlur(JNIEnv *env, jclass) {
     jboolean recorded = JNI_FALSE;
     jni::invokeVoid(env, "Post blur", [&] {
@@ -414,6 +430,9 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_p
         if (context == nullptr) return;
         auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
         if (pipelineContext != nullptr && pipelineContext->uiModuleContext != nullptr) {
+            // This entry is the full-screen Screen background blur, not an
+            // arbitrary off-screen filter. Its menu frame must not generate.
+            context->fgGui.fullScreenBlur = true;
             pipelineContext->uiModuleContext->postBlur(6);
             recorded = JNI_TRUE;
         }
@@ -562,12 +581,16 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_endRe
     });
 }
 
-JNIEXPORT void JNICALL
-Java_com_radiance_client_proxy_vulkan_RendererProxy_shouldRenderWorld(JNIEnv *env, jclass, jboolean shouldRenderWorld) {
+JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_shouldRenderWorld(
+    JNIEnv *env, jclass, jboolean shouldRenderWorld, jboolean allowFrameGeneration) {
     jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.shouldRenderWorld", [&] {
         auto world = Renderer::instance().world();
         if (world == nullptr) return;
         world->shouldRender() = shouldRenderWorld;
+        if (shouldRenderWorld) {
+            auto context = Renderer::instance().framework()->safeAcquireCurrentContext();
+            if (context) context->fgGameFrame = allowFrameGeneration;
+        }
     });
 }
 

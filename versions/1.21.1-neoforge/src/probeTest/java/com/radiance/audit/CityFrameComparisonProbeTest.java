@@ -15,6 +15,17 @@ class CityFrameComparisonProbeTest {
         assertArrayEquals(
                 new ProfileMode[] {ProfileMode.TIMED},
                 CityFrameComparisonProbe.captureModes("standard"));
+        assertArrayEquals(
+                new ProfileMode[] {ProfileMode.FRAME_ONLY, ProfileMode.TIMED},
+                CityFrameComparisonProbe.captureModes("takeover"));
+        assertArrayEquals(
+                new ProfileMode[] {ProfileMode.FRAME_ONLY, ProfileMode.TIMED, ProfileMode.JFR_ONLY},
+                CityFrameComparisonProbe.captureModes("vanilla"));
+        assertEquals(0, ProfileMode.JFR_ONLY.nativeFlags);
+        assertFalse(ProfileMode.JFR_ONLY.captures(FrameTimings.Stage.ENTITIES));
+        assertArrayEquals(
+                new ProfileMode[] {ProfileMode.PRODUCERS},
+                CityFrameComparisonProbe.captureModes("producers"));
         var calibration = CityFrameComparisonProbe.captureModes("calibration");
         assertEquals(6, calibration.length);
         assertEquals(

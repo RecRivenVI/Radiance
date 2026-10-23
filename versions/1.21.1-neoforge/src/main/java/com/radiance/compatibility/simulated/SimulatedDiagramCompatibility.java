@@ -1,7 +1,6 @@
 package com.radiance.compatibility.simulated;
 
 import com.mojang.blaze3d.vertex.VertexBuffer;
-import com.radiance.client.proxy.vulkan.FramebufferProxy;
 import com.radiance.client.render.RenderCaptureContract;
 import com.radiance.compatibility.veil.VeilAdapter;
 import com.radiance.render.contract.DrawTargetContract;
@@ -107,7 +106,7 @@ public final class SimulatedDiagramCompatibility {
                 recovery.run(
                         () -> {
                             VeilAdapter.bindFramebufferRead(target);
-                            FramebufferProxy.readPixels(
+                            com.radiance.client.render.AttachmentOperations.readPixels(
                                     0,
                                     0,
                                     width,

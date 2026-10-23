@@ -16,19 +16,33 @@ public class DrawCommandProxy {
 
         // region <openGL>
         public static void glClear(int mask) {
-            if ((mask & GL11.GL_COLOR_BUFFER_BIT) > 0) {
-                vkCmdClearEntireColorAttachment();
-            }
+            if ((mask
+                            & (GL11.GL_COLOR_BUFFER_BIT
+                                    | GL11.GL_DEPTH_BUFFER_BIT
+                                    | GL11.GL_STENCIL_BUFFER_BIT))
+                    == 0) return;
+            try (var request =
+                    com.radiance.api.audit.DrawingAudit.begin(
+                            "ATTACHMENT",
+                            "GlStateManager.clear",
+                            "VULKAN_RASTER",
+                            "BOUND_DRAW_ATTACHMENT")) {
+                if ((mask & GL11.GL_COLOR_BUFFER_BIT) > 0) {
+                    vkCmdClearEntireColorAttachment();
+                }
 
-            int vkMask = 0;
-            if ((mask & GL11.GL_DEPTH_BUFFER_BIT) > 0) {
-                vkMask |= VulkanConstants.VkImageAspectFlagBits.ofGL(GL11.GL_DEPTH_BUFFER_BIT);
-            }
-            if ((mask & GL11.GL_STENCIL_BUFFER_BIT) > 0) {
-                vkMask |= VulkanConstants.VkImageAspectFlagBits.ofGL(GL11.GL_STENCIL_BUFFER_BIT);
-            }
-            if (vkMask > 0) {
-                vkCmdClearEntireDepthStencilAttachment(vkMask);
+                int vkMask = 0;
+                if ((mask & GL11.GL_DEPTH_BUFFER_BIT) > 0) {
+                    vkMask |= VulkanConstants.VkImageAspectFlagBits.ofGL(GL11.GL_DEPTH_BUFFER_BIT);
+                }
+                if ((mask & GL11.GL_STENCIL_BUFFER_BIT) > 0) {
+                    vkMask |=
+                            VulkanConstants.VkImageAspectFlagBits.ofGL(GL11.GL_STENCIL_BUFFER_BIT);
+                }
+                if (vkMask > 0) {
+                    vkCmdClearEntireDepthStencilAttachment(vkMask);
+                }
+                com.radiance.api.audit.DrawingAudit.consumed("native.attachment.clear");
             }
         }
         // endregion

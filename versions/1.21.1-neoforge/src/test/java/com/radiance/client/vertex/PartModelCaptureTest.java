@@ -4,12 +4,120 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.mojang.blaze3d.vertex.*;
 import java.util.*;
+import net.minecraft.SharedConstants;
 import net.minecraft.client.model.geom.ModelPart;
+import net.minecraft.client.renderer.RenderType;
 import net.minecraft.core.Direction;
+import net.minecraft.server.Bootstrap;
+import net.neoforged.fml.loading.LoadingModList;
 import org.joml.Quaternionf;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 class PartModelCaptureTest {
+    private static RenderType layer;
+
+    @BeforeAll
+    static void bootstrap() {
+        SharedConstants.tryDetectVersion();
+        LoadingModList.of(List.of(), List.of(), List.of(), List.of(), Map.of());
+        Bootstrap.bootStrap();
+        layer =
+                new RenderType(
+                        "resident_parts_test",
+                        PBRVertexFormats.PBR_TRIANGLE,
+                        VertexFormat.Mode.QUADS,
+                        256,
+                        false,
+                        false,
+                        () -> {},
+                        () -> {}) {};
+    }
+
+    @AfterEach
+    void clearResources() {
+        PartModelCapture.invalidate();
+    }
+
+    @Test
+    void smallLiveAppearanceVersionsAreNotRejectedAt512AndRemainImmutable() {
+        PartModelCapture.beginFrame(this, 1);
+        var snapshot = PartModelCapture.Snapshot.read(List.of(cube(false)));
+        var texture = new com.radiance.client.texture.TextureTasks.Owner(1, 1);
+        var policy = com.radiance.render.contract.SurfaceMaterial.ordinaryPolicy(0);
+        var entries = new ArrayList<PartModelCapture.Entry>();
+        for (int i = 0; i < 700; i++) {
+            var entry =
+                    PartModelCapture.localVersion(snapshot, layer, texture, null, policy, i, 0, -1);
+            assertNotNull(entry, "Live appearance version " + i);
+            entries.add(entry);
+        }
+        assertEquals(700, PartModelCapture.counters()[4]);
+        PartModelCapture.beginFrame(this, 1);
+        for (int i = 0; i < entries.size(); i++) {
+            assertSame(
+                    entries.get(i),
+                    PartModelCapture.localVersion(
+                            snapshot, layer, texture, null, policy, i, 0, -1));
+            assertEquals(24 * 128, entries.get(i).mesh().vertexBuffer().remaining());
+        }
+        var replacement =
+                PartModelCapture.localVersion(
+                        snapshot,
+                        layer,
+                        new com.radiance.client.texture.TextureTasks.Owner(1, 2),
+                        null,
+                        policy,
+                        0,
+                        0,
+                        -1);
+        assertNotSame(entries.getFirst(), replacement, "Reused texture ID has a new generation");
+        assertEquals(24 * 128, entries.getFirst().mesh().vertexBuffer().remaining());
+    }
+
+    @Test
+    void bytePressureRetainsQueuedVersionsThenEvictsOnlyInALaterFrame() {
+        PartModelCapture.beginFrame(this, 1);
+        var source = PartModelCapture.Snapshot.read(List.of(cube(false)));
+        var texture = new com.radiance.client.texture.TextureTasks.Owner(1, 1);
+        var policy = com.radiance.render.contract.SurfaceMaterial.ordinaryPolicy(0);
+        var original =
+                PartModelCapture.localVersion(source, layer, texture, null, policy, 0, 0, -1);
+        var full = new PartModelCapture.Snapshot(new float[32768 * 23], null);
+        assertNull(PartModelCapture.localVersion(full, layer, texture, null, policy, 0, 0, -1));
+        assertSame(
+                original,
+                PartModelCapture.localVersion(source, layer, texture, null, policy, 0, 0, -1));
+        assertEquals(24 * 128, original.mesh().vertexBuffer().remaining());
+        PartModelCapture.beginFrame(this, 1);
+        assertNotNull(PartModelCapture.localVersion(full, layer, texture, null, policy, 0, 0, -1));
+        assertEquals(16 * 1024 * 1024, PartModelCapture.counters()[6]);
+        assertEquals(1, PartModelCapture.counters()[4]);
+        PartModelCapture.invalidate();
+        assertEquals(0, PartModelCapture.counters()[6]);
+    }
+
+    @Test
+    void declaredLocalStructureDetectsReplacementAndOrderWithoutExpandingVerticesAgain() {
+        var first = cube(false);
+        var second = cube(true);
+        var source = new ArrayList<>(List.of(first, second));
+        var snapshot = PartModelCapture.Snapshot.read(source);
+        assertTrue(snapshot.matchesStructure(source));
+        assertEquals(snapshot.data.length * 4L, PartModelCapture.Snapshot.requiredBytes(source));
+        source.set(0, cube(false));
+        assertFalse(snapshot.matchesStructure(source));
+        source.set(0, first);
+        Collections.swap(source, 0, 1);
+        assertFalse(snapshot.matchesStructure(source));
+        source.clear();
+        assertFalse(snapshot.matchesStructure(source));
+        assertNotEquals(
+                PartModelCapture.historyIdentity(1, 2, 0),
+                PartModelCapture.historyIdentity(1, 2, 0) | (1L << 62));
+    }
+
     @Test
     void ordinaryProvidersAllocateNoPartMapsAndCloseDropsExperimentState() {
         var ordinary = new StorageVertexConsumerProvider(0);
@@ -41,7 +149,9 @@ class PartModelCaptureTest {
         for (int i = 0; i < 63; i++) assertNotNull(source.identity(new Object(), 1));
         assertNull(source.identity(new Object(), 2));
         assertSame(identity, source.identity(first, 100));
-        source.snapshot = PartModelCapture.Snapshot.read(List.of(cube(true)));
+        var replacement =
+                new PartModelCapture.Source(PartModelCapture.Snapshot.read(List.of(cube(true))));
+        assertNotEquals(identity.id, replacement.identity(first, 101).id);
         assertSame(identity, source.identity(first, 101));
         assertNotNull(source.identity(new Object(), 122));
         assertEquals(2, source.layers.size());
@@ -143,38 +253,36 @@ class PartModelCaptureTest {
     }
 
     @Test
-    void mutableGeometryInvalidatesWithoutChangingQueuedSnapshot() {
+    void laterSourceMutationCannotChangeAnAlreadyQueuedImmutableSnapshot() {
         var cube = cube(false);
         var list = new ArrayList<>(List.of(cube));
         var snapshot = PartModelCapture.Snapshot.read(list);
         Sink before = new Sink();
         snapshot.emit(before, new PoseStack().last(), 1, 2, 3);
-        assertTrue(snapshot.matches(list));
         cube.polygons[0].vertices[0].pos.x += .25f;
-        assertFalse(snapshot.matches(list));
         Sink after = new Sink();
         snapshot.emit(after, new PoseStack().last(), 1, 2, 3);
         for (int i = 0; i < before.vertices.size(); i++)
             assertArrayEquals(before.vertices.get(i), after.vertices.get(i));
         var changed = PartModelCapture.Snapshot.read(list);
-        assertTrue(changed.matches(list));
+        assertFalse(Arrays.equals(snapshot.data, changed.data));
         list.add(cube(true));
-        assertFalse(changed.matches(list));
+        assertFalse(changed.matchesStructure(list));
         list.clear();
-        assertFalse(changed.matches(list));
+        assertFalse(changed.matchesStructure(list));
     }
 
     @Test
-    void sourceNormalAndUvChangesAreNotAssumedStatic() {
+    void newSnapshotsCaptureSourceNormalsAndUvAndRejectNonfiniteData() {
         var cube = cube(false);
         var source = List.of(cube);
         var snapshot = PartModelCapture.Snapshot.read(source);
         cube.polygons[0].normal.x += .5f;
-        assertFalse(snapshot.matches(source));
+        assertFalse(Arrays.equals(snapshot.data, PartModelCapture.Snapshot.read(source).data));
         snapshot = PartModelCapture.Snapshot.read(source);
         var v = cube.polygons[0].vertices[0];
         cube.polygons[0].vertices[0] = v.remap(.7f, .3f);
-        assertFalse(snapshot.matches(source));
+        assertFalse(Arrays.equals(snapshot.data, PartModelCapture.Snapshot.read(source).data));
         cube.polygons[0].normal.x = Float.NaN;
         assertNull(PartModelCapture.Snapshot.read(source));
     }

@@ -9,8 +9,27 @@
 #include <cstdint>
 #include <stdexcept>
 #include <vector>
+#include <span>
+#include <unordered_map>
 
 namespace mcvr::rigid {
+
+// Trace offset/stride 1/1 addresses G material records after one shared shadow
+// record. Previous transforms are indexed by instance, not by geometry.
+template <class Geometries, class Groups, class Matrices, class Matrix, class AppendGeometry>
+void appendInstanceTables(const Geometries &geometries,
+                          typename Groups::value_type shadow,
+                          Groups &groups,
+                          Matrices &matrices,
+                          const Matrix &previousTransform,
+                          AppendGeometry &&appendGeometry) {
+    groups.push_back(shadow);
+    for (const auto &geometry : geometries) {
+        groups.push_back(geometry.group);
+        appendGeometry(geometry);
+    }
+    matrices.push_back(previousTransform);
+}
 
 // One persistent-model draw, written by RigidModelCapture.Batch in native byte order. The local
 // vertex pointer is only read when the model is not resident; the transform stays per instance.
@@ -50,6 +69,45 @@ inline void validate(const SubmissionRecord &record, size_t groupCount) {
         if (!std::isfinite(value)) throw std::invalid_argument("Non-finite rigid model transform");
     if (!std::isfinite(record.x) || !std::isfinite(record.y) || !std::isfinite(record.z))
         throw std::invalid_argument("Non-finite rigid model origin");
+}
+
+// Immutable local model layers supplied with a draw. Read only on a resident-resource miss.
+// Grouping is declared by the source's model/part identity, never discovered from world vertices.
+struct ModelBinding {
+    uint64_t model, vertices;
+    uint32_t vertexCount;
+    int32_t type, texture, group;
+    float drawColour[4];
+    uint32_t ordinal, count;
+};
+static_assert(sizeof(ModelBinding) == abi::RIGID_BINDING_BYTES);
+inline void validateBindingBatch(int version, int byteCount, int count) {
+    if (version != abi::RIGID_BINDING_VERSION || byteCount < 0 || count < 0 ||
+        uint64_t(count) * sizeof(ModelBinding) > uint64_t(byteCount))
+        throw std::invalid_argument("Invalid local model binding ABI or byte range");
+}
+using BindingTable = std::unordered_map<uint64_t, std::span<const ModelBinding>>;
+
+inline BindingTable bindings(std::span<const ModelBinding> records, size_t groupCount) {
+    BindingTable result;
+    for (size_t at = 0; at < records.size();) {
+        const auto &first = records[at];
+        if (!first.model || !first.count || first.count > records.size() - at || first.ordinal)
+            throw std::invalid_argument("Invalid local model binding range");
+        const auto range = records.subspan(at, first.count);
+        for (size_t j = 0; j < range.size(); ++j) {
+            const auto &record = range[j];
+            if (record.model != first.model || record.count != first.count || record.ordinal != j || !record.vertices ||
+                !record.vertexCount || record.vertexCount > INT32_MAX || record.vertexCount % 4 || record.group < 0 ||
+                size_t(record.group) >= groupCount)
+                throw std::invalid_argument("Invalid local model binding");
+            surface::validateDrawColour(record.drawColour);
+        }
+        if (!result.emplace(first.model, range).second)
+            throw std::invalid_argument("Duplicate local model binding resource");
+        at += range.size();
+    }
+    return result;
 }
 
 // Previous-frame record for one rigid instance: the camera-relative object-to-world rows and the

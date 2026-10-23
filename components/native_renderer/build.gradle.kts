@@ -217,6 +217,7 @@ val gpuTest =
                 "-L",
                 "gpu",
                 "--output-on-failure",
+                "--stop-on-failure",
             ),
         )
     }

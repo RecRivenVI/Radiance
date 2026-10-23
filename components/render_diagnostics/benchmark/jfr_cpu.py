@@ -38,6 +38,8 @@ def summarize(events):
     cpu_baselines = []
     cpu_threads = set()
     pauses = []
+    render_groups, entity_leaves = Counter(), Counter()
+    truncated, depth = Counter(), Counter()
     for event in events:
         kind, value = event['type'], event['values']
         counts[kind] += 1
@@ -46,10 +48,25 @@ def summarize(events):
         frames = (value.get('stackTrace') or {}).get('frames', [])
         stack = [method_name(frame) for frame in frames]
         if kind in ('jdk.ExecutionSample', 'jdk.NativeMethodSample'):
+            truncated[name] += int((value.get('stackTrace') or {}).get('truncated', False))
+            depth[name] = max(depth[name], len(stack))
             leaves[name][stack[0] if stack else '<no-stack>'] += 1
             # A method appears at most once per sampled stack; recursive stacks
             # do not create additional samples. Inclusive method rows overlap.
             inclusive[name].update(set(stack))
+            if name == 'Render thread':
+                groups = (
+                    ('native-submit', 'com.radiance.client.proxy.vulkan.RendererProxy.submitCommandNative'),
+                    ('native-entity-build', 'com.radiance.client.proxy.world.EntityProxy.build'),
+                    ('native-acquire', 'com.radiance.client.proxy.vulkan.RendererProxy.acquireContextNative'),
+                    ('entity-render', 'com.radiance.client.proxy.world.EntityProxy.queueEntitiesBuild'),
+                    ('block-entity-render', 'com.radiance.client.proxy.world.EntityProxy.queueBlockEntitiesRebuild'),
+                    ('client-tick', 'net.minecraft.client.Minecraft.tick'),
+                )
+                group = next((label for label, prefix in groups if any(method.startswith(prefix) for method in stack)), 'other')
+                render_groups[group] += 1
+                if group == 'entity-render':
+                    entity_leaves[stack[0] if stack else '<no-stack>'] += 1
         elif kind == 'jdk.ObjectAllocationSample':
             identity = (thread.get('javaThreadId'), thread.get('osThreadId'))
             if identity in allocation_threads:
@@ -80,7 +97,9 @@ def summarize(events):
         elif kind == 'jdk.GCPhasePause':
             pauses.append(duration_seconds(value.get('duration', 0)) * 1000)
     return dict(eventCounts=dict(counts),
+                renderSampleGroups=dict(render_groups), entityRenderLeaves=entity_leaves.most_common(30),
                 sampledThreads={name: dict(samples=sum(rows.values()), topLeaves=rows.most_common(25),
+                                          truncatedStacks=truncated[name], maximumExportedDepth=depth[name],
                                           inclusiveMethods= inclusive[name].most_common(40)) for name, rows in leaves.items()},
                 allocationBoundarySamples=allocation_baselines,
                 allocationSamplesByClassAndLeaf=[dict(objectClass=k[0], leaf=k[1], sampleWeightBytes=v) for k, v in allocation.most_common(30)],
@@ -103,9 +122,20 @@ if __name__ == '__main__':
     parser.add_argument('recording')
     parser.add_argument('output')
     parser.add_argument('--jfr-tool', default='jfr')
+    parser.add_argument('--skip-allocation', action='store_true', help='CPU/GC/wait diagnosis without unused allocation exports')
     args = parser.parse_args()
-    output = subprocess.check_output([args.jfr_tool, 'print', '--json', '--events', EVENTS, args.recording])
-    result = summarize(json.loads(output)['recording']['events'])
+    # Deep allocation stacks make this CLI export enormous. Only execution attribution
+    # needs caller chains; allocation/wait ranking uses its documented leaf method.
+    samples = ('jdk.ExecutionSample', 'jdk.NativeMethodSample')
+    events = []
+    others = tuple(e for e in EVENTS.split(',') if e not in samples
+                   and not (args.skip_allocation and e == 'jdk.ObjectAllocationSample'))
+    for names, depth in ((samples, '128'), (others, '5')):
+        output = subprocess.check_output([args.jfr_tool, 'print', '--json', '--stack-depth', depth,
+                                          '--events', ','.join(names), args.recording], timeout=60)
+        events.extend(json.loads(output)['recording']['events'])
+    result = summarize(events)
+    result['excludedEvents'] = ['jdk.ObjectAllocationSample'] if args.skip_allocation else []
     with open(args.output, 'w', encoding='utf-8') as file:
         json.dump(result, file, indent=2)
         file.write('\n')

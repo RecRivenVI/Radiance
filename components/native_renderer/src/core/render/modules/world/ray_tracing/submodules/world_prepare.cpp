@@ -4,6 +4,7 @@
 #include "core/render/material_faces.hpp"
 #include "core/render/scene_scope.hpp"
 #include "core/render/scene_space.hpp"
+#include "core/render/instance_content.hpp"
 #include "core/render/view_frame.hpp"
 #include "core/failure_state.hpp"
 #include "core/render/modules/world/ray_tracing/submodules/world_prepare.hpp"
@@ -127,9 +128,10 @@ void WorldPrepareContext::uploadBuffer(std::vector<uint32_t> &blasOffsets,
                 data.write(std::as_writable_bytes(std::span(previous)));
             }
         }
-        // Address/history/appearance tables with dynamic ends changed every frame
-        // in the city sample. Do not duplicate those ends just to miss a cache.
-        const bool reusable = table == 0 || table == 8 || (data.prefix.empty() && data.suffix.empty());
+        // Resident models keep their addresses and appearance records across frames.
+        // Compare the actual table content, including dynamic ends; changed tables get
+        // a fresh immutable buffer, never an in-place write into an in-flight version.
+        const bool reusable = true;
         mcvr::profile::Scope selectionTime("pt.metadata.select-content");
         const auto selection = metadataTables[table].acquire(
             data,
@@ -161,14 +163,9 @@ void WorldPrepareContext::uploadBuffer(std::vector<uint32_t> &blasOffsets,
                     .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
                     .buffer = buffer,
                 };
-                if (reusable) {
-                    cmdBuffer->barriersBufferImage({barrier}, {});
-                    ++barrierGroups;
-                } else {
-                    // No table is consumed until uploadBuffer returns. Publish changing
-                    // tables together, preserving the original batched dependency boundary.
-                    pendingUploads.push_back(barrier);
-                }
+                // No table is consumed until uploadBuffer returns. Publish only the
+                // changed versions together at the existing dependency boundary.
+                pendingUploads.push_back(barrier);
             },
             [&](const auto &buffer) { framework->frameResourceRetainer().retain(buffer); }, reusable);
         if (observing)
@@ -349,9 +346,14 @@ void WorldPrepareContext::render() {
         for (const auto &entity : preparedEntityBatch->entities) geometryCapacity += entity->geometryCount;
     }
     if (preparedRigid) {
-        // Every resident rigid model is exactly one geometry.
         instanceCapacity += preparedRigid->instances.size();
-        geometryCapacity += preparedRigid->instances.size();
+        for (const auto &instance : preparedRigid->instances) geometryCapacity += instance.model->geometries.size();
+        if (mcvr::profile::enabled()) {
+            const auto multi =
+                std::count_if(preparedRigid->instances.begin(), preparedRigid->instances.end(),
+                              [](const auto &instance) { return instance.model->geometries.size() > 1; });
+            mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.multi-geometry-instances", multi, 0);
+        }
     }
     for (const auto &prepared : preparedInstances) {
         const auto &geometry = prepared.model->geometry;
@@ -391,6 +393,10 @@ void WorldPrepareContext::render() {
         worldPrepare1->previousChunkTransformBatches_.erase(viewIndex);
         worldPrepare1->previousFlywheelTransforms_.erase(viewIndex);
     }
+    auto previousTlasBuilder = std::move(tlasBuilder);
+    auto previousTlas = std::move(tlas);
+    framework->frameResourceRetainer().retain(previousTlasBuilder);
+    framework->frameResourceRetainer().retain(previousTlas);
     tlasBuilder = vk::TLASBuilder::create();
     auto &instanceBuilder = tlasBuilder->beginInstanceBuilder();
     instanceBuilder.instances.reserve(instanceCapacity);
@@ -578,26 +584,38 @@ void WorldPrepareContext::render() {
                     instance.transform, {instance.x, instance.y, instance.z}, cameraPos));
                 instanceBuilder.defineInstance(transform, blasIndex, instance.mask, blasGroupAccu,
                                                model.faces.instanceFlags(transform), model.blas);
-                hitGroups.push_back(mcvr::hitgroups::shadow);
-                hitGroups.push_back(model.groupId);
-                indexBufferAddrs.push_back(model.indexAddress);
-                positionBufferAddrs.push_back(model.positionAddress);
-                materialBufferAddrs.push_back(model.materialAddress);
-                auto appearance = identityAppearance();
-                appearance.materialFlags = model.faces.shaderFlags(model.materialFlags);
-                if (instance.drawColour != glm::vec4(1.0f)) {
-                    appearance.colorMultiply = instance.drawColour;
-                    appearance.flags |= mcvr::abi::APPEARANCE_DRAW_COLOUR;
-                }
-                instanceAppearances.push_back(appearance);
-
                 const auto last = mcvr::rigid::previous(previous ? previous->frame.find(instance.history) : nullptr,
                                                         instance.key, model.vertexCount, model.indexCount);
-                lastIndexBufferAddrs.push_back(last.indexAddress);
-                lastPositionBufferAddrs.push_back(last.positionAddress);
-                lastObjToWorldMats.push_back(glm::transpose(
+                const auto previousTransform = glm::transpose(
                     glm::mat4(glm::make_vec4(last.transform.data()), glm::make_vec4(last.transform.data() + 4),
-                              glm::make_vec4(last.transform.data() + 8), glm::vec4(0.0f, 0.0f, 0.0f, 1.0f))));
+                              glm::make_vec4(last.transform.data() + 8), glm::vec4(0, 0, 0, 1)));
+                mcvr::rigid::appendInstanceTables(
+                    model.geometries, mcvr::hitgroups::shadow, hitGroups, lastObjToWorldMats, previousTransform,
+                    [&](const auto &geometry) {
+                        indexBufferAddrs.push_back(geometry.index);
+                        positionBufferAddrs.push_back(geometry.position);
+                        materialBufferAddrs.push_back(geometry.material);
+                        auto appearance = identityAppearance();
+                        appearance.materialFlags = model.faces.shaderFlags(geometry.flags);
+                        const auto colour = geometry.colour * instance.drawColour;
+                        if (colour != glm::vec4(1)) {
+                            appearance.colorMultiply = colour;
+                            appearance.flags |= mcvr::abi::APPEARANCE_DRAW_COLOUR;
+                        }
+                        if (geometry.eyeColour != glm::vec4(1)) {
+                            appearance.colorReplace = geometry.eyeColour;
+                            appearance.flags |= mcvr::abi::APPEARANCE_EYE_COLOUR;
+                        }
+                        appearance.surfaceLayerAddressLo = uint32_t(geometry.surfaceLayers);
+                        appearance.surfaceLayerAddressHi = uint32_t(geometry.surfaceLayers >> 32);
+                        appearance.surfaceLayerPrimitiveCount = geometry.surfaceLayers ? geometry.indexCount / 3 : 0;
+                        instanceAppearances.push_back(appearance);
+                        // An immutable model identity implies the same complete local geometry set.
+                        // Retired previous batches own the addresses; a topology/material resource
+                        // replacement invalidates all primitive correspondence, not just geometry 0.
+                        lastIndexBufferAddrs.push_back(last.indexAddress ? geometry.index : 0);
+                        lastPositionBufferAddrs.push_back(last.positionAddress ? geometry.position : 0);
+                    });
 
                 mcvr::rigid::HistoryEntry entry{.history = instance.history,
                                                 .model = instance.key,
@@ -609,8 +627,8 @@ void WorldPrepareContext::render() {
                 current->frame.add(entry);
 
                 blasOffset.push_back(blasAccu);
-                blasAccu += 1;
-                blasGroupAccu += 2;
+                blasAccu += static_cast<uint32_t>(model.geometries.size());
+                blasGroupAccu += static_cast<uint32_t>(model.geometries.size()) + 1;
                 ++blasIndex;
             }
         }
@@ -976,8 +994,10 @@ void WorldPrepareContext::render() {
     }
 
     profile.next("pt.prepare.tlas-build-record");
-    if (mcvr::profile::enabled())
+    if (mcvr::profile::enabled()) {
         mcvr::profile::emit(mcvr::profile::frame, 5, "world.tlas.instances", instanceBuilder.instances.size(), 0);
+        mcvr::profile::emit(mcvr::profile::frame, 5, "world.tlas.geometries", blasAccu, 0);
+    }
     if (instanceBuilder.instances.empty()) {
         tlas = nullptr;
         for (auto &table : metadataTables) table.reset();
@@ -986,6 +1006,15 @@ void WorldPrepareContext::render() {
 
     if (scene && scene->batchTlas) {
         tlas = scene->batchTlas;
+        // The shared scene owns the recorded build. This unfinished builder is
+        // not a reusable TLAS publication on a subsequent ordinary frame.
+        tlasBuilder.reset();
+    } else if (!scene && previousTlas && previousTlasBuilder &&
+               mcvr::sameInstanceContent(instanceBuilder.instances,
+                                         previousTlasBuilder->beginInstanceBuilder().instances)) {
+        tlas = std::move(previousTlas);
+        tlasBuilder = std::move(previousTlasBuilder);
+        if (mcvr::profile::enabled()) mcvr::profile::emit(mcvr::profile::frame, 5, "world.tlas.reuse", 1, 0);
     } else {
         const auto tlasStamp = SceneRecordingScope::active() ?
                                    -1 :
@@ -996,6 +1025,7 @@ void WorldPrepareContext::render() {
                    ->allocateBuffers(physicalDevice, device, vma)
                    ->buildAndSubmit(device, worldCommandBuffer);
         context->auditGpu.end(worldCommandBuffer->vkCommandBuffer(), tlasStamp);
+        if (mcvr::profile::enabled()) mcvr::profile::emit(mcvr::profile::frame, 5, "world.tlas.build", 1, 0);
 
         if (scene) {
             scene->batchTlas = tlas;

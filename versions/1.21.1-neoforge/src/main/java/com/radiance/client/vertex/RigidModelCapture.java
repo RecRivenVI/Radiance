@@ -55,6 +55,9 @@ public final class RigidModelCapture {
         ++frame;
         PartModelCapture.beginFrame(currentLevel, seenReload);
         PaintingModelCapture.beginFrame(frame);
+        BakedModelTakeover.beginFrame(frame);
+        ParticleQuadTakeover.beginFrame(frame);
+        LocalMeshTakeover.beginFrame(frame);
         CACHE.removeIf(
                 entry -> {
                     if (frame - entry.lastUsed <= 120) return false;
@@ -71,6 +74,10 @@ public final class RigidModelCapture {
         level = null;
         PartModelCapture.invalidate();
         PaintingModelCapture.invalidate();
+        BakedModelTakeover.invalidate();
+        ParticleQuadTakeover.invalidate();
+        LocalMeshTakeover.invalidate();
+        com.radiance.client.render.StaticDrawStates.invalidatePrograms();
     }
 
     public static void render(
@@ -88,7 +95,10 @@ public final class RigidModelCapture {
             return;
         }
         PBRVertexConsumer pbr = (PBRVertexConsumer) original;
-        if (pbr.rigidOwner == null || !pbr.rigidEligible() || !uniformPose(pose)) {
+        if (pbr.rigidOwner == null
+                || !pbr.rigidOwner.rigidBakedEnabled()
+                || !pbr.rigidEligible()
+                || !uniformPose(pose)) {
             render.accept(original);
             return;
         }
@@ -409,13 +419,31 @@ public final class RigidModelCapture {
         TextureTasks.Owner texture();
 
         MeshData mesh();
+
+        default List<Binding> bindings() {
+            return List.of();
+        }
+
+        default List<TextureTasks.Owner> textures() {
+            return List.of(texture());
+        }
     }
 
-    private static final class Entry implements AutoCloseable, Geometry {
+    record Binding(
+            Geometry geometry, int type, com.radiance.render.contract.DrawStateSnapshot state) {}
+
+    static void collectTextures(
+            Geometry geometry, List<Binding> bindings, Set<TextureTasks.Owner> owners) {
+        if (bindings.isEmpty()) owners.addAll(geometry.textures());
+        else for (var binding : bindings) owners.addAll(binding.geometry.textures());
+    }
+
+    static final class Entry implements AutoCloseable, Geometry {
         final long id;
         final Object model;
         final RenderType layer;
         final TextureTasks.Owner texture;
+        final TextureTasks.Owner glintTexture;
         final List<Quad> quads;
         final ByteBufferBuilder allocator;
         final MeshData mesh;
@@ -427,16 +455,30 @@ public final class RigidModelCapture {
                 RenderType layer,
                 TextureTasks.Owner texture,
                 List<Quad> quads) {
+            this(id, model, layer, texture, quads, null, null);
+        }
+
+        Entry(
+                long id,
+                Object model,
+                RenderType layer,
+                TextureTasks.Owner texture,
+                List<Quad> quads,
+                RenderType glint,
+                TextureTasks.Owner glintTexture) {
             this.id = id;
             this.model = model;
             this.layer = layer;
             this.texture = texture;
+            this.glintTexture = glintTexture;
             this.quads = quads.stream().map(Quad::snapshot).toList();
             allocator = new ByteBufferBuilder(quads.size() * 4 * 128);
             try {
                 PBRVertexConsumer consumer = new PBRVertexConsumer(allocator, layer);
+                VertexConsumer target =
+                        glint == null ? consumer : new PBRVertexConsumer.GLint(consumer, glint);
                 PoseStack identity = new PoseStack();
-                for (Quad quad : quads) quad.emit(consumer, identity.last());
+                for (Quad quad : quads) quad.emit(target, identity.last());
                 mesh = consumer.endNullable();
             } catch (Throwable failure) {
                 allocator.close();
@@ -462,6 +504,10 @@ public final class RigidModelCapture {
             return texture;
         }
 
+        public List<TextureTasks.Owner> textures() {
+            return glintTexture == null ? List.of(texture) : List.of(texture, glintTexture);
+        }
+
         public MeshData mesh() {
             return mesh;
         }
@@ -479,15 +525,56 @@ public final class RigidModelCapture {
         private long explicitHistory;
         private VertexConsumer captureConsumer;
         private com.radiance.render.contract.DrawStateSnapshot drawState;
+        private float[] particleColour;
+        private double originX, originY, originZ;
+
+        Draw particleColour(float r, float g, float b, float a) {
+            particleColour = new float[] {r, g, b, a};
+            return this;
+        }
+
+        Draw origin(double x, double y, double z) {
+            originX = x;
+            originY = y;
+            originZ = z;
+            return this;
+        }
+
+        private final com.radiance.render.contract.TakeoverSubmission.Resource resource;
 
         Draw capturedBy(VertexConsumer consumer) {
             captureConsumer = consumer;
             return this;
         }
 
+        Draw withState(com.radiance.render.contract.DrawStateSnapshot state) {
+            drawState = state;
+            return this;
+        }
+
         public void seal(StorageVertexConsumerProvider provider) {
-            drawState = provider.drawState(captureConsumer);
+            if (captureConsumer != null) drawState = provider.drawState(captureConsumer);
+            if (particleColour != null) {
+                var s = drawState;
+                drawState =
+                        new com.radiance.render.contract.DrawStateSnapshot(
+                                s.faces(),
+                                s.lineWidth(),
+                                s.red() * particleColour[0],
+                                s.green() * particleColour[1],
+                                s.blue() * particleColour[2],
+                                s.alpha() * particleColour[3],
+                                s.uvTransform());
+            }
             captureConsumer = null;
+        }
+
+        public RenderType layer() {
+            return entry.layer();
+        }
+
+        public boolean acceptsGroup(String group) {
+            return PBRVertexConsumer.normalizeTextLayerName(entry.layer().name).equals(group);
         }
 
         Draw(Geometry entry, Matrix4f transform, long owner, int ordinal) {
@@ -495,6 +582,9 @@ public final class RigidModelCapture {
             this.transform = transform;
             this.owner = owner;
             this.ordinal = ordinal;
+            resource =
+                    new com.radiance.render.contract.TakeoverSubmission.Resource(
+                            reloadEpoch, entry.id(), 1, 1, 1);
         }
 
         Draw(Geometry entry, Matrix4f transform, long history) {
@@ -503,9 +593,9 @@ public final class RigidModelCapture {
         }
 
         public void locate(double x, double y, double z, int mask, boolean reflect, int drawCount) {
-            this.x = x;
-            this.y = y;
-            this.z = z;
+            this.x = x + originX;
+            this.y = y + originY;
+            this.z = z + originZ;
             this.mask = mask;
             this.reflect = reflect;
             this.drawCount = drawCount;
@@ -518,6 +608,18 @@ public final class RigidModelCapture {
                             drawState == null
                                     ? MaterialFaces.captureSnapshot(entry.layer())
                                     : drawState);
+            // The direct request owns this immutable resource and its actual state. Native
+            // copies the mesh on first use and retains GPU versions independently of Java.
+            var request =
+                    new com.radiance.render.contract.TakeoverSubmission.Draw(
+                            new com.radiance.render.contract.TakeoverSubmission.Instance(
+                                    owner, ordinal, resource),
+                            com.radiance.render.contract.TakeoverSubmission.Domain.WORLD,
+                            com.radiance.render.contract.TakeoverSubmission.Executor.DIRECT,
+                            com.radiance.client.render.StaticDrawStates.program(entry.layer()),
+                            snapshot,
+                            java.util.List.of());
+            snapshot = request.state();
             int faces = snapshot.faces();
             int type =
                     MaterialFaces.encode(
@@ -533,11 +635,23 @@ public final class RigidModelCapture {
                                                     .ORDINARY,
                                             false)
                                     .bits());
-            long key = (entry.id() << 32) | Integer.toUnsignedLong(type);
+            long key =
+                    (request.instance().resource().identity() << 32) | Integer.toUnsignedLong(type);
+            var bindings = entry.bindings();
+            collectTextures(entry, bindings, batch.textures);
+            if (!bindings.isEmpty()) {
+                batch.bindings.putIfAbsent(key, bindings);
+                // Each declared component owns its source colour; do not multiply the base
+                // draw colour into the complete coating stack for a second time.
+                snapshot = com.radiance.render.contract.DrawStateSnapshot.IDENTITY;
+            }
             long history =
                     explicitHistory != 0
                             ? explicitHistory
-                            : historyIdentity(owner, drawCount, ordinal);
+                            : historyIdentity(
+                                    request.instance().owner(),
+                                    drawCount,
+                                    request.instance().part());
             batch.add(
                     key,
                     history,
@@ -558,7 +672,10 @@ public final class RigidModelCapture {
     /** Submits every persistent draw of one entity submission with a single native call. */
     public static void submitAll(List<Draw> draws) {
         if (draws.isEmpty()) return;
-        try (Batch batch = new Batch(draws.size())) {
+        try (var request =
+                        com.radiance.api.audit.DrawingAudit.begin(
+                                "PERSISTENT", "RigidModelCapture", "DIRECT", "WORLD");
+                Batch batch = new Batch(draws.size())) {
             for (Draw draw : draws) draw.submit(batch);
             batch.submit();
         }
@@ -574,6 +691,7 @@ public final class RigidModelCapture {
         private final Map<String, Integer> groupIndices = new HashMap<>();
         final List<String> groups = new ArrayList<>();
         private final Set<TextureTasks.Owner> textures = new LinkedHashSet<>();
+        private final Map<Long, List<Binding>> bindings = new LinkedHashMap<>();
         private final int capacity;
         int count;
 
@@ -659,31 +777,88 @@ public final class RigidModelCapture {
         }
 
         void submit() {
-            PointerBuffer names = MemoryUtil.memAllocPointer(groups.size());
-            List<ByteBuffer> encoded = new ArrayList<>(groups.size());
+            int bindingCount = bindings.values().stream().mapToInt(List::size).sum();
+            int bindingStride = com.radiance.render.contract.RenderAbi.RIGID_BINDING_BYTES;
+            ByteBuffer bindingData =
+                    MemoryUtil.memAlloc(Math.multiplyExact(bindingCount, bindingStride));
             try {
-                for (String group : groups) {
-                    ByteBuffer utf8 = MemoryUtil.memUTF8(group);
-                    encoded.add(utf8);
-                    names.put(MemoryUtil.memAddress(utf8));
+                int at = 0;
+                for (var resource : bindings.entrySet()) {
+                    int ordinal = 0;
+                    for (var binding : resource.getValue()) {
+                        var geometry = binding.geometry();
+                        String group =
+                                PBRVertexConsumer.normalizeTextLayerName(geometry.layer().name);
+                        int groupIndex =
+                                groupIndices.computeIfAbsent(
+                                        group,
+                                        name -> {
+                                            groups.add(name);
+                                            return groups.size() - 1;
+                                        });
+                        bindingData
+                                .putLong(at, resource.getKey())
+                                .putLong(
+                                        at + 8,
+                                        MemoryUtil.memAddress(geometry.mesh().vertexBuffer()))
+                                .putInt(at + 16, geometry.mesh().drawState().vertexCount())
+                                .putInt(at + 20, binding.type())
+                                .putInt(at + 24, geometry.texture().id())
+                                .putInt(at + 28, groupIndex);
+                        binding.state().writeColour(bindingData, at + 32);
+                        bindingData
+                                .putInt(at + 48, ordinal++)
+                                .putInt(at + 52, resource.getValue().size());
+                        at += bindingStride;
+                    }
                 }
-                names.flip();
-                if (!TextureProxy.TASKS.useAll(
-                        textures,
-                        () ->
-                                EntityProxy.queueRigidModelsV2(
-                                        com.radiance.render.contract.RenderAbi.RIGID_INPUT_VERSION,
-                                        RECORD_BYTES,
-                                        records.capacity(),
-                                        MemoryUtil.memAddress(records),
-                                        count,
-                                        MemoryUtil.memAddress(names),
-                                        groups.size())))
-                    throw new IllegalStateException(
-                            "Rigid model texture was retired before submission");
+                PointerBuffer names = MemoryUtil.memAllocPointer(groups.size());
+                List<ByteBuffer> encoded = new ArrayList<>(groups.size());
+                try {
+                    for (String group : groups) {
+                        ByteBuffer utf8 = MemoryUtil.memUTF8(group);
+                        encoded.add(utf8);
+                        names.put(MemoryUtil.memAddress(utf8));
+                    }
+                    names.flip();
+                    if (!TextureProxy.TASKS.useAll(
+                            textures,
+                            () -> {
+                                if (bindingCount == 0)
+                                    EntityProxy.queueRigidModelsV2(
+                                            com.radiance.render.contract.RenderAbi
+                                                    .RIGID_INPUT_VERSION,
+                                            RECORD_BYTES,
+                                            records.capacity(),
+                                            MemoryUtil.memAddress(records),
+                                            count,
+                                            MemoryUtil.memAddress(names),
+                                            groups.size());
+                                else
+                                    EntityProxy.queueRigidModelsV3(
+                                            com.radiance.render.contract.RenderAbi
+                                                    .RIGID_INPUT_VERSION,
+                                            RECORD_BYTES,
+                                            records.capacity(),
+                                            MemoryUtil.memAddress(records),
+                                            count,
+                                            MemoryUtil.memAddress(names),
+                                            groups.size(),
+                                            com.radiance.render.contract.RenderAbi
+                                                    .RIGID_BINDING_VERSION,
+                                            bindingData.capacity(),
+                                            MemoryUtil.memAddress(bindingData),
+                                            bindingCount);
+                            }))
+                        throw new IllegalStateException(
+                                "Rigid model texture was retired before submission");
+                    com.radiance.api.audit.DrawingAudit.consumed("native.rigid.v2");
+                } finally {
+                    encoded.forEach(MemoryUtil::memFree);
+                    MemoryUtil.memFree(names);
+                }
             } finally {
-                encoded.forEach(MemoryUtil::memFree);
-                MemoryUtil.memFree(names);
+                MemoryUtil.memFree(bindingData);
             }
         }
 

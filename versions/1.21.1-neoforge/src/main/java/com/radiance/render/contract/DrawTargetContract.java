@@ -7,6 +7,22 @@ package com.radiance.render.contract;
 public final class DrawTargetContract {
     private DrawTargetContract() {}
 
+    public enum GuiRole {
+        FOREGROUND(0),
+        BACKGROUND_EFFECT(1),
+        WORLD_REPLACEMENT(2);
+
+        private final int nativeId;
+
+        GuiRole(int nativeId) {
+            this.nativeId = nativeId;
+        }
+
+        public int nativeId() {
+            return nativeId;
+        }
+    }
+
     public enum ScopeKind {
         OUTSIDE,
         WORLD_STAGE,
@@ -32,7 +48,21 @@ public final class DrawTargetContract {
         }
     }
 
-    public record BufferDrawDecision(BufferDrawRoute route, Scope scope, String reason) {}
+    public record BufferDrawDecision(BufferDrawRoute route, Scope scope, String reason) {
+        public java.util.Optional<TakeoverSubmission.Domain> domain() {
+            return sourceDomain(scope.kind());
+        }
+    }
+
+    public static java.util.Optional<TakeoverSubmission.Domain> sourceDomain(ScopeKind kind) {
+        return switch (kind) {
+            case WORLD_STAGE, WORLD_RASTER, DIMENSION_EFFECT ->
+                    java.util.Optional.of(TakeoverSubmission.Domain.WORLD);
+            case GUI -> java.util.Optional.of(TakeoverSubmission.Domain.GUI);
+            case CAMERA_OVERLAY -> java.util.Optional.of(TakeoverSubmission.Domain.SCREEN);
+            case OUTSIDE, UNSUPPORTED_OPENGL -> java.util.Optional.empty();
+        };
+    }
 
     public static BufferDrawDecision classify(Scope scope, int framebuffer) {
         return switch (scope.kind()) {

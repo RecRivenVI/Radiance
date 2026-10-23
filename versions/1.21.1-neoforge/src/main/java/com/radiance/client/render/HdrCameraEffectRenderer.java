@@ -24,13 +24,16 @@ public final class HdrCameraEffectRenderer {
         // the HDR route itself has been confirmed in a real frame.
         float lightScale = 0.1F;
         boolean recorded =
-                RendererProxy.cameraBlockEffect(
-                        textureId,
-                        sprite.getU0(),
-                        sprite.getV0(),
-                        sprite.getU1(),
-                        sprite.getV1(),
-                        lightScale);
+                record(
+                        "camera.block",
+                        () ->
+                                RendererProxy.cameraBlockEffect(
+                                        textureId,
+                                        sprite.getU0(),
+                                        sprite.getV0(),
+                                        sprite.getU1(),
+                                        sprite.getV1(),
+                                        lightScale));
         audit("camera.block", textureId, recorded);
         return recorded;
     }
@@ -53,14 +56,17 @@ public final class HdrCameraEffectRenderer {
                         minecraft.level.dimensionType(),
                         minecraft.level.getMaxLocalRawBrightness(eye));
         boolean recorded =
-                RendererProxy.cameraFluidEffect(
-                        textureId,
-                        -minecraft.player.getYRot() / 64.0F,
-                        minecraft.player.getXRot() / 64.0F,
-                        4.0F,
-                        4.0F,
-                        0.1F,
-                        brightness);
+                record(
+                        "camera.fluid",
+                        () ->
+                                RendererProxy.cameraFluidEffect(
+                                        textureId,
+                                        -minecraft.player.getYRot() / 64.0F,
+                                        minecraft.player.getXRot() / 64.0F,
+                                        4.0F,
+                                        4.0F,
+                                        0.1F,
+                                        brightness));
         audit("camera.fluid", textureId, recorded);
         return recorded;
     }
@@ -111,7 +117,12 @@ public final class HdrCameraEffectRenderer {
         float u1 = Mth.lerp(shrink, sprite.getU1(), uMid);
         float v0 = Mth.lerp(shrink, sprite.getV0(), vMid);
         float v1 = Mth.lerp(shrink, sprite.getV1(), vMid);
-        boolean recorded = RendererProxy.cameraFireEffect(textureId, u0, v0, u1, v1, 0.9F, 1.0F);
+        boolean recorded =
+                record(
+                        "camera.fire",
+                        () ->
+                                RendererProxy.cameraFireEffect(
+                                        textureId, u0, v0, u1, v1, 0.9F, 1.0F));
         audit("camera.fire", textureId, recorded);
         return recorded;
     }
@@ -119,6 +130,16 @@ public final class HdrCameraEffectRenderer {
     private static boolean isCameraOverlayScope() {
         return RenderCaptureContract.currentScope().kind()
                 == DrawTargetContract.ScopeKind.CAMERA_OVERLAY;
+    }
+
+    private static boolean record(String source, java.util.function.BooleanSupplier operation) {
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "SCREEN_EFFECT", source, "DIRECT", "HDR_CAMERA")) {
+            boolean recorded = operation.getAsBoolean();
+            if (recorded) com.radiance.api.audit.DrawingAudit.consumed("native.camera");
+            return recorded;
+        }
     }
 
     private static void audit(String source, int textureId, boolean recorded) {

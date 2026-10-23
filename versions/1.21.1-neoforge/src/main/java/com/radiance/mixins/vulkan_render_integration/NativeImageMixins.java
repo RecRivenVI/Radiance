@@ -2,7 +2,6 @@ package com.radiance.mixins.vulkan_render_integration;
 
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.systems.RenderSystem;
-import com.radiance.client.proxy.vulkan.FramebufferProxy;
 import com.radiance.client.proxy.vulkan.RendererProxy;
 import com.radiance.client.proxy.vulkan.TextureProxy;
 import com.radiance.client.texture.AuxiliaryTextures;
@@ -302,7 +301,8 @@ public abstract class NativeImageMixins
         if (this.format.components() != 1)
             throw new IllegalStateException("Depth buffer requires one component");
         this.checkAllocated();
-        FramebufferProxy.readPixels(0, 0, this.width, this.height, 0x1902, 0x1401, this.pixels);
+        com.radiance.client.render.AttachmentOperations.readPixels(
+                0, 0, this.width, this.height, 0x1902, 0x1401, this.pixels);
         ci.cancel();
     }
 

@@ -14,7 +14,68 @@ import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Redirect;
 
 @Mixin(PaintingRenderer.class)
-public abstract class PaintingRendererMixins {
+public abstract class PaintingRendererMixins
+        implements com.radiance.compatibility.vanilla.VanillaEntityReplacement.Source {
+    @org.spongepowered.asm.mixin.Shadow
+    public abstract ResourceLocation getTextureLocation(
+            net.minecraft.world.entity.decoration.Painting entity);
+
+    @org.spongepowered.asm.mixin.gen.Invoker("renderPainting")
+    protected abstract void radiance$generatePainting(
+            com.mojang.blaze3d.vertex.PoseStack pose,
+            com.mojang.blaze3d.vertex.VertexConsumer consumer,
+            net.minecraft.world.entity.decoration.Painting painting,
+            int width,
+            int height,
+            net.minecraft.client.renderer.texture.TextureAtlasSprite front,
+            net.minecraft.client.renderer.texture.TextureAtlasSprite back);
+
+    public boolean radiance$supportsEntity(net.minecraft.world.entity.Entity entity) {
+        return com.radiance.client.vertex.PaintingModelCapture.ENABLED
+                && com.radiance.client.vertex.PaintingModelCapture.sourceCompatible();
+    }
+
+    public boolean radiance$collectEntity(
+            net.minecraft.world.entity.Entity value,
+            float yaw,
+            float partial,
+            com.mojang.blaze3d.vertex.PoseStack pose,
+            net.minecraft.client.renderer.MultiBufferSource buffers,
+            com.radiance.client.vertex.BoundPartCapture requests,
+            int light) {
+        var painting = (net.minecraft.world.entity.decoration.Painting) value;
+        pose.pushPose();
+        pose.mulPose(com.mojang.math.Axis.YP.rotationDegrees(180 - yaw));
+        var variant = painting.getVariant().value();
+        var textures = net.minecraft.client.Minecraft.getInstance().getPaintingTextures();
+        var front = textures.get(variant);
+        var back = textures.getBackSprite();
+        var consumer =
+                buffers.getBuffer(RADIANCE_PAINTING_LAYER.apply(getTextureLocation(painting)));
+        int result =
+                com.radiance.client.vertex.PaintingModelCapture.capture(
+                        pose,
+                        consumer,
+                        painting,
+                        variant.width(),
+                        variant.height(),
+                        front,
+                        back,
+                        (local, target) ->
+                                radiance$generatePainting(
+                                        local,
+                                        target,
+                                        painting,
+                                        variant.width(),
+                                        variant.height(),
+                                        front,
+                                        back));
+        if (result == com.radiance.client.vertex.PaintingModelCapture.NOT_HANDLED)
+            radiance$generatePainting(
+                    pose, consumer, painting, variant.width(), variant.height(), front, back);
+        pose.popPose();
+        return true;
+    }
 
     @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "renderPainting")
     private void radiance$persistentPainting(
@@ -66,23 +127,26 @@ public abstract class PaintingRendererMixins {
     private static final Function<ResourceLocation, RenderType> RADIANCE_PAINTING_LAYER =
             Util.memoize(
                     texture ->
-                            RenderType.create(
-                                    "entity_solid_z_offset_forward",
-                                    DefaultVertexFormat.NEW_ENTITY,
-                                    VertexFormat.Mode.QUADS,
-                                    1536,
-                                    true,
-                                    false,
-                                    RenderType.CompositeState.builder()
-                                            .setShaderState(
-                                                    RenderType.RENDERTYPE_ENTITY_SOLID_SHADER)
-                                            .setTextureState(
-                                                    new RenderStateShard.TextureStateShard(
-                                                            texture, false, false))
-                                            .setTransparencyState(RenderType.NO_TRANSPARENCY)
-                                            .setLightmapState(RenderType.LIGHTMAP)
-                                            .setOverlayState(RenderType.OVERLAY)
-                                            .createCompositeState(true)));
+                            com.radiance.client.render.StaticDrawStates.painting(
+                                    RenderType.create(
+                                            "entity_solid_z_offset_forward",
+                                            DefaultVertexFormat.NEW_ENTITY,
+                                            VertexFormat.Mode.QUADS,
+                                            1536,
+                                            true,
+                                            false,
+                                            RenderType.CompositeState.builder()
+                                                    .setShaderState(
+                                                            RenderType
+                                                                    .RENDERTYPE_ENTITY_SOLID_SHADER)
+                                                    .setTextureState(
+                                                            new RenderStateShard.TextureStateShard(
+                                                                    texture, false, false))
+                                                    .setTransparencyState(
+                                                            RenderType.NO_TRANSPARENCY)
+                                                    .setLightmapState(RenderType.LIGHTMAP)
+                                                    .setOverlayState(RenderType.OVERLAY)
+                                                    .createCompositeState(true))));
 
     @Redirect(
             method =

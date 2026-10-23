@@ -266,6 +266,7 @@ public final class LineWorldProbe {
                 if (FontSourceProbe.violations() != 0)
                     throw new IllegalStateException("Retired font source was observed");
                 LOG.info("FONT_SOURCE final-violations=0");
+                TakeoverSourceProbe.finish();
                 Path result = Path.of(System.getProperty("validation.result"));
                 Files.createDirectories(result);
                 Files.writeString(

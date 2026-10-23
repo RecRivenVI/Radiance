@@ -75,6 +75,7 @@ public final class ShaderProxy {
                 indexType,
                 uniformPtr,
                 uniformSize);
+        com.radiance.api.audit.DrawingAudit.consumed("ShaderProxy.draw");
     }
 
     public static UniformHandle createUniform(

@@ -33,12 +33,19 @@ endforeach()
 foreach(WORLD_RGEN IN ITEMS "${VANILLA_WORLD_RGEN}" "${ADVANCED_WORLD_RGEN}")
     file(READ "${WORLD_RGEN}" WORLD_RGEN_TEXT)
 
-    foreach(REQUIRED_MASK IN ITEMS "queryMask(purpose, worldUBO.isFirstPerson > 0)" "queryMask(queryTransport, true)")
+    foreach(REQUIRED_MASK IN ITEMS
+            "queryMask(purpose, worldUBO.isFirstPerson > 0)"
+            "cacheUpdateMask(rayQueryPurpose(mainRay), worldUBO.isFirstPerson > 0)"
+            "if (b != 0) rayAdvanceQuery(mainRay);")
         string(FIND "${WORLD_RGEN_TEXT}" "${REQUIRED_MASK}" MASK_INDEX)
         if(MASK_INDEX EQUAL -1)
             message(FATAL_ERROR "Particle queries bypass the shared channel policy: ${WORLD_RGEN}")
         endif()
     endforeach()
+    string(FIND "${WORLD_RGEN_TEXT}" "raySetDirectImage(mainRay, false);" EARLY_TRANSPORT_INDEX)
+    if(NOT EARLY_TRANSPORT_INDEX EQUAL -1)
+        message(FATAL_ERROR "Camera cache training bypasses direct-image ownership: ${WORLD_RGEN}")
+    endif()
 
 endforeach()
 

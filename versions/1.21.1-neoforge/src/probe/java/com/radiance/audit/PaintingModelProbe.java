@@ -102,4 +102,8 @@ public final class PaintingModelProbe {
         maxPosition = maxNormal = 0;
         models.clear();
     }
+
+    public static long checkedCount() {
+        return checked;
+    }
 }

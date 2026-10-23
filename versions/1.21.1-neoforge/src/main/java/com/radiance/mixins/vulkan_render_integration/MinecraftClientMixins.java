@@ -170,7 +170,12 @@ public class MinecraftClientMixins {
                             value = "INVOKE",
                             target = "Lcom/mojang/blaze3d/pipeline/RenderTarget;unbindWrite()V"))
     private void presentNativeFrame(RenderTarget target) {
-        RendererProxy.submitCommandAndPresent();
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "PRESENT", "Minecraft.runTick", "DIRECT", "SWAPCHAIN")) {
+            RendererProxy.submitCommandAndPresent();
+            com.radiance.api.audit.DrawingAudit.consumed("native.present");
+        }
         RendererProxy.acquireContext();
     }
 

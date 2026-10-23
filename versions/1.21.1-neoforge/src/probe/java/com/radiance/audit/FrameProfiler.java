@@ -43,6 +43,10 @@ public final class FrameProfiler {
         return frame;
     }
 
+    static boolean collecting() {
+        return active && current != null && Thread.currentThread() == owner;
+    }
+
     public static void register() {
         NeoForge.EVENT_BUS.addListener(FrameProfiler::commands);
     }
@@ -171,7 +175,8 @@ public final class FrameProfiler {
                                     + "No per-vertex probes. Entity capture includes model dispatch, CPU vertex generation and material work; marshal is separately nested. Background work overlaps rendering.\n",
                             frame + 1);
             ProducerCensus.start(output, mode.producers);
-            if (mode == ProfileMode.CPU_SAMPLES) {
+            InstanceInputCensus.start(output);
+            if (mode == ProfileMode.CPU_SAMPLES || mode == ProfileMode.JFR_ONLY) {
                 try {
                     recording =
                             new jdk.jfr.Recording(
@@ -284,6 +289,17 @@ public final class FrameProfiler {
                 : null;
     }
 
+    public static void generatedPbr(com.mojang.blaze3d.vertex.MeshData mesh) {
+        if (!active
+                || mode != ProfileMode.TIMED
+                || current == null
+                || Thread.currentThread() != owner
+                || mesh == null) return;
+        var draw = mesh.drawState();
+        current.generatedPbrVertices += draw.vertexCount();
+        current.generatedPbrBytes += (long) draw.vertexCount() * draw.format().getVertexSize();
+    }
+
     public static WorkerSample workerStart() {
         return active ? new WorkerSample(report, System.nanoTime()) : null;
     }
@@ -334,6 +350,13 @@ public final class FrameProfiler {
             String values = NativeDiagnostics.drainProfile();
             if (values != null) rows.append(values);
         }
+        if (mode == ProfileMode.TIMED)
+            rows.append(frame)
+                    .append(",5,java.pbr.generated,")
+                    .append(timings.generatedPbrVertices)
+                    .append(',')
+                    .append(timings.generatedPbrBytes)
+                    .append('\n');
         var mc = Minecraft.getInstance();
         long rates = failed ? 0 : RendererProxy.presentationRates();
         String frameRow =
@@ -373,6 +396,7 @@ public final class FrameProfiler {
     }
 
     public static void finish() {
+        InstanceInputCensus.finish();
         if (!active) return;
         active = false;
         current = null;

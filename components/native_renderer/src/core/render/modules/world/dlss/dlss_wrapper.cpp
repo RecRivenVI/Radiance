@@ -1,5 +1,6 @@
 #include "core/logging.hpp"
 #include "core/failure_state.hpp"
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/render/streamline_evaluate_result.hpp"
 /*
  * Copyright (c) 2024-2025, NVIDIA CORPORATION.  All rights reserved.
@@ -270,6 +271,10 @@ NVSDK_NGX_Result DlssRR::denoise(std::shared_ptr<vk::CommandBuffer> cmd,
     }
     const auto previous = m_previousProjection * m_previousView * glm::inverse(view) * glm::inverse(projection);
     auto constants = mcvr::slConstants(size, jitter, view, projection, previous, reset || m_resetPending);
+    if (mcvr::profile::enabled()) {
+        mcvr::profile::emit(mcvr::profile::frame, 5, "dlss.history-reset", reset || m_resetPending, 0);
+        mcvr::profile::emit(mcvr::profile::frame, 5, "dlss.viewport", m_viewport, 0);
+    }
     const auto constantsResult = sl.slSetConstants(constants, *token, viewport);
     if (constantsResult != sl::Result::eOk)
         return recordFailure("reconstruction constants", constantsResult, uint32_t(*token));

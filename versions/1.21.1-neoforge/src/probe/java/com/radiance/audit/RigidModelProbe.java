@@ -30,9 +30,16 @@ public final class RigidModelProbe {
     }
 
     static Object field(Object owner, String name) throws ReflectiveOperationException {
-        Field f = owner.getClass().getDeclaredField(name);
-        f.setAccessible(true);
-        return f.get(owner);
+        for (Class<?> type = owner.getClass(); type != null; type = type.getSuperclass()) {
+            try {
+                Field f = type.getDeclaredField(name);
+                f.setAccessible(true);
+                return f.get(owner);
+            } catch (NoSuchFieldException nextParent) {
+                // Captured providers and registered renderers can expose inherited state.
+            }
+        }
+        throw new NoSuchFieldException(owner.getClass().getName() + "." + name);
     }
 
     public static void check(Object draw) {

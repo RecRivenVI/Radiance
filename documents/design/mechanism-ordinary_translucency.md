@@ -2,6 +2,8 @@
 
 两套内置 PT 通过同一属性选择随机覆盖或分层背景混合。默认随机覆盖，来源颜色、丢弃阶段、所有者、传光与资源生命周期不随模式改变。
 
+当前验收和诊断按[语义决策](../reference/registry-semantic_decisions.md)只使用随机覆盖；分层混合的实现与入口保留，但不作为当前观察和性能归因的配置。
+
 ## 接口与范围
 
 `configs.json` 中 `render_pipeline.module.ray_tracing.attribute.coverage_mode` 唯一定义选择及默认值，生成 `RADIANCE_COVERAGE_MODE`。视频设置入口编辑当前包的同一属性，通过现有 `Pipeline.build` 重建与保存；不新增独立配置副本。外部包未声明属性时入口不可用。

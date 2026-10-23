@@ -281,7 +281,16 @@ public class EntityProxy {
         var rigidDraws = storageVertexConsumerProvider.takeRigidModels();
         for (var draw : rigidDraws) {
             draw.seal(storageVertexConsumerProvider);
-            if (post || prebuiltBLAS >= 0 || contentNameResolver != null)
+            // A content identifier does not imply an offscreen consumer: particles carry one.
+            // Retain the rigid path only when that resolver leaves its executable hit group intact.
+            if (post
+                    || prebuiltBLAS >= 0
+                    || (contentNameResolver != null
+                            && !draw.acceptsGroup(
+                                    geometryGroupName(
+                                            contentNameResolver.apply(draw.layer()),
+                                            PBRVertexConsumer.normalizeTextLayerName(
+                                                    draw.layer().name)))))
                 throw new IllegalStateException("Rigid model reached a non-world consumer");
             draw.locate(
                     entityPosX, entityPosY, entityPosZ, rayTracingFlag, reflect, rigidDraws.size());
@@ -297,6 +306,7 @@ public class EntityProxy {
                         postRenderFlag,
                         prebuiltBLAS,
                         post);
+        entityRenderData.procedural = storageVertexConsumerProvider.proceduralSource();
         entityRenderData.setLineFrame(lineFrameCapture.get());
         EntityRenderData waterMaskRenderData =
                 new EntityRenderData(
@@ -428,6 +438,8 @@ public class EntityProxy {
             // Same-surface coatings need the complete owner, including partial model layers.
             net.minecraft.client.renderer.entity.EntityRenderer<?> renderer =
                     entityRenderDispatcher.getRenderer(entity);
+            if (renderer instanceof net.minecraft.client.renderer.entity.LightningBoltRenderer)
+                entityStorageVertexConsumerProvider.procedural("LIGHTNING", renderer.getClass());
             java.util.List<?> rendererLayers =
                     renderer
                                     instanceof
@@ -438,24 +450,35 @@ public class EntityProxy {
                                             (Object) living)
                                     .radiance$getLayers()
                             : java.util.List.of();
-            boolean surfaceLayers =
-                    com.radiance.compatibility.vanilla.VanillaEmissionAdapter.requiresSurfaceLayers(
+            var sourceLayers =
+                    com.radiance.compatibility.vanilla.VanillaLayerAdapter.describe(
                             rendererLayers,
                             entity instanceof LivingEntity equipped
                                     && com.radiance.compatibility.vanilla.VanillaEmissionAdapter
-                                            .hasRenderedArmor(equipped::getItemBySlot));
-            boolean eyeComposition =
-                    com.radiance.compatibility.vanilla.VanillaEmissionAdapter
-                                    .requiresEyeComposition(rendererLayers)
-                            || renderer
+                                            .hasRenderedArmor(equipped::getItemBySlot),
+                            renderer
                                     instanceof
-                                    net.minecraft.client.renderer.entity.EnderDragonRenderer;
-            surfaceLayers &= !eyeComposition;
+                                    net.minecraft.client.renderer.entity.EnderDragonRenderer);
+            boolean surfaceLayers = sourceLayers.surfaceOwner();
+            boolean eyeComposition = sourceLayers.eyeOwner();
             if (surfaceLayers)
                 entityStorageVertexConsumerProvider.surfaceRole(
                         com.radiance.render.contract.SourceEmission.Role.SURFACE_LAYER_OWNER);
             if (!surfaceLayers && !eyeComposition)
                 entityStorageVertexConsumerProvider.enableRigidModels(entity.getId());
+            boolean sourceLayersEligible =
+                    rendererLayers.stream()
+                            .allMatch(
+                                    layer ->
+                                            com.radiance.mixin_related.SourceCompatibility.producer(
+                                                    layer.getClass()));
+            if (sourceLayersEligible)
+                entityStorageVertexConsumerProvider.enablePartModels(entity, renderer, false);
+            entityStorageVertexConsumerProvider.takeoverItemFrame(
+                    entity instanceof net.minecraft.world.entity.decoration.ItemFrame);
+            entityStorageVertexConsumerProvider.takeoverStaticState(
+                    entity instanceof net.minecraft.world.entity.decoration.ItemFrame
+                            || entity instanceof net.minecraft.world.entity.decoration.Painting);
             StorageVertexConsumerProvider cameraRelativeStorageVertexConsumerProvider =
                     new StorageVertexConsumerProvider(16384);
 
@@ -548,9 +571,11 @@ public class EntityProxy {
                 // instance: secondary/shadow rays still see the physical surface, while the
                 // dedicated post-world pass supplies their deliberate global visibility.
                 StorageVertexConsumerProvider worldTextStorageVertexConsumerProvider =
-                        new StorageVertexConsumerProvider(786432);
+                        new StorageVertexConsumerProvider(786432)
+                                .procedural("WORLD_TEXT", net.minecraft.client.gui.Font.class);
                 StorageVertexConsumerProvider priorityTextStorageVertexConsumerProvider =
-                        new StorageVertexConsumerProvider(786432);
+                        new StorageVertexConsumerProvider(786432)
+                                .procedural("WORLD_TEXT", net.minecraft.client.gui.Font.class);
                 StorageRoutingBufferSource textRoutingBufferSource =
                         StorageRoutingBufferSource.ofConsumers(
                                 renderLayer ->
@@ -649,6 +674,7 @@ public class EntityProxy {
 
             StorageVertexConsumerProvider priorityNameTagStorageVertexConsumerProvider =
                     new StorageVertexConsumerProvider(16384)
+                            .procedural("WORLD_TEXT", net.minecraft.client.gui.Font.class)
                             .surfaceRole(com.radiance.render.contract.SourceEmission.Role.NAME_TAG);
             StorageVertexConsumerProvider discardedNameTagSeeThroughStorageVertexConsumerProvider =
                     new StorageVertexConsumerProvider(16384);
@@ -678,13 +704,51 @@ public class EntityProxy {
                 debugLineCapture.set(debugLineStorage);
             }
             try {
-                renderEntityAtOrigin(
-                        entityRenderDispatcher,
-                        entity,
-                        tickDelta,
-                        matrixStack,
-                        vertexConsumerProvider,
-                        light);
+                if (!customEntityOutline
+                        && subLevelTransform == null
+                        && com.radiance.compatibility.vanilla.VanillaLivingReplacement.eligible(
+                                entityRenderDispatcher,
+                                entity,
+                                entityStorageVertexConsumerProvider,
+                                entityStorageVertexConsumerProvider)) {
+                    entityStorageVertexConsumerProvider.takeoverStaticState(true);
+                    entityStorageVertexConsumerProvider.declaredParts(
+                            entity.getId(), renderer.getClass().getName());
+                    com.radiance.compatibility.vanilla.VanillaLivingReplacement.render(
+                            entityRenderDispatcher,
+                            (LivingEntity) entity,
+                            tickDelta,
+                            matrixStack,
+                            entityStorageVertexConsumerProvider,
+                            vertexConsumerProvider,
+                            light);
+                } else if (!customEntityOutline
+                        && subLevelTransform == null
+                        && com.radiance.compatibility.vanilla.VanillaEntityReplacement.eligible(
+                                entityRenderDispatcher,
+                                entity,
+                                vertexConsumerProvider,
+                                entityStorageVertexConsumerProvider)) {
+                    entityStorageVertexConsumerProvider.takeoverStaticState(true);
+                    entityStorageVertexConsumerProvider.declaredParts(
+                            entity.getId(), renderer.getClass().getName());
+                    com.radiance.compatibility.vanilla.VanillaEntityReplacement.render(
+                            entityRenderDispatcher,
+                            entity,
+                            tickDelta,
+                            matrixStack,
+                            entityStorageVertexConsumerProvider,
+                            vertexConsumerProvider,
+                            light);
+                } else {
+                    renderEntityAtOrigin(
+                            entityRenderDispatcher,
+                            entity,
+                            tickDelta,
+                            matrixStack,
+                            vertexConsumerProvider,
+                            light);
+                }
             } finally {
                 debugLineCapture.remove();
                 postTextVertexConsumerProvider = null;
@@ -1082,9 +1146,9 @@ public class EntityProxy {
                     "CHUNK_PERF", "BLOCK_ENTITY_SECTION_VISITS", activeSections.size(), "");
         }
         for (var active : activeSections) {
-            // A worker may publish a replacement or the slot may reset after snapshot acquisition.
-            // Never render the cached list on behalf of a different compiled owner.
-            if (active.section().getCompiled() != active.compiled()) continue;
+            // Recompilation may replace the compiled list while this frame still owns its
+            // immutable snapshot. Only a reset/reposition/world change invalidates that owner.
+            if (!ChunkProxy.currentBlockEntitySection(active)) continue;
             List<BlockEntity> list = active.compiled().getRenderableBlockEntities();
             if (!list.isEmpty()) {
                 for (BlockEntity blockEntity : list) {
@@ -1104,6 +1168,10 @@ public class EntityProxy {
                                             com.radiance.render.contract.LineContract.WidthPolicy
                                                     .ORDINARY);
                     entityStorageVertexConsumerProviders.add(entityStorageVertexConsumerProvider);
+                    entityStorageVertexConsumerProvider.enablePartModels(
+                            blockEntity,
+                            blockEntityRenderDispatcher.getRenderer(blockEntity),
+                            true);
                     StorageVertexConsumerProvider crumblingStorageVertexConsumerProvider = null;
 
                     StorageVertexConsumerProvider outlineStorageVertexConsumerProvider = null;
@@ -1171,8 +1239,18 @@ public class EntityProxy {
                         }
                     }
 
-                    blockEntityRenderDispatcher.render(
-                            blockEntity, tickDelta, matrixStack, worldVertexConsumerProvider);
+                    if (worldVertexConsumerProvider == entityStorageVertexConsumerProvider
+                            && com.radiance.compatibility.vanilla.VanillaBlockReplacement.eligible(
+                                    blockEntityRenderDispatcher.getRenderer(blockEntity),
+                                    blockEntity))
+                        com.radiance.compatibility.vanilla.VanillaBlockReplacement.render(
+                                blockEntity,
+                                tickDelta,
+                                matrixStack,
+                                entityStorageVertexConsumerProvider);
+                    else
+                        blockEntityRenderDispatcher.render(
+                                blockEntity, tickDelta, matrixStack, worldVertexConsumerProvider);
                     matrixStack.popPose();
 
                     processWorldEntityRenderData(
@@ -1231,6 +1309,8 @@ public class EntityProxy {
                                     com.radiance.client.render.LineSources.BLOCK_ENTITY,
                                     com.radiance.render.contract.LineContract.WidthPolicy.ORDINARY);
             entityStorageVertexConsumerProviders.add(entityStorageVertexConsumerProvider);
+            entityStorageVertexConsumerProvider.enablePartModels(
+                    blockEntity, blockEntityRenderDispatcher.getRenderer(blockEntity), true);
             StorageVertexConsumerProvider outlineStorageVertexConsumerProvider = null;
             MultiBufferSource worldVertexConsumerProvider = entityStorageVertexConsumerProvider;
             Minecraft client = Minecraft.getInstance();
@@ -1263,8 +1343,14 @@ public class EntityProxy {
             double entityPosZ = blockPos.getZ();
 
             matrixStack.pushPose();
-            blockEntityRenderDispatcher.render(
-                    blockEntity, tickDelta, matrixStack, worldVertexConsumerProvider);
+            if (worldVertexConsumerProvider == entityStorageVertexConsumerProvider
+                    && com.radiance.compatibility.vanilla.VanillaBlockReplacement.eligible(
+                            blockEntityRenderDispatcher.getRenderer(blockEntity), blockEntity))
+                com.radiance.compatibility.vanilla.VanillaBlockReplacement.render(
+                        blockEntity, tickDelta, matrixStack, entityStorageVertexConsumerProvider);
+            else
+                blockEntityRenderDispatcher.render(
+                        blockEntity, tickDelta, matrixStack, worldVertexConsumerProvider);
             matrixStack.popPose();
 
             processWorldEntityRenderData(
@@ -1513,7 +1599,7 @@ public class EntityProxy {
 
     public static void queueParticleRebuild(Camera camera, float tickDelta) {
         List<StorageVertexConsumerProvider> storageVertexConsumerProviders = new ArrayList<>();
-        EntityRenderDataList renderDataList = new EntityRenderDataList();
+        EntityRenderDataList renderDataList = new EntityRenderDataList().family("PARTICLE");
         List<StorageVertexConsumerProvider> debugLineStorageVertexConsumerProviders =
                 new ArrayList<>();
         EntityRenderDataList debugLineRenderDataList = new EntityRenderDataList();
@@ -1593,6 +1679,8 @@ public class EntityProxy {
                                                                                                         .renderType())));
                                                     }
                                                 };
+                                        provider.particleModels(camera.getPosition());
+                                        provider.procedural("PARTICLE", particle.getClass());
                                         storageVertexConsumerProviders.add(provider);
                                         return provider;
                                     });
@@ -1603,7 +1691,11 @@ public class EntityProxy {
                                     radiance$particleRenderType(contentName, particleTextureSheet));
 
                     try {
-                        particle.render(vertexConsumer, camera, tickDelta);
+                        if (com.radiance.client.vertex.ParticleQuadTakeover.replacementEligible(
+                                particle, vertexConsumer))
+                            com.radiance.client.vertex.ParticleQuadTakeover.request(
+                                    particle, vertexConsumer, camera, tickDelta);
+                        else particle.render(vertexConsumer, camera, tickDelta);
                     } catch (Throwable var11) {
                         CrashReport crashReport =
                                 CrashReport.forThrowable(var11, "Rendering Particle");
@@ -1675,7 +1767,9 @@ public class EntityProxy {
                                 ((IParticleExt) particle).radiance$getContentName());
                 float emission = radiance$particleEmissionStep(particle, tickDelta) / 15.0F;
                 StorageVertexConsumerProvider storage =
-                        new StorageVertexConsumerProvider(0, emission);
+                        new StorageVertexConsumerProvider(0, emission)
+                                .particleModels(camera.getPosition())
+                                .procedural("PARTICLE_CUSTOM", particle.getClass());
                 StorageVertexConsumerProvider debugLineStorage =
                         new StorageVertexConsumerProvider(4096, 1.0F)
                                 .lineSource(
@@ -1721,7 +1815,7 @@ public class EntityProxy {
                             particleHitboxContent,
                             debugLineRenderDataList);
                 }
-                if (!storage.hasBatches()) {
+                if (!storage.hasBatches() && !storage.hasCapturedRigidModels()) {
                     storage.close();
                     continue;
                 }
@@ -1988,6 +2082,7 @@ public class EntityProxy {
                     }
                 };
         if (renderVanillaPrecipitation) {
+            storage.procedural("WEATHER_BORDER", net.minecraft.client.renderer.LevelRenderer.class);
             buildPrecipitation(storage, world, camera, ticks, tickDelta);
         }
         buildWorldBorder(storage, world, camera);
@@ -2640,7 +2735,7 @@ public class EntityProxy {
         ByteBuffer drawColoursBB = null;
         final boolean directEntityInput = closeAfterBuild && DIRECT_ENTITY_INPUT_ENABLED;
 
-        try {
+        try (var requests = new com.radiance.api.audit.DrawingAudit.Tickets()) {
             int entityHashCodeSize = entityRenderDataList.getTotalEntityCount() * Integer.BYTES;
             // One real setup/clear callback pair per RenderType and submission, as the original
             // batched BufferSource does per flush; results are never reused by another submission.
@@ -2779,6 +2874,21 @@ public class EntityProxy {
                 entityLayerCountBaseAddr += Integer.BYTES;
 
                 for (EntityRenderLayer entityRenderLayer : entityRenderData) {
+                    var source = entityRenderData.procedural;
+                    boolean line = entityRenderLayer.lineOrigin() != null;
+                    requests.add(
+                            line
+                                    ? "LINE"
+                                    : source == null
+                                            ? entityRenderDataList.family
+                                            : source.family(),
+                            line
+                                    ? entityRenderLayer.lineOrigin().source().label()
+                                    : source == null
+                                            ? "EntityProxy.queueBuildSourcesV3"
+                                            : source.producer(),
+                            (line || (source != null && source.direct())) ? "DIRECT" : "CAPTURE",
+                            "WORLD");
                     RenderType renderLayer = entityRenderLayer.renderLayer;
                     var captured = entityRenderLayer.drawState();
                     if (captured == null)
@@ -2867,7 +2977,21 @@ public class EntityProxy {
                                     .supportsSurfaceLayers(renderLayer))
                         sourceGeometry |=
                                 com.radiance.render.contract.RenderAbi.SOURCE_SURFACE_LAYER_BIT;
-                    geometryTypeBB.putInt(geometryTypeBaseAddr, sourceGeometry);
+                    var input =
+                            new com.radiance.render.contract.MeshSubmission(
+                                    Integer.toUnsignedLong(entityRenderData.hashCode),
+                                    sourceGeometry,
+                                    geometryTextureID,
+                                    vertexFormatID,
+                                    indexFormatID,
+                                    vertexBuffer.drawState().format().getVertexSize(),
+                                    vertexBuffer.drawState().vertexCount(),
+                                    vertexBufferInfo.addr(),
+                                    vertexBufferInfo.size(),
+                                    com.radiance.client.render.StaticDrawStates.program(
+                                            renderLayer),
+                                    captured);
+                    geometryTypeBB.putInt(geometryTypeBaseAddr, input.geometry());
                     geometryTypeBaseAddr += Integer.BYTES;
 
                     String normalizedLayerName =
@@ -2884,24 +3008,22 @@ public class EntityProxy {
                             submissionStrings.address(entityRenderLayer.contentName()));
                     geometryContentNameBaseAddr += Long.BYTES;
 
-                    geometryTextureBB.putInt(geometryTextureBaseAddr, geometryTextureID);
+                    geometryTextureBB.putInt(geometryTextureBaseAddr, input.texture());
                     geometryTextureBaseAddr += Integer.BYTES;
 
-                    vertexFormatBB.putInt(vertexFormatBaseAddr, vertexFormatID);
+                    vertexFormatBB.putInt(vertexFormatBaseAddr, input.format());
                     vertexFormatBaseAddr += Integer.BYTES;
 
-                    indexFormatBB.putInt(indexFormatBaseAddr, indexFormatID);
+                    indexFormatBB.putInt(indexFormatBaseAddr, input.topology());
                     indexFormatBaseAddr += Integer.BYTES;
 
-                    vertexCountBB.putInt(
-                            vertexCountBaseAddr, vertexBuffer.drawState().vertexCount());
+                    vertexCountBB.putInt(vertexCountBaseAddr, input.vertexCount());
                     vertexCountBaseAddr += Integer.BYTES;
 
-                    verticesBB.putLong(verticesBaseAddr, vertexBufferInfo.addr());
+                    verticesBB.putLong(verticesBaseAddr, input.address());
                     verticesBaseAddr += Long.BYTES;
                     {
-                        vertexByteCountsBB.putLong(
-                                vertexByteCountsBaseAddr, vertexBufferInfo.size());
+                        vertexByteCountsBB.putLong(vertexByteCountsBaseAddr, input.bytes());
                         vertexByteCountsBaseAddr += Long.BYTES;
                     }
                 }
@@ -2933,6 +3055,7 @@ public class EntityProxy {
                     vertexByteCountsAddr,
                     MemoryUtil.memAddressSafe(lineStylesBB),
                     MemoryUtil.memAddressSafe(drawColoursBB));
+            requests.consumed("native.entity.sources.v3");
         } finally {
             freeDirectBuffer(entityHashCodeBB);
             freeDirectBuffer(entityPosXBB);
@@ -3224,6 +3347,7 @@ public class EntityProxy {
     }
 
     public static class EntityRenderData extends ArrayList<EntityRenderLayer> {
+        private StorageVertexConsumerProvider.ProceduralSource procedural;
 
         private final int hashCode;
         private final int rayTracingFlag;
@@ -3314,6 +3438,13 @@ public class EntityProxy {
     }
 
     public static class EntityRenderDataList extends ArrayList<EntityRenderData> {
+        private String family = "ENTITY";
+
+        public EntityRenderDataList family(String value) {
+            family = value;
+            return this;
+        }
+
         final java.util.List<com.radiance.client.vertex.RigidModelCapture.Draw> rigidDraws =
                 new ArrayList<>();
 
@@ -3346,4 +3477,17 @@ public class EntityProxy {
             int count,
             long groups,
             int groupCount);
+
+    public static native void queueRigidModelsV3(
+            int abiVersion,
+            int recordStride,
+            int byteCount,
+            long records,
+            int count,
+            long groups,
+            int groupCount,
+            int bindingVersion,
+            int bindingBytes,
+            long bindings,
+            int bindingCount);
 }

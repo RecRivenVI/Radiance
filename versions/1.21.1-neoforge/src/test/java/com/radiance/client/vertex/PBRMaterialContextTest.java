@@ -7,6 +7,24 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
 class PBRMaterialContextTest {
+    @Test
+    void deferredLayerKeepsTransmissionAndEmissionAfterSourceScopeCloses() {
+        PBRMaterialContext.State captured;
+        try (var transmission = PBRMaterialContext.pushEntityTransmission(true);
+                var emission = PBRMaterialContext.pushAlbedoEmission(.6F)) {
+            captured = PBRMaterialContext.snapshot();
+        }
+        assertFalse(PBRMaterialContext.entityTransmissionActive());
+        assertEquals(0, PBRMaterialContext.albedoEmission());
+        try (var layer = captured.open()) {
+            assertTrue(PBRMaterialContext.entityTransmissionActive());
+            assertFalse(PBRMaterialContext.blockTransmissionActive());
+            assertEquals(.6F, PBRMaterialContext.albedoEmission());
+            assertEquals(captured, PBRMaterialContext.snapshot());
+        }
+        assertFalse(PBRMaterialContext.entityTransmissionActive());
+        assertEquals(0, PBRMaterialContext.albedoEmission());
+    }
 
     @Test
     void nestedTransmissionScopesRestoreTheirParentState() {

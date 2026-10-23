@@ -293,10 +293,19 @@ DlssFrameGeneration::record(Framework &f, FrameworkContext &frame, const std::sh
             capture->sealCommands(frame.fuseCommandBuffer);
         }
     }
-    if (!Renderer::options.dlssFrameGeneration || !DLSSModule::fgAvailable || !frame.worldRendered ||
-        !frame.fgHudlessCaptured || !pipeline->worldPipelineContext) {
+    const auto guiDecision =
+        frame.fgGui.decide(Renderer::options.dlssFrameGeneration, DLSSModule::fgAvailable, frame.worldRendered,
+                           frame.fgGameFrame && frame.fgHudlessCaptured && bool(pipeline->worldPipelineContext));
+    if (mcvr::audit::enabled(MCVR_AUDIT_CAPTURE))
+        mcvr::log::info("DlssFrameGeneration")
+            << "FG_INPUT frame=" << frame.frameIndex << " world=" << frame.worldRendered
+            << " game=" << frame.fgGameFrame << " requested=" << Renderer::options.dlssFrameGeneration
+            << " hudless=" << frame.fgHudlessCaptured << " reason=" << mcvr::dlss::reasonName(guiDecision)
+            << " fullScreenBlur=" << frame.fgGui.fullScreenBlur
+            << " backgroundReplaced=" << frame.fgGui.backgroundReplaced << std::endl;
+    if (guiDecision != mcvr::dlss::GuiOffReason::None) {
         reset_ = true;
-        mcvr::StreamlineRuntime::get().disableFG();
+        mcvr::StreamlineRuntime::get().disableFG(Renderer::options.dlssFrameGeneration && frame.worldRendered);
         return color;
     }
     std::shared_ptr<RayTracingModuleContext> rt;
@@ -362,7 +371,9 @@ DlssFrameGeneration::record(Framework &f, FrameworkContext &frame, const std::sh
     sl::DLSSGOptions options{};
     options.mode = sl::DLSSGMode::eOn;
     options.numFramesToGenerate = 1;
-    options.flags = sl::DLSSGFlags::eEnableFullscreenMenuDetection;
+    // UIAlpha is the preferred input. Menu gating is explicit; the SDK's
+    // optional automatic detector requires UIColorAndAlpha instead.
+    options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
     options.mvecDepthWidth = depth_->width();
     options.mvecDepthHeight = depth_->height();
     options.enableUserInterfaceRecomposition = sl::eTrue;

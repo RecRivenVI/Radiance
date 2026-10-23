@@ -1,5 +1,8 @@
 #include "core/vulkan/vertex.hpp"
 #include "common/final_position.hpp"
+#include "core/render/rigid_geometry.hpp"
+#include "core/render/entities.hpp"
+#include "core/render/frame_retention.hpp"
 #include <cstring>
 #include <iostream>
 #include <array>
@@ -7,6 +10,55 @@
 #include <limits>
 
 int main() {
+    {
+        auto geometry = std::make_shared<RigidModelResource>();
+        auto appearance = std::make_shared<RigidModelResource>();
+        appearance->geometryOwner = geometry;
+        std::weak_ptr<RigidModelResource> lifetime = geometry;
+        geometry.reset(); // Canonical model was evicted, but a material view still uses it.
+        int recorded = 0;
+        if (!appearance->geometryResource().lifecycle.record([&] { ++recorded; })) return 15;
+        appearance->geometryResource().lifecycle.beginFrame(); // Abandoned recording.
+        if (!appearance->geometryResource().lifecycle.record([&] { ++recorded; }) || recorded != 2) return 16;
+        if (!appearance->geometryResource().lifecycle.submitted()) return 17;
+        mcvr::FrameRetention<std::shared_ptr<RigidModelResource>> pending;
+        pending.beginFrame(1, 0, 2);
+        pending.retain(appearance);
+        appearance.reset();
+        pending.beginFrame(3, 0, 2);
+        if (lifetime.expired()) return 18;
+        pending.beginFrame(4, 1, 2);
+        if (!lifetime.expired()) return 19;
+    }
+    {
+        std::vector<vk::VertexFormat::PBRVertex> source(4);
+        for (size_t i = 0; i < source.size(); ++i) source[i].pos = glm::vec3(float(i), float(i & 1), 0);
+        const std::vector<uint32_t> indices{0, 1, 2, 2, 3, 0};
+        const auto content = [&](const auto &vertices, uint32_t flags, const auto &elements) {
+            auto positions = vk::Vertex::buildPositionVertices(vertices);
+            mcvr::RigidGeometryContent result;
+            result.append(flags, std::as_bytes(std::span(positions)), elements);
+            return result;
+        };
+        const auto original = content(source, 1, indices);
+        source[0].colorLayer = glm::vec4(.3f, .4f, .5f, .6f);
+        source[0].norm = glm::vec3(0, 0, 1);
+        source[0].textureUV = glm::vec2(.1f, .8f);
+        source[0].lightUV = glm::ivec2(16, 240);
+        source[0].overlayUV = glm::ivec2(15, 3);
+        source[0].textureID = 321;
+        const auto materialVariant = content(source, 1, indices);
+        if (!(original == materialVariant) || original.hash() != materialVariant.hash()) return 10;
+        if (original == content(source, 2, indices)) return 11;
+        auto reordered = indices;
+        std::swap(reordered[0], reordered[1]);
+        if (original == content(source, 1, reordered)) return 12;
+        source[0].pos.x += .01f;
+        if (original == content(source, 1, indices)) return 13;
+        auto split = original;
+        split.layout = {1, 32, 3, 1, 32, 3};
+        if (original == split) return 14;
+    }
     // The source policy selects whether this offset is present, never the draw name.
     for (auto p : {glm::vec3(0.0f), glm::vec3(30'000'000.0f, -13.0f, .5f)})
         for (auto n : {glm::vec3(1, 0, 0), glm::vec3(-2, 3, -7), glm::vec3(.01f, .02f, .03f), glm::vec3(1e20f, 0, 0)}) {

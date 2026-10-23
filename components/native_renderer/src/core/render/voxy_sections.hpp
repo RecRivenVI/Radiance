@@ -2,6 +2,7 @@
 
 #include "core/vulkan/all_core_vulkan.hpp"
 #include "common/shared.hpp"
+#include "core/render/voxy_layout.hpp"
 #include <map>
 #include <array>
 #include <mutex>
@@ -57,7 +58,7 @@ class VoxySections {
     std::shared_ptr<VoxyFrameTables> tables(Chunks &chunks, const std::shared_ptr<vk::CommandBuffer> &commands);
     void models(uint64_t epoch, std::span<const uint32_t> records, std::span<const uint32_t> colours);
     bool section(uint64_t epoch, uint64_t key, uint64_t revision, std::span<const uint64_t> quads);
-    void select(uint64_t epoch, std::span<const uint64_t> keys, std::span<const uint64_t> roots);
+    void select(uint64_t epoch, std::span<const uint64_t> keys, voxy::RootCoverage roots);
     void retain(uint64_t epoch, std::span<const uint64_t> keys);
     void record(const std::shared_ptr<vk::CommandBuffer> &commands);
     std::vector<std::shared_ptr<VoxySection>> selected();
@@ -71,7 +72,7 @@ class VoxySections {
     std::map<uint64_t, std::shared_ptr<VoxySection>> sections_;
     std::set<uint64_t> selected_;
     std::set<uint64_t> pending_;
-    std::set<uint64_t> requestedRoots_;
+    voxy::RootCoverage requestedRoots_;
     uint64_t farRevision_ = 0;
     std::shared_ptr<VoxyModels> models_;
     std::shared_ptr<vk::ComputePipeline> pipeline_;

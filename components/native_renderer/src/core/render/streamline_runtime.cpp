@@ -1,6 +1,7 @@
 #include "core/logging.hpp"
 #include "streamline_runtime.hpp"
 #include "renderer.hpp"
+#include "core/diagnostics/audit_sink.hpp"
 #include <cstring>
 #include <cmath>
 #include <iostream>
@@ -208,9 +209,10 @@ OptionalFeatureLoadResult StreamlineRuntime::setFGLoaded(bool loaded) {
     mcvr::log::info("StreamlineRuntime") << "DLSS-G plugin " << (loaded ? "loaded" : "unloaded") << std::endl;
     return OptionalFeatureLoadResult::Changed;
 }
-void StreamlineRuntime::disableFG() {
+void StreamlineRuntime::disableFG(bool retainResources) {
     if (initialized_ && fgLoaded_ && slDLSSGSetOptions && supported(sl::kFeatureDLSS_G)) {
         sl::DLSSGOptions options{};
+        if (retainResources) options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
         check(slDLSSGSetOptions(sl::ViewportHandle(0), options), "FG off");
         if (token_) {
             const sl::ResourceTag tags[]{
@@ -226,6 +228,10 @@ uint32_t StreamlineRuntime::presentedFrames() {
     if (!initialized_ || !fgLoaded_ || !slDLSSGGetState || !supported(sl::kFeatureDLSS_G)) return 0;
     sl::DLSSGState state{};
     if (!check(slDLSSGGetState(sl::ViewportHandle(0), state, nullptr), "FG state")) return 0;
+    if (mcvr::audit::enabled(MCVR_AUDIT_CAPTURE))
+        mcvr::log::info("StreamlineRuntime")
+            << "FG_EVIDENCE token=" << (token_ ? uint32_t(*token_) : 0) << " status=" << uint32_t(state.status)
+            << " presented=" << state.numFramesActuallyPresented << std::endl;
     return state.numFramesActuallyPresented;
 }
 sl::float4x4 slMatrix(const glm::mat4 &matrix) {

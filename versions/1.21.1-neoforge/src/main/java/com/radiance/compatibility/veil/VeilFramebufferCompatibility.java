@@ -131,7 +131,8 @@ public final class VeilFramebufferCompatibility {
         try {
             FramebufferProxy.bindFramebuffer(
                     FramebufferProxy.DRAW_FRAMEBUFFER, framebuffer.getId());
-            FramebufferProxy.clear(red, green, blue, alpha, depth, 0, clearMask, drawBuffers);
+            com.radiance.client.render.AttachmentOperations.clear(
+                    red, green, blue, alpha, depth, 0, clearMask, drawBuffers);
         } finally {
             FramebufferProxy.bindFramebuffer(FramebufferProxy.DRAW_FRAMEBUFFER, oldDraw);
         }
@@ -158,7 +159,7 @@ public final class VeilFramebufferCompatibility {
         try {
             FramebufferProxy.bindFramebuffer(FramebufferProxy.READ_FRAMEBUFFER, source.getId());
             FramebufferProxy.bindFramebuffer(FramebufferProxy.DRAW_FRAMEBUFFER, targetId);
-            FramebufferProxy.blit(
+            com.radiance.client.render.AttachmentOperations.blit(
                     0,
                     0,
                     source.getWidth(),

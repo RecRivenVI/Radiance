@@ -5,6 +5,7 @@ import com.radiance.client.proxy.vulkan.BufferProxy;
 import com.radiance.client.proxy.vulkan.RendererProxy;
 import com.radiance.render.contract.DrawTargetContract;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.GuiGraphics;
 import net.minecraft.resources.ResourceLocation;
 import org.joml.Matrix4f;
 
@@ -76,6 +77,11 @@ public final class ScreenEffectCoordinator {
                 DrawTargetContract.ScopeKind.GUI, "game_renderer_gui_phase");
     }
 
+    public static void guiBackground(
+            GuiGraphics graphics, DrawTargetContract.GuiRole role, Runnable draw) {
+        GuiDrawScope.run(role.nativeId(), graphics::flush, RendererProxy::setGuiDrawRole, draw);
+    }
+
     public static boolean applyEntityPostEffect(EntityPostEffect effect) {
         if (effect == null || !effect.supported()) return false;
         boolean auditing = RenderAuditBridge.accepts("SCREEN_EFFECT");
@@ -89,7 +95,13 @@ public final class ScreenEffectCoordinator {
                                         + "; nativeId="
                                         + effect.nativeId())
                         : 0L;
-        boolean recorded = RendererProxy.postEntityEffect(effect.nativeId());
+        boolean recorded;
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "SCREEN_EFFECT", "entity." + effect.name(), "DIRECT", "ACTIVE_COLOR")) {
+            recorded = RendererProxy.postEntityEffect(effect.nativeId());
+            if (recorded) com.radiance.api.audit.DrawingAudit.consumed("native.post.entity");
+        }
         if (auditing) {
             reportBackendResult(auditId, recorded, "entity post effect " + effect.name());
         }
@@ -100,7 +112,13 @@ public final class ScreenEffectCoordinator {
         float radius = minecraft.options.getMenuBackgroundBlurriness();
         if (radius < 1.0F) return false;
         BufferProxy.updateOverlayPostUniform(radius);
-        boolean recorded = RendererProxy.postBlur();
+        boolean recorded;
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "SCREEN_EFFECT", "menu.blur", "DIRECT", "ACTIVE_COLOR")) {
+            recorded = RendererProxy.postBlur();
+            if (recorded) com.radiance.api.audit.DrawingAudit.consumed("native.post.blur");
+        }
         if (RenderAuditBridge.accepts("SCREEN_EFFECT")) {
             RenderAuditBridge.transition(
                     0L,

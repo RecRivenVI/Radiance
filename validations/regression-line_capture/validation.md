@@ -11,6 +11,8 @@
 .\gradlew.bat :version:1.21.1-neoforge:runValidationRegressionLineCaptureClient
 ```
 
+接管可行性专项复用本来源夹具时，在运行前设置 `$env:RADIANCE_TAKEOVER_SOURCES = '1'` 和 `$env:RADIANCE_VALIDATION_NAME = 'regression-line_capture'`，运行结束后移除。后者限制共享准备工具只处理当前验证。该模式额外检查实际 Flywheel 后端已有非零模型、实例和 render 调用，并输出 `takeover-sources.json`；Flywheel 仅为被观察的来源，不能用本项替代无 Flywheel 的[独立接管验证](../conformance-render_takeover/validation.md)。现有来源适配运行通过不代表新统一协议或全部来源效果已经等价。
+
 需要明确检查 FSR 时，先使用下列准备命令，再执行同一客户端任务；它只写带所有权标记的本验证实例，不能修改日常实例。
 
 ```powershell

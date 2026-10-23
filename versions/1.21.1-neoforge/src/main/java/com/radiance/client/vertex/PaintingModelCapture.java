@@ -153,16 +153,8 @@ public final class PaintingModelCapture {
     }
 
     public static boolean sourceCompatible() {
-        return SourceCapability.COMPATIBLE;
-    }
-
-    private static final class SourceCapability {
-        private static final boolean COMPATIBLE =
-                "independent"
-                        .equals(
-                                System.getProperty(
-                                        com.radiance.mixin_related.MixinPlugin
-                                                .PAINTING_SOURCE_PROPERTY));
+        return com.radiance.mixin_related.SourceCompatibility.compatible(
+                com.radiance.mixin_related.SourceCompatibility.Source.PAINTING);
     }
 
     static void renderLit(

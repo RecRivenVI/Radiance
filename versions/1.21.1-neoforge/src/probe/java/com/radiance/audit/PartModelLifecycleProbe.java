@@ -21,6 +21,7 @@ public final class PartModelLifecycleProbe {
     private static UUID target;
     private static CompletableFuture<?> pending;
     private static volatile State expected;
+    private static final Map<String, Object> comparisons = new LinkedHashMap<>();
 
     private record State(
             int id,
@@ -76,9 +77,25 @@ public final class PartModelLifecycleProbe {
                 if (!(mc.level.getEntity(expected.id) instanceof ArmorStand a)
                         || !expected.matches(a))
                     throw new IllegalStateException("Changed part owner not delivered to client");
-                // Outline is intentionally the original wrapped-consumer path, not this
-                // optimization.
-                if (!expected.glowing) PartModelProbe.checkpoint("lifecycle-" + (step - 1));
+                // Outline needs its dedicated provider comparison; the delivered live
+                // flag is observed here, and the complete renderer suite covers its geometry.
+                if (!expected.glowing) {
+                    String label = "lifecycle-" + (step - 1);
+                    var comparison = RendererReplacementProbe.compareLifecycleStand(mc, a);
+                    if (!"RENDERER_REPLACED_COMPARED".equals(comparison.get("route")))
+                        throw new IllegalStateException(
+                                "Lifecycle source not compared: " + comparison);
+                    comparisons.put(label, comparison);
+                    java.nio.file.Files.writeString(
+                            java.nio.file.Path.of(
+                                    System.getProperty("validation.result"),
+                                    "lifecycle-source-comparisons.json"),
+                            new com.google.gson.GsonBuilder()
+                                            .setPrettyPrinting()
+                                            .create()
+                                            .toJson(comparisons)
+                                    + "\n");
+                }
                 LOG.info(
                         "PART_LIFECYCLE observed stage={} owner={} glowing={} cache={}",
                         step - 1,
@@ -98,7 +115,6 @@ public final class PartModelLifecycleProbe {
                                                     e -> e.distanceToSqr(mc.player)))
                                     .orElseThrow();
                     target = a.getUUID();
-                    PartModelProbe.target(a.getId());
                     mutate(
                             mc,
                             e -> {
@@ -139,24 +155,20 @@ public final class PartModelLifecycleProbe {
                     var dimension = mc.level.dimension();
                     pending =
                             CompletableFuture.runAsync(
-                                            () -> {
-                                                var level = server.getLevel(dimension);
-                                                var old = (ArmorStand) level.getEntity(target);
-                                                var fresh =
-                                                        new ArmorStand(
-                                                                level,
-                                                                old.getX(),
-                                                                old.getY(),
-                                                                old.getZ());
-                                                fresh.setHeadPose(new Rotations(15, 30, 45));
-                                                fresh.setNoGravity(true);
-                                                old.discard();
-                                                level.addFreshEntity(fresh);
-                                                target = fresh.getUUID();
-                                                expected = State.of(fresh);
-                                            },
-                                            server)
-                                    .thenRunAsync(() -> PartModelProbe.target(expected.id), mc);
+                                    () -> {
+                                        var level = server.getLevel(dimension);
+                                        var old = (ArmorStand) level.getEntity(target);
+                                        var fresh =
+                                                new ArmorStand(
+                                                        level, old.getX(), old.getY(), old.getZ());
+                                        fresh.setHeadPose(new Rotations(15, 30, 45));
+                                        fresh.setNoGravity(true);
+                                        old.discard();
+                                        level.addFreshEntity(fresh);
+                                        target = fresh.getUUID();
+                                        expected = State.of(fresh);
+                                    },
+                                    server);
                 }
                 case 6 -> {
                     mc.levelRenderer.allChanged();
@@ -176,7 +188,7 @@ public final class PartModelLifecycleProbe {
                             throw new IllegalStateException("Recipe survived disconnect: " + type);
                     }
                     LOG.info(
-                            "PART_LIFECYCLE PASS pose, visibility flags, equipment, outline fallback state, reload, replacement, F3+A, disconnect retirement; visual and GPU temporal parity remain unapproved");
+                            "PART_LIFECYCLE PASS original-renderer comparison of live pose, visibility flags, equipment, observed outline state, reload, replacement, F3+A, disconnect retirement; visual and GPU temporal parity remain unapproved");
                     stopped = true;
                     mc.stop();
                 }

@@ -42,6 +42,22 @@ HistoryEntry entry(uint64_t history, uint64_t model, float tx) {
 int main() {
     // Records: accepted shape, then each rejected field.
     validate(valid(), 2);
+    validateBindingBatch(mcvr::abi::RIGID_BINDING_VERSION, 112, 2);
+    require(throwsInvalid([] { validateBindingBatch(0, 112, 2); }), "binding ABI rejected");
+    require(throwsInvalid([] { validateBindingBatch(mcvr::abi::RIGID_BINDING_VERSION, 111, 2); }),
+            "short binding bytes rejected");
+    ModelBinding bindingData[2] = {{7, 0x1000, 4, 3, 1, 0, {1, 1, 1, 1}, 0, 2},
+                                   {7, 0x2000, 4, 3, 2, 1, {1, .5f, .25f, 1}, 1, 2}};
+    require(bindings(bindingData, 2).at(7).size() == 2, "base and coating keep source order");
+    require(throwsInvalid([&] { bindings({bindingData, 1}, 2); }), "truncated model range rejected");
+    bindingData[1].ordinal = 0;
+    require(throwsInvalid([&] { bindings(bindingData, 2); }), "duplicate layer ordinal rejected");
+    bindingData[1].ordinal = 1;
+    bindingData[1].model = 8;
+    require(throwsInvalid([&] { bindings(bindingData, 2); }), "mixed model identity rejected");
+    bindingData[1].model = 7;
+    bindingData[1].drawColour[0] = std::numeric_limits<float>::quiet_NaN();
+    require(throwsInvalid([&] { bindings(bindingData, 2); }), "nonfinite binding colour rejected");
     validateBatch(mcvr::abi::RIGID_INPUT_VERSION, 152, 304, 2);
     require(throwsInvalid([] { validateBatch(2, 152, 304, 2); }), "pre-emission ABI rejected");
     require(throwsInvalid([] { validateBatch(1, 152, 304, 2); }), "old ABI rejected");
@@ -143,6 +159,27 @@ int main() {
     auto changedTopology = previous(frame.find(10), 1, 4, 6);
     require(changedTopology.indexAddress == 0 && changedTopology.positionAddress == 0,
             "topology change drops addresses");
+
+    // The production scene writer must keep geometry-indexed SBT records separate from
+    // instance-indexed transforms, including the instance following a multi-geometry model.
+    struct Geometry {
+        uint32_t group;
+    };
+    std::vector<uint32_t> groups;
+    std::vector<int> transforms, visited;
+    const auto append = [&](std::vector<Geometry> geometry, int transform) {
+        appendInstanceTables(geometry, 0u, groups, transforms, transform,
+                             [&](const auto &g) { visited.push_back(g.group); });
+    };
+    append({{11}, {12}, {13}}, 101);
+    const auto nextBase = groups.size();
+    append({{21}}, 202);
+    require(groups == std::vector<uint32_t>({0, 11, 12, 13, 0, 21}), "one shadow then material records per instance");
+    for (size_t g = 0; g < 3; ++g) require(groups[1 + g] == 11 + g, "primary ray stride 1 selects own material");
+    require(groups[0] == 0 && groups[nextBase] == 0, "shadow ray stride 0 selects instance shadow");
+    require(groups[nextBase + 1] == 21, "following instance material offset");
+    require(transforms == std::vector<int>({101, 202}), "one previous transform per instance");
+    require(visited == std::vector<int>({11, 12, 13, 21}), "geometry append order");
 
     HistoryFrame empty;
     empty.finish();

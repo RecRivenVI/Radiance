@@ -184,11 +184,15 @@ public class ChunkProxy {
     }
 
     public static void removeBlockEntitySection(SectionRenderDispatcher.RenderSection section) {
-        synchronized (blockEntitySections) {
-            var compiled = section.getCompiled();
-            blockEntitySections.publish(
-                    section, compiled, !compiled.getRenderableBlockEntities().isEmpty());
-        }
+        blockEntitySections.remove(section);
+    }
+
+    static boolean currentBlockEntitySection(
+            SectionPresenceIndex.Entry<
+                            SectionRenderDispatcher.RenderSection,
+                            SectionRenderDispatcher.CompiledSection>
+                    entry) {
+        return blockEntitySections.isCurrent(entry);
     }
 
     static List<
@@ -1362,23 +1366,31 @@ public class ChunkProxy {
                                 "NATIVE_CALL",
                                 ticket == null ? -1 : ticket.generation,
                                 "id=" + nativeIndex + "; java_ns=" + System.nanoTime());
-                    rebuildSingle(
-                            buildOrigin.getX(),
-                            buildOrigin.getY(),
-                            buildOrigin.getZ(),
-                            nativeIndex,
-                            ticket == null ? -1L : ticket.generation,
-                            buffers.size(),
-                            geometryTypeAddr,
-                            geometryGroupNameAddr,
-                            geometryMaterialFlagsAddr,
-                            geometryTextureAddr,
-                            vertexFormatAddr,
-                            vertexCountAddr,
-                            verticesAddr,
-                            nativeImmediate,
-                            important ? 1 : 0,
-                            countBuiltChunk);
+                    try (var request =
+                            com.radiance.api.audit.DrawingAudit.begin(
+                                    "SECTION",
+                                    "SectionCompiler",
+                                    ticket == null ? "CAPTURE" : "DIRECT",
+                                    "WORLD")) {
+                        rebuildSingle(
+                                buildOrigin.getX(),
+                                buildOrigin.getY(),
+                                buildOrigin.getZ(),
+                                nativeIndex,
+                                ticket == null ? -1L : ticket.generation,
+                                buffers.size(),
+                                geometryTypeAddr,
+                                geometryGroupNameAddr,
+                                geometryMaterialFlagsAddr,
+                                geometryTextureAddr,
+                                vertexFormatAddr,
+                                vertexCountAddr,
+                                verticesAddr,
+                                nativeImmediate,
+                                important ? 1 : 0,
+                                countBuiltChunk);
+                        com.radiance.api.audit.DrawingAudit.consumed("native.section.enqueue");
+                    }
                     RenderAuditBridge.transition(
                             nativeSubmitIntent,
                             "ACCEPTED",

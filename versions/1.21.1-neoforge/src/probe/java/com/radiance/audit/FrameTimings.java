@@ -47,6 +47,7 @@ public final class FrameTimings {
 
     public final long[] inclusive = new long[Stage.values().length];
     public final long[] self = new long[Stage.values().length];
+    public long generatedPbrVertices, generatedPbrBytes;
     private final LongSupplier clock;
     private Span top;
 

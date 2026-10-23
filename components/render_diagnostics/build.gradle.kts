@@ -46,6 +46,20 @@ val benchmarkTests =
         testClassesDirs = benchmarkTest.output.classesDirs
         classpath = benchmarkTest.runtimeClasspath
     }
+val takeoverToolTest =
+    tasks.register<Exec>("takeoverToolTest") {
+        commandLine(
+            "python",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "benchmark",
+            "-p",
+            "test_takeover_experiment.py",
+            "-v",
+        )
+    }
 val pythonInventoryTest =
     tasks.register<Exec>("pythonInventoryTest") {
         commandLine(
@@ -190,6 +204,7 @@ val benchmarkAgentJar =
 
 tasks.named("check") {
     dependsOn(
+        takeoverToolTest,
         inventoryTests,
         benchmarkTests,
         pythonInventoryTest,
@@ -332,11 +347,25 @@ tasks.register("requestSceneProfile") {
 }
 
 // Validation preparation is owned by this tool; it never touches an external game instance.
+val selectedValidation = providers.environmentVariable("RADIANCE_VALIDATION_NAME").orNull
+
+require(
+    selectedValidation == null ||
+        (selectedValidation.matches(Regex("[a-z]+-[a-z0-9_]+")) &&
+            file("../../validations/$selectedValidation/validation.toml").isFile),
+) {
+    "RADIANCE_VALIDATION_NAME must identify a registered validation"
+}
+
+val basicValidationNames =
+    listOf("smoke-render_diagnostics", "conformance-benchmark").filter { name ->
+        selectedValidation == null || selectedValidation == name
+    }
 val prepareGameValidation =
     tasks.register("prepareGameValidation") {
         dependsOn(benchmarkAgentJar)
         doLast {
-            for (name in listOf("smoke-render_diagnostics", "conformance-benchmark")) {
+            for (name in basicValidationNames) {
                 val directory = file("../../validations/$name/instance/1.21.1-neoforge/client")
                 directory.mkdirs()
                 directory
@@ -365,10 +394,123 @@ tasks.register<Exec>("prepareLineValidation") {
     providers.gradleProperty("lineValidationPreset").orNull?.let { args("--preset", it) }
 }
 
+tasks.register<Exec>("prepareTakeoverValidation") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/prepare_takeover_validation.py")
+}
+
+tasks.register<Exec>("analyzeTakeoverValidation") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/analyze_takeover_validation.py")
+}
+
+tasks.register<Exec>("prepareBoundaryValidation") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/prepare_boundary_validation.py")
+}
+
+tasks.register<Exec>("prepareTakeoverStages") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/prepare_takeover_stages.py")
+}
+
+tasks.register<Exec>("analyzeTakeoverStages") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_experiment.py", "analyze")
+}
+
+tasks.register<Exec>("runTakeoverComparison") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_experiment.py", "compare")
+}
+
+tasks.register<Exec>("analyzeTakeoverComparison") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_experiment.py", "report")
+}
+
+tasks.register<Exec>("prepareTakeoverCity") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_city.py", "prepare")
+}
+
+tasks.register<Exec>("upgradeCityFixture") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/upgrade_city_fixture.py")
+}
+
+tasks.register<Exec>("prepareTakeoverAcceptance") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_acceptance.py", "prepare")
+}
+
+tasks.register<Exec>("runTakeoverAcceptance") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_acceptance.py", "run")
+}
+
+tasks.register<Exec>("runEntityTakeover") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/entity_takeover.py")
+    args(providers.gradleProperty("entityTakeoverCase").orElse("functional").get())
+}
+
+tasks.register<Exec>("runVanillaTakeover") {
+    workingDir(projectDir)
+    commandLine(
+        "python",
+        "-X",
+        "utf8",
+        "benchmark/vanilla_takeover.py",
+        providers.gradleProperty("case").getOrElse("baseline"),
+    )
+}
+
+tasks.register<Exec>("runVanillaPerformance") {
+    workingDir(projectDir)
+    commandLine(
+        "python",
+        "-X",
+        "utf8",
+        "benchmark/vanilla_performance.py",
+        providers.gradleProperty("case").getOrElse("r32-1080"),
+    )
+}
+
+tasks.register<Exec>("runTakeoverCity") {
+    dependsOn(benchmarkAgentJar)
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_city.py")
+    args(providers.gradleProperty("cityTakeoverSeries").orElse("initial").get())
+}
+
+tasks.register<Exec>("snapshotTakeover") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_snapshot.py")
+    args(providers.gradleProperty("takeoverSnapshot").orElse("source-candidate").get())
+}
+
+tasks.register<Exec>("analyzeBoundaryValidation") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/analyze_boundary_validation.py")
+}
+
 tasks.register<Exec>("prepareVoxyValidation") {
     dependsOn(benchmarkAgentJar)
     group = "verification"
     commandLine("python", "-X", "utf8", "benchmark/prepare_voxy_validation.py")
+    providers.gradleProperty("voxyValidationDistance").orNull?.let { args("--distance", it) }
+}
+
+tasks.register<Exec>("analyzeVoxyValidation") {
+    group = "verification"
+    commandLine("python", "-X", "utf8", "benchmark/takeover_experiment.py", "voxy")
 }
 
 val lineFixtureTest =

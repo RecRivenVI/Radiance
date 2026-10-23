@@ -12,8 +12,10 @@ namespace radiance::audit::profile {
 struct Event { uint64_t frame, inclusive, self; uint32_t domain; char label[80]; };
 struct Queue {
     std::mutex mutex;
-    std::array<Event, 8192> events{};
-    std::array<Event, 8192> snapshot{};
+    // Rigid-model recording can emit 19,576 events between two frame drains.
+    // Keep a fixed headroom bound; overflow must still invalidate the sample.
+    std::array<Event, 32768> events{};
+    std::array<Event, 32768> snapshot{};
     std::mutex reader;
     size_t count = 0;
     std::atomic<uint64_t> dropped{0};

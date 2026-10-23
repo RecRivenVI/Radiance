@@ -13,6 +13,28 @@ public final class PBRMaterialContext {
     private static final ThreadLocal<Float> ALBEDO_EMISSION = ThreadLocal.withInitial(() -> 0.0F);
     private static final Scope NO_OP = () -> {};
 
+    record State(boolean block, boolean entity, float emission) {
+        Scope open() {
+            if (!block && !entity && emission == 0) return NO_OP;
+            var b = pushBlockTransmission(block);
+            var e = pushEntityTransmission(entity);
+            var a = pushAlbedoEmission(emission);
+            return () -> {
+                a.close();
+                e.close();
+                b.close();
+            };
+        }
+    }
+
+    private static final State ORDINARY = new State(false, false, 0);
+
+    static State snapshot() {
+        boolean block = blockTransmissionActive(), entity = entityTransmissionActive();
+        float emission = albedoEmission();
+        return !block && !entity && emission == 0 ? ORDINARY : new State(block, entity, emission);
+    }
+
     private PBRMaterialContext() {}
 
     public static Scope pushBlockTransmission(boolean enabled) {

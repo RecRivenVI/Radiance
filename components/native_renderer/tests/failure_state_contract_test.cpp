@@ -59,6 +59,24 @@ size_t verifyJniBoundaries(const std::filesystem::path &root) {
 
 int main() {
     {
+        using Reason = mcvr::dlss::GuiOffReason;
+        mcvr::dlss::GuiFrameState gui;
+        assert(gui.decide(true, true, true, true) == Reason::None);
+        assert(gui.decide(false, true, true, true) == Reason::UserDisabled);
+        assert(gui.decide(true, false, true, true) == Reason::Unavailable);
+        assert(gui.decide(true, true, false, true) == Reason::NoWorld);
+        assert(gui.decide(true, true, true, false) == Reason::InputsNotReady);
+        gui.fullScreenBlur = true;
+        assert(gui.decide(true, true, true, true) == Reason::FullScreenBlur);
+        gui.backgroundReplaced = true;
+        assert(gui.decide(true, true, true, true) == Reason::BackgroundReplaced);
+        gui = {};
+        gui.unsupportedComposition = true;
+        assert(gui.decide(true, true, true, true) == Reason::UnsupportedComposition);
+        gui = {};
+        assert(gui.decide(true, true, true, true) == Reason::None); // fresh frame resumes without stale blur
+    }
+    {
         bool failed = false, reset = false, surface = false;
         mcvr::dlss::applyAsyncPresentResult(VK_ERROR_OUT_OF_DATE_KHR, failed, reset, surface);
         assert(!failed && reset && surface);
@@ -326,6 +344,11 @@ int main() {
     assert(mcvr::planOptionalFeatureLoad(false, false, true, true) == Unavailable);
     assert(mcvr::planOptionalFeatureLoad(true, true, false, false) == NoChange);
     assert(mcvr::planOptionalFeatureLoad(true, true, false, true) == InvokeRuntime);
+    assert(mcvr::optionalFeaturePresentationChanged(true, false, true));
+    assert(mcvr::optionalFeaturePresentationChanged(true, true, false));
+    assert(!mcvr::optionalFeaturePresentationChanged(true, false, false));
+    assert(!mcvr::optionalFeaturePresentationChanged(true, true, true));
+    assert(!mcvr::optionalFeaturePresentationChanged(false, true, false));
     assert(mcvr::optionalFeatureRequestSatisfied(mcvr::OptionalFeatureLoadResult::SatisfiedWithoutRuntime));
     assert(!mcvr::optionalFeatureRequestSatisfied(mcvr::OptionalFeatureLoadResult::Unavailable));
     assert(!mcvr::optionalFeatureRequestSatisfied(mcvr::OptionalFeatureLoadResult::Failed));

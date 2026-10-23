@@ -6,7 +6,8 @@ enum ProfileMode {
     TIMED(1, true, false),
     CONTENT_AUDIT(7, true, false),
     PRODUCERS(1, true, true),
-    CPU_SAMPLES(1, true, false);
+    CPU_SAMPLES(1, true, false),
+    JFR_ONLY(0, false, false);
 
     final int nativeFlags;
     final boolean stages;

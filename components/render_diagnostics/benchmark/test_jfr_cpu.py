@@ -3,6 +3,17 @@ from jfr_cpu import summarize, duration_seconds
 
 
 class JfrCpuTest(unittest.TestCase):
+    def test_native_entity_build_is_not_misreported_as_java_entity_rendering(self):
+        def frame(owner, method):
+            return dict(method=dict(type=dict(name=owner), name=method))
+        sample = dict(type='jdk.NativeMethodSample', values=dict(
+            sampledThread=dict(javaName='Render thread'), stackTrace=dict(frames=[
+                frame('com/radiance/client/proxy/world/EntityProxy', 'build'),
+                frame('com/radiance/client/proxy/world/EntityProxy', 'queueEntitiesBuild$mixinextras$wrapped')])) )
+        result = summarize([sample])
+        self.assertEqual(result['renderSampleGroups'], {'native-entity-build': 1})
+        self.assertEqual(result['entityRenderLeaves'], [])
+
     def test_java21_iso_duration_export(self):
         self.assertEqual(duration_seconds('PT0.002S'), .002)
         self.assertEqual(duration_seconds('PT1M2.5S'), 62.5)

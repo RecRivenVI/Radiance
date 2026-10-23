@@ -12,10 +12,60 @@ import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
 
 public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSource {
+    public record ProceduralSource(String family, String producer, boolean direct) {}
+
+    private ProceduralSource proceduralSource;
+
+    public StorageVertexConsumerProvider procedural(String family, Class<?> producer) {
+        proceduralSource =
+                new ProceduralSource(
+                        family,
+                        producer.getName(),
+                        com.radiance.mixin_related.SourceCompatibility.producer(producer)
+                                && com.radiance.mixin_related.SourceCompatibility.compatible(
+                                        com.radiance.mixin_related.SourceCompatibility.Source
+                                                .STATIC_STATE));
+        return this;
+    }
+
+    public ProceduralSource proceduralSource() {
+        return proceduralSource;
+    }
+
+    private boolean particleModels;
+    double particleX, particleY, particleZ;
+
+    public StorageVertexConsumerProvider particleModels(net.minecraft.world.phys.Vec3 camera) {
+        particleModels = true;
+        particleX = camera.x;
+        particleY = camera.y;
+        particleZ = camera.z;
+        return this;
+    }
+
+    float particleEmission() {
+        return defaultAlbedoEmission;
+    }
+
     final java.util.List<RigidModelCapture.Draw> rigidDraws = new java.util.ArrayList<>();
     long rigidInstance;
     int rigidOrdinal;
     private boolean rigidEnabled;
+    boolean partCaptureEnabled;
+    boolean declaredPartsEnabled;
+    String partProducer;
+    long partHistoryDomain;
+    boolean takeoverItemFrame;
+    private boolean takeoverStaticState;
+
+    public void takeoverItemFrame(boolean value) {
+        takeoverItemFrame = value;
+    }
+
+    public void takeoverStaticState(boolean value) {
+        takeoverStaticState = value;
+    }
+
     PartState partState;
 
     static final class PartState {
@@ -30,6 +80,53 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
     public void enableRigidModels(int instance) {
         rigidEnabled = RigidModelCapture.ENABLED;
         rigidInstance = Integer.toUnsignedLong(instance);
+    }
+
+    public void declaredParts(int instance, String producer) {
+        rigidEnabled = partCaptureEnabled = declaredPartsEnabled = true;
+        rigidInstance = Integer.toUnsignedLong(instance);
+        partProducer = producer;
+        size = 0;
+        takeoverStaticState = true;
+    }
+
+    public boolean rigidBakedEnabled() {
+        return rigidEnabled;
+    }
+
+    public void originalModel(Runnable render) {
+        boolean rigid = rigidEnabled, part = partCaptureEnabled, declared = declaredPartsEnabled;
+        rigidEnabled = partCaptureEnabled = declaredPartsEnabled = false;
+        try {
+            render.run();
+        } finally {
+            rigidEnabled = rigid;
+            partCaptureEnabled = part;
+            declaredPartsEnabled = declared;
+        }
+    }
+
+    /** Source scope only; geometry eligibility is separately owned by the actual model baker. */
+    public void enablePartModels(Object owner, Object renderer, boolean blockEntity) {
+        if (!PartModelCapture.ENABLED
+                || renderer == null
+                || !renderer.getClass().getName().startsWith("net.minecraft.client.renderer.")
+                || surfaceRole != com.radiance.render.contract.SourceEmission.Role.ORDINARY
+                || (!blockEntity && !rigidEnabled)) return;
+        if (!com.radiance.mixin_related.SourceCompatibility.producer(renderer.getClass())) return;
+        if (renderer
+                        instanceof
+                        net.minecraft.client.renderer.entity.LivingEntityRenderer<?, ?> living
+                && !com.radiance.mixin_related.SourceCompatibility.producer(
+                        living.getModel().getClass())) return;
+        if (blockEntity) {
+            long identity = PartModelCapture.blockOwner(owner);
+            if (identity < 0) return;
+            rigidInstance = identity;
+            partHistoryDomain = 1L << 62;
+        }
+        partCaptureEnabled = true;
+        partProducer = renderer.getClass().getName();
     }
 
     public java.util.List<RigidModelCapture.Draw> takeRigidModels() {
@@ -132,13 +229,16 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
             if (drawMode == VertexFormat.Mode.QUADS) {
                 vertexConsumer = createQuadConsumer(bufferAllocator, renderLayer);
                 if (vertexConsumer instanceof PBRVertexConsumer pbrVertexConsumer) {
+                    pbrVertexConsumer.rigidLayer = renderLayer;
+                    if (particleModels) {
+                        pbrVertexConsumer.particleOwner = this;
+                    }
                     if (pbrVertexConsumer.acceptsInheritedAlbedoEmission())
                         pbrVertexConsumer.setDefaultAlbedoEmission(defaultAlbedoEmission);
-                    if (rigidEnabled
+                    if ((rigidEnabled || partCaptureEnabled)
                             && vertexConsumer.getClass() == PBRVertexConsumer.class
                             && pbrVertexConsumer.allowsRigidCapture()) {
                         pbrVertexConsumer.rigidOwner = this;
-                        pbrVertexConsumer.rigidLayer = renderLayer;
                     }
                 }
             } else if (CapturedLineVertexConsumer.supports(drawMode, vertexFormat)) {
@@ -171,6 +271,10 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
     }
 
     protected com.radiance.render.contract.DrawStateSnapshot captureDrawState(RenderType layer) {
+        if (takeoverStaticState) {
+            var state = com.radiance.client.render.StaticDrawStates.capture(layer);
+            if (state != null) return state;
+        }
         return com.radiance.client.render.MaterialFaces.captureSnapshot(layer);
     }
 

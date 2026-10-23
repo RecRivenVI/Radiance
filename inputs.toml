@@ -22,6 +22,12 @@ description = "使用者授权复制的 Newport City 世界及原设置；版本
 source = "使用者最近一次 Prism 手工运行，2026-10-15 只读快照；不修改原世界"
 sha256 = ["5e0f1d38256b0e831b10aacad504e866cfe825d0ff508166b374430fdf80e395"]
 
+[epicsawrunner_city_original]
+version = "1.2"
+description = "使用者提供的 By Epicsawrunner v1.2 原始城市存档，Minecraft 1.12.2 / DataVersion 1343；只读输入，原版优化后用于阶段 3 纯原版城市对照"
+source = "使用者于 2026-10-20 指定的原始存档 By Epicsawrunner v1.2.zip"
+sha256 = ["7fb7080c653aeb2073a813c4f20d046c2057f3ed281ef993305578b8e637f53a"]
+
 [nsight_aftermath_sdk]
 version = "2026.3.26197.2318"
 description = "已安装 Nsight Graphics 附带的 NsightAftermathSDK 私有 ZIP 输入，仅构建项目内 JVM 诊断代理，不进入发行包"

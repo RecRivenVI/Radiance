@@ -17,6 +17,25 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(ItemRenderer.class)
 public class ItemRendererMixins {
+    @Inject(method = "render", at = @At("HEAD"), cancellable = true)
+    private void radiance$declaredItem(
+            net.minecraft.world.item.ItemStack stack,
+            net.minecraft.world.item.ItemDisplayContext context,
+            boolean left,
+            PoseStack pose,
+            MultiBufferSource buffers,
+            int light,
+            int overlay,
+            net.minecraft.client.resources.model.BakedModel model,
+            org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
+        if (com.radiance.compatibility.vanilla.VanillaItemReplacement.eligible(
+                stack, context, buffers, model)) {
+            com.radiance.compatibility.vanilla.VanillaItemReplacement.render(
+                    stack, context, left, pose, buffers, light, overlay, model);
+            ci.cancel();
+        }
+    }
+
     @com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod(method = "renderModelLists")
     private void radiance$rigidModel(
             net.minecraft.client.resources.model.BakedModel model,
@@ -26,6 +45,8 @@ public class ItemRendererMixins {
             PoseStack pose,
             VertexConsumer consumer,
             com.llamalad7.mixinextras.injector.wrapoperation.Operation<Void> original) {
+        if (com.radiance.client.vertex.BakedModelTakeover.item(
+                model, item, light, overlay, pose.last(), consumer)) return;
         com.radiance.client.vertex.RigidModelCapture.render(
                 model,
                 pose.last(),

@@ -19,7 +19,12 @@ public abstract class ProfileCloudMixin {
             float partialTick,
             Operation<Void> original) {
         try (var ignored = FrameProfiler.span(Stage.CLOUDS)) {
-            original.call(level, camera, ticks, partialTick);
+            com.radiance.audit.InstanceInputCensus.cloud(true);
+            try {
+                original.call(level, camera, ticks, partialTick);
+            } finally {
+                com.radiance.audit.InstanceInputCensus.cloud(false);
+            }
         }
     }
 }

@@ -269,6 +269,7 @@ struct UIModuleContext : public SharedObject<UIModuleContext> {
     uint32_t hudlessModulationDepthView = 0;
     bool mirroringBackgroundModulation = false;
     bool backgroundModulationPrepared = false;
+    std::shared_ptr<vk::DynamicGraphicsPipeline> prepareRasterDraw(uint32_t shaderId, uint32_t uniformOffset);
     void prepareBackgroundModulation();
     void mirrorBackgroundModulation(const std::function<void()> &draw);
     std::shared_ptr<vk::DeviceLocalImage> overlayPostColorImage;

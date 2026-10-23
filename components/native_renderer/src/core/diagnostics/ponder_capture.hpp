@@ -117,7 +117,8 @@ struct PonderCapture {
         };
         static Request requests[3];
         auto &[accepted, frame, selected, root] = requests[fg ? 1 : (ui ? 0 : 2)];
-        const auto limit = fg ? 1u : 8u;
+        const char *singleFrame = std::getenv("RADIANCE_CAPTURE_SINGLE_FRAME");
+        const auto limit = fg || (singleFrame && std::string_view(singleFrame) == "1") ? 1u : 8u;
         const char *request = fg ? "radiance-fg-capture.request" :
                                    (ui ? "radiance-ponder-capture.request" : "radiance-world-capture.request");
         // A completed burst (or a destroyed scene) can accept a new request.

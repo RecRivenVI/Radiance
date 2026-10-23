@@ -20,6 +20,9 @@ class StreamlineRuntime {
     bool ready() const {
         return initialized_;
     }
+    bool fgLoaded() const {
+        return fgLoaded_;
+    }
     bool supported(sl::Feature feature) const;
     sl::FrameToken *frame();
     void beginFrame(int reflexMode, uint32_t fpsLimit = 0);
@@ -30,7 +33,7 @@ class StreamlineRuntime {
     uint32_t allocateViewport();
     bool check(sl::Result result, const char *operation);
     OptionalFeatureLoadResult setFGLoaded(bool loaded);
-    void disableFG();
+    void disableFG(bool retainResources = false);
     uint32_t presentedFrames();
 
 #define MCVR_SL_API(name) PFun_##name *name{};

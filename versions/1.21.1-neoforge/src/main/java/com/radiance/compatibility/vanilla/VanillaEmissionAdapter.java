@@ -10,32 +10,16 @@ public final class VanillaEmissionAdapter {
     private VanillaEmissionAdapter() {}
 
     public static boolean requiresEyeComposition(Iterable<?> layers) {
-        for (Object layer : layers)
-            if (layer instanceof net.minecraft.client.renderer.entity.layers.EyesLayer<?, ?>)
-                return true;
-        return false;
+        return VanillaLayerAdapter.describe(layers, false, false).eyeOwner();
     }
 
     public static boolean requiresSurfaceLayers(Iterable<?> layers, boolean armorActive) {
-        for (Object layer : layers) {
-            if (layer
-                            instanceof
-                            net.minecraft.client.renderer.entity.layers.WardenEmissiveLayer<?, ?>
-                    || layer instanceof net.minecraft.client.renderer.entity.layers.BreezeEyesLayer
-                    || layer instanceof net.minecraft.client.renderer.entity.layers.CatCollarLayer
-                    || layer instanceof net.minecraft.client.renderer.entity.layers.WolfCollarLayer
-                    || layer
-                            instanceof
-                            net.minecraft.client.renderer.entity.layers.IronGolemCrackinessLayer
-                    || layer
-                            instanceof net.minecraft.client.renderer.entity.layers.HorseMarkingLayer
-                    || (armorActive
-                            && layer
-                                    instanceof
-                                    net.minecraft.client.renderer.entity.layers.HumanoidArmorLayer<
-                                            ?, ?, ?>)) return true;
-        }
-        return false;
+        return VanillaLayerAdapter.describe(layers, armorActive, false).layers().stream()
+                .anyMatch(
+                        layer ->
+                                layer.composition()
+                                        == com.radiance.render.contract.TakeoverSubmission
+                                                .Composition.SURFACE_OWNER);
     }
 
     public static boolean hasRenderedArmor(

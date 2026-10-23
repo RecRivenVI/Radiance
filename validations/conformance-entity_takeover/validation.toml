@@ -1,0 +1,12 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]
+
+[compatibility]
+mods = ["create", "sable", "aeronautics_bundled"]
+
+[instances.client]
+memory-max = "4G"
+width = 1920
+height = 1080
+player-name = "RecRivenVI"
+mods = []

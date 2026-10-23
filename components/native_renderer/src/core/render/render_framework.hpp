@@ -10,6 +10,8 @@
 #include "common/singleton.hpp"
 #include "core/all_extern.hpp"
 #include "core/render/modules/world/dlss/dlss_wrapper.hpp"
+#include "core/render/modules/world/dlss/fg_present_policy.hpp"
+#include "core/render/ui_coverage.hpp"
 #include "core/render/pipeline.hpp"
 #include "core/vulkan/all_core_vulkan.hpp"
 
@@ -84,7 +86,10 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     bool timestampQuerySubmitted = false;
     bool worldRenderRequired = false;
     bool worldRendered = false;
+    bool fgGameFrame = false;
     bool fgHudlessCaptured = false;
+    mcvr::ui::GuiRole fgGuiRole = mcvr::ui::GuiRole::Foreground;
+    mcvr::dlss::GuiFrameState fgGui;
     uint32_t fgBackgroundDependentDraws = 0;
     uint32_t fgAffineBackgroundDraws = 0;
     uint32_t fgWeightedBlurPasses = 0;

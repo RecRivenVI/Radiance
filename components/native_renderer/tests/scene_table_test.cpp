@@ -1,5 +1,6 @@
 #include "core/render/frame_retention.hpp"
 #include "core/render/scene_table.hpp"
+#include "core/render/instance_content.hpp"
 #include <algorithm>
 #include <array>
 #include <iostream>
@@ -58,6 +59,30 @@ struct Recording {
 
 int main() {
     try {
+        struct Transform {
+            float matrix[3][4]{};
+        };
+        using Instance = std::tuple<Transform, uint32_t, uint32_t, uint32_t, uint32_t, std::shared_ptr<Buffer>>;
+        const auto model = std::make_shared<Buffer>();
+        std::vector<Instance> instances{{Transform{}, 7, 0xff, 3, 0, model}, {Transform{}, 8, 0x40, 5, 2, model}};
+        require(mcvr::sameInstanceContent(instances, instances), "resident instance content is reusable");
+        for (int component = 0; component < 7; ++component) {
+            auto changed = instances;
+            switch (component) {
+                case 0: std::get<0>(changed.front()).matrix[0][3] = .001f; break;
+                case 1: ++std::get<1>(changed.front()); break;
+                case 2: ++std::get<2>(changed.front()); break;
+                case 3: ++std::get<3>(changed.front()); break;
+                case 4: ++std::get<4>(changed.front()); break;
+                case 5: std::get<5>(changed.front()) = std::make_shared<Buffer>(); break;
+                case 6: std::swap(changed[0], changed[1]); break;
+            }
+            require(!mcvr::sameInstanceContent(instances, changed),
+                    "pose, mask, flags, SBT, order and model replacement require a new TLAS");
+        }
+        auto removed = instances;
+        removed.pop_back();
+        require(!mcvr::sameInstanceContent(instances, removed), "removed instance invalidates TLAS content");
         std::mt19937 random(0x5c3e);
         for (size_t sample = 0; sample < 1000; ++sample) {
             auto stable = std::make_shared<std::vector<uint64_t>>(random() % 35);

@@ -37,7 +37,7 @@ void VoxySections::clear(bool releaseNear) {
     sections_.clear();
     selected_.clear();
     pending_.clear();
-    requestedRoots_.clear();
+    requestedRoots_ = {};
     ++farRevision_;
     models_.reset();
     tables_.reset();
@@ -279,15 +279,15 @@ bool VoxySections::section(uint64_t epoch, uint64_t key, uint64_t revision, std:
     return true;
 }
 
-void VoxySections::select(uint64_t epoch, std::span<const uint64_t> keys, std::span<const uint64_t> roots) {
+void VoxySections::select(uint64_t epoch, std::span<const uint64_t> keys, voxy::RootCoverage roots) {
     std::lock_guard lock(mutex_);
     if (epoch != epoch_) return;
-    voxy::validateCut(keys, roots);
+    voxy::validateCut(keys);
     std::set<uint64_t> selection(keys.begin(), keys.end());
     for (auto key : selection)
         if (!sections_.contains(key)) throw std::invalid_argument("Voxy selected section has no owned version");
     selected_ = std::move(selection);
-    requestedRoots_ = {roots.begin(), roots.end()};
+    requestedRoots_ = std::move(roots);
     ++farRevision_;
 }
 

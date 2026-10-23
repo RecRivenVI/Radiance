@@ -35,6 +35,11 @@ QUERY_FN uint queryMask(uint purpose, bool firstPerson) {
 QUERY_FN uint advanceQuery(uint purpose, uint lobe) {
     return purpose == queryDirect && lobe == 2u ? queryDirect : queryTransport;
 }
+// Cache training starts with the same camera visibility as the image. Receive-only
+// geometry must not seed world illumination; later transport still includes self.
+QUERY_FN uint cacheUpdateMask(uint purpose, bool firstPerson) {
+    return queryMask(purpose, firstPerson) & ~queryReceiveOnly;
+}
 QUERY_FN bool queryIncludes(uint geometry, uint purpose, bool firstPerson) {
     return (geometry & queryMask(purpose, firstPerson)) != 0u;
 }

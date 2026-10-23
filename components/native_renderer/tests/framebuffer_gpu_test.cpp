@@ -217,11 +217,73 @@ class FramebufferHarness {
                         require(nearByte(pixels[4 * i + c],
                                          unorm(inside ? (inverse ? 1 - background[c] : 0) : background[c])),
                                 "Local affine RGB/scissor differs from original blend");
-                    require(nearByte(pixels[4 * i + 3], unorm(initialAlpha)), "Vignette made GUI coverage opaque");
+                    const float expectedAlpha = inverse && inside ? 1.f : initialAlpha;
+                    require(nearByte(pixels[4 * i + 3], unorm(expectedAlpha)),
+                            "Inverse UI coverage or vignette preserved alpha differs");
                 }
             }
         std::cout
-            << "[PASS] local multiplication/inversion preserve fractional coverage and original scissor/RGB on GPU\n";
+            << "[PASS] inversion covers resolved UI; multiplication preserves alpha; original scissor/RGB unchanged\n";
+    }
+
+    void guiBackgroundCase(const std::filesystem::path &shaderPath) {
+        const auto shader = createShader(shaderPath);
+        for (float initialAlpha : {0.f, .5f, 1.f}) {
+            auto color = createImage(4, 4, VK_FORMAT_R8G8B8A8_UNORM, VK_IMAGE_ASPECT_COLOR_BIT,
+                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_DST_BIT);
+            auto output = createBuffer(64, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            auto pass = createColorRenderPass({color.format});
+            auto target = createFramebuffer(pass, {color.view}, 4, 4);
+            bool first = true;
+            for (bool backgroundRole : {true, false, true}) {
+                VkColorBlendEquationEXT equation{VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+                                                 VK_BLEND_OP_ADD};
+                mcvr::ui::coverageEquation(equation, false, backgroundRole);
+                VkPipelineColorBlendAttachmentState blend{};
+                blend.blendEnable = VK_TRUE;
+                blend.srcColorBlendFactor = equation.srcColorBlendFactor;
+                blend.dstColorBlendFactor = equation.dstColorBlendFactor;
+                blend.colorBlendOp = equation.colorBlendOp;
+                blend.srcAlphaBlendFactor = equation.srcAlphaBlendFactor;
+                blend.dstAlphaBlendFactor = equation.dstAlphaBlendFactor;
+                blend.alphaBlendOp = equation.alphaBlendOp;
+                blend.colorWriteMask = 15;
+                auto pipeline = createGraphicsPipeline(pass, shader, {blend}, false, false);
+                submit([&](VkCommandBuffer cmd) {
+                    transition(cmd, color, first ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                               VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, first ? 0 : VK_ACCESS_TRANSFER_READ_BIT,
+                               VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT);
+                    VkClearColorValue initial{{.8f, .4f, .2f, initialAlpha}};
+                    VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+                    vkCmdClearColorImage(cmd, color.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &initial, 1, &range);
+                    transition(cmd, color, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                               VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_ACCESS_TRANSFER_WRITE_BIT,
+                               VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+                    draw(cmd, pass, target, pipeline, {4, 4}, {{1, 1}, {2, 2}}, {}, false);
+                    transition(cmd, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                               VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                               VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                               VK_PIPELINE_STAGE_TRANSFER_BIT);
+                    copyImageToBuffer(cmd, color, VK_IMAGE_ASPECT_COLOR_BIT, output);
+                });
+                first = false;
+                const auto *pixels = static_cast<const uint8_t *>(output.mapped);
+                for (int i = 0; i < 16; ++i) {
+                    const bool inside = i % 4 >= 1 && i % 4 <= 2 && i / 4 >= 1 && i / 4 <= 2;
+                    const float original[]{.8f, .4f, .2f}, source[]{.2f, .3f, .4f};
+                    for (int c = 0; c < 3; ++c)
+                        require(nearByte(pixels[4 * i + c],
+                                         unorm(inside ? .5f * source[c] + .5f * original[c] : original[c])),
+                                "GUI role changed original gradient RGB or scissor");
+                    const float alpha = inside && !backgroundRole ? .5f + .5f * initialAlpha : initialAlpha;
+                    require(nearByte(pixels[4 * i + 3], unorm(alpha)), "Background role leaked into foreground alpha");
+                }
+            }
+        }
+        std::cout << "[PASS] background/foreground/background preserves RGB and actual coverage\n";
     }
 
     void dlssUiCoverageCase(const std::filesystem::path &shaderPath, const std::filesystem::path &resetPath = {}) {
@@ -1647,6 +1709,10 @@ int main(int argc, char **argv) {
         }
         if (std::string_view(argv[4]) == "--translated-coverage") {
             harness.translatedCoverageCase(std::filesystem::absolute(argv[5]));
+            return 0;
+        }
+        if (std::string_view(argv[4]) == "--gui-background") {
+            harness.guiBackgroundCase(std::filesystem::absolute(argv[5]));
             return 0;
         }
         if (argc >= 8) {

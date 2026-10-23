@@ -2159,6 +2159,44 @@ void UIModuleContext::clearOverlayEntireDepthStencilAttachment(int aspectMask) {
     vkCmdClearAttachments(context->overlayCommandBuffer->vkCommandBuffer(), 1, &clearAttachment, 1, &clearRect);
 }
 
+std::shared_ptr<vk::DynamicGraphicsPipeline> UIModuleContext::prepareRasterDraw(uint32_t shaderId,
+                                                                                uint32_t uniformOffset) {
+    auto context = frameworkContext.lock();
+    auto module = uiModule.lock();
+    module->prepareOverlayDescriptorTable(context->frameIndex);
+    switchOverlayDraw();
+    const auto composition = mcvr::ui::drawComposition(overlayMode == FRAMEBUFFER_DRAW, overlayBlendEnabled,
+                                                       overlayColorLogicOpEnable, overlayColorBlendEquation);
+    if (composition == mcvr::ui::DrawComposition::OtherBackground) ++context->fgBackgroundDependentDraws;
+    if (overlayMode == DRAW) {
+        if (context->fgGuiRole == mcvr::ui::GuiRole::WorldReplacement) context->fgGui.backgroundReplaced = true;
+        if (composition == mcvr::ui::DrawComposition::OtherBackground ||
+            (context->fgGuiRole == mcvr::ui::GuiRole::BackgroundEffect &&
+             composition != mcvr::ui::DrawComposition::SourceOver &&
+             composition != mcvr::ui::DrawComposition::BackgroundModulation))
+            context->fgGui.unsupportedComposition = true;
+    }
+    prepareBackgroundModulation();
+    auto graphicsPipeline = overlayMode == FRAMEBUFFER_DRAW ? framebufferPipeline(shaderId) :
+                                                              module->overlayDrawShaderInfo(shaderId).pipeline;
+    auto command = context->overlayCommandBuffer->vkCommandBuffer();
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline->vkPipeline());
+    syncColorAttachments();
+    // Replacement RGB is fully covered even when the source texture has alpha.
+    // Attachment alpha and fragments rejected by depth/discard remain unchanged.
+    // An inverse blend depends on this frame's background: keep its resolved
+    // RGB in the UI, with full coverage, rather than writing it into HUD-less.
+    const uint32_t opaqueCoverage = composition == mcvr::ui::DrawComposition::Replace ||
+                                    composition == mcvr::ui::DrawComposition::BackgroundInversion;
+    vkCmdPushConstants(command, overlayDescriptorTable->vkPipelineLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                       sizeof(opaqueCoverage), &opaqueCoverage);
+    uint32_t dynamicOffsets[] = {uniformOffset, 0};
+    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, overlayDescriptorTable->vkPipelineLayout(), 0,
+                            static_cast<uint32_t>(overlayDescriptorTable->descriptorSet().size()),
+                            overlayDescriptorTable->descriptorSet().data(), 2, dynamicOffsets);
+    return graphicsPipeline;
+}
+
 void UIModuleContext::drawIndexed(std::shared_ptr<vk::DeviceLocalBuffer> vertexBuffer,
                                   std::shared_ptr<vk::DeviceLocalBuffer> indexBuffer,
                                   std::shared_ptr<vk::DeviceLocalBuffer> patchIndexBuffer,
@@ -2173,35 +2211,8 @@ void UIModuleContext::drawIndexed(std::shared_ptr<vk::DeviceLocalBuffer> vertexB
 
     if (!framework->isRunning()) return;
 
-    module->prepareOverlayDescriptorTable(context->frameIndex);
-    switchOverlayDraw();
-    if (overlayMode != FRAMEBUFFER_DRAW && (overlayBlendEnabled || overlayColorLogicOpEnable) &&
-        !mcvr::ui::sourceOverColor(overlayColorBlendEquation.srcColorBlendFactor,
-                                   overlayColorBlendEquation.dstColorBlendFactor,
-                                   overlayColorBlendEquation.colorBlendOp, overlayColorLogicOpEnable) &&
-        !mcvr::ui::backgroundModulation(overlayColorBlendEquation.srcColorBlendFactor,
-                                        overlayColorBlendEquation.dstColorBlendFactor,
-                                        overlayColorBlendEquation.colorBlendOp, overlayColorLogicOpEnable))
-        ++context->fgBackgroundDependentDraws;
-
-    prepareBackgroundModulation();
+    auto graphicsPipeline = prepareRasterDraw(shaderId, uniformOffset);
     auto &shaderInfo = module->overlayDrawShaderInfo(shaderId);
-    auto graphicsPipeline = overlayMode == FRAMEBUFFER_DRAW ? framebufferPipeline(shaderId) : shaderInfo.pipeline;
-    vkCmdBindPipeline(context->overlayCommandBuffer->vkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      graphicsPipeline->vkPipeline());
-
-    // A draw with blending disabled replaces RGB, irrespective of texture alpha.
-    // Keep discarded/depth-rejected fragments untouched; off-screen alpha is original.
-    const uint32_t opaqueCoverage =
-        overlayMode != FRAMEBUFFER_DRAW && !overlayBlendEnabled && !overlayColorLogicOpEnable;
-    vkCmdPushConstants(context->overlayCommandBuffer->vkCommandBuffer(), overlayDescriptorTable->vkPipelineLayout(),
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(opaqueCoverage), &opaqueCoverage);
-
-    uint32_t dynamicOffsets[] = {uniformOffset, 0};
-    vkCmdBindDescriptorSets(context->overlayCommandBuffer->vkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            overlayDescriptorTable->vkPipelineLayout(), 0,
-                            overlayDescriptorTable->descriptorSet().size(),
-                            overlayDescriptorTable->descriptorSet().data(), 2, dynamicOffsets);
 
     context->overlayCommandBuffer->bindVertexBuffers(vertexBuffer);
     const auto recordAndDraw = [&](const std::shared_ptr<vk::DeviceLocalBuffer> &drawIndexBuffer,
@@ -2261,12 +2272,13 @@ void UIModuleContext::drawIndexed(std::shared_ptr<vk::DeviceLocalBuffer> vertexB
 void UIModuleContext::prepareBackgroundModulation() {
     if (mirroringBackgroundModulation) return;
     backgroundModulationPrepared = false;
-    if (overlayMode != DRAW || !overlayBlendEnabled ||
-        !mcvr::ui::backgroundModulation(overlayColorBlendEquation.srcColorBlendFactor,
-                                        overlayColorBlendEquation.dstColorBlendFactor,
-                                        overlayColorBlendEquation.colorBlendOp, overlayColorLogicOpEnable))
-        return;
     auto context = frameworkContext.lock();
+    const auto composition =
+        mcvr::ui::drawComposition(false, overlayBlendEnabled, overlayColorLogicOpEnable, overlayColorBlendEquation);
+    if (overlayMode != DRAW || (composition != mcvr::ui::DrawComposition::BackgroundModulation &&
+                                !(context->fgGuiRole == mcvr::ui::GuiRole::BackgroundEffect &&
+                                  composition == mcvr::ui::DrawComposition::SourceOver)))
+        return;
     auto framework = context->framework.lock();
     if (!framework->frameGenerationHudless(*context)) return;
     end();
@@ -2320,7 +2332,8 @@ void UIModuleContext::prepareBackgroundModulation() {
 void UIModuleContext::mirrorBackgroundModulation(const std::function<void()> &draw) {
     // For an affine background effect T(D)=b+m*D, replay T(H) and keep A:
     // T(U+(1-A)*H) = (m*U+b*A) + (1-A)*T(H).
-    // This includes the vanilla crosshair S+(1-2*S)*D. RGB draw order is unchanged.
+    // Background attenuation (e.g. vignette) is postprocessing on both inputs.
+    // Inversion instead stays in resolved, covered UI. RGB draw order is unchanged.
     if (mirroringBackgroundModulation || !backgroundModulationPrepared) return;
     backgroundModulationPrepared = false;
     auto context = frameworkContext.lock();
@@ -2383,32 +2396,8 @@ void UIModuleContext::drawCustomVertexArray(const std::vector<CustomVertexBuffer
     if (!shaderInfo.customVertexLayout) throw std::runtime_error("Custom VertexArray requires a custom-layout shader");
     if (!indexBuffer) throw std::runtime_error("Custom VertexArray has no index buffer");
 
-    module->prepareOverlayDescriptorTable(context->frameIndex);
-    switchOverlayDraw();
-    if (overlayMode != FRAMEBUFFER_DRAW && (overlayBlendEnabled || overlayColorLogicOpEnable) &&
-        !mcvr::ui::sourceOverColor(overlayColorBlendEquation.srcColorBlendFactor,
-                                   overlayColorBlendEquation.dstColorBlendFactor,
-                                   overlayColorBlendEquation.colorBlendOp, overlayColorLogicOpEnable) &&
-        !mcvr::ui::backgroundModulation(overlayColorBlendEquation.srcColorBlendFactor,
-                                        overlayColorBlendEquation.dstColorBlendFactor,
-                                        overlayColorBlendEquation.colorBlendOp, overlayColorLogicOpEnable))
-        ++context->fgBackgroundDependentDraws;
-    prepareBackgroundModulation();
+    prepareRasterDraw(shaderId, uniformOffset);
     VkCommandBuffer command = context->overlayCommandBuffer->vkCommandBuffer();
-    vkCmdBindPipeline(
-        command, VK_PIPELINE_BIND_POINT_GRAPHICS,
-        (overlayMode == FRAMEBUFFER_DRAW ? framebufferPipeline(shaderId) : shaderInfo.pipeline)->vkPipeline());
-    // A draw with blending disabled replaces RGB, irrespective of texture alpha.
-    // Keep discarded/depth-rejected fragments untouched; off-screen alpha is original.
-    const uint32_t opaqueCoverage =
-        overlayMode != FRAMEBUFFER_DRAW && !overlayBlendEnabled && !overlayColorLogicOpEnable;
-    vkCmdPushConstants(context->overlayCommandBuffer->vkCommandBuffer(), overlayDescriptorTable->vkPipelineLayout(),
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(opaqueCoverage), &opaqueCoverage);
-
-    uint32_t dynamicOffsets[] = {uniformOffset, 0};
-    vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, overlayDescriptorTable->vkPipelineLayout(), 0,
-                            static_cast<uint32_t>(overlayDescriptorTable->descriptorSet().size()),
-                            overlayDescriptorTable->descriptorSet().data(), 2, dynamicOffsets);
     for (const auto &binding : vertexBuffers) {
         if (!binding.buffer) throw std::runtime_error("Custom VertexArray binding has no buffer");
         VkBuffer handle = binding.buffer->vkBuffer();
@@ -2440,8 +2429,10 @@ void UIModuleContext::postOverlay(OverlayPostPipelineType type, uint32_t uniform
     if (type == BLUR) {
         end();
         // The weighted background needs coverage BEFORE this pass blurs it.
-        framework->blurFrameGenerationHudless(
-            *context, Renderer::instance().buffers()->recordedOverlayPostUniform(uniformOffset), overlayDrawColorImage);
+        if (!context->fgGui.fullScreenBlur)
+            framework->blurFrameGenerationHudless(
+                *context, Renderer::instance().buffers()->recordedOverlayPostUniform(uniformOffset),
+                overlayDrawColorImage);
     }
 
     switchOverlayPost();

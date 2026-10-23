@@ -133,6 +133,7 @@ struct SharcConfig {
     uint useLockBuffer;
     uint debugMode;
     uint updateDownsampleFactor;
+    uvec2 auditAddress;
 };
 
 layout(set = 4, binding = 0) readonly buffer SharcConfigBuffer {
@@ -403,6 +404,17 @@ bool sharcAllowQuery(bool isPrimaryCameraPath,
 }
 #endif
 
+#if (SHARC_QUERY || SHARC_UPDATE) && USE_SHARC && MCVR_SHARC_AUDIT
+layout(std430, buffer_reference, buffer_reference_align = 4) buffer SharcAuditCounters { uint values[]; };
+void observeSharc(uint index) {
+    if ((gl_LaunchIDEXT.x & 15u) != 0u || (gl_LaunchIDEXT.y & 15u) != 0u) return;
+    uint64_t address = uint64_t(sharcConfig.auditAddress.x) | (uint64_t(sharcConfig.auditAddress.y) << 32);
+    if (address != uint64_t(0)) atomicAdd(SharcAuditCounters(address).values[index],1u);
+}
+#else
+#define observeSharc(index)
+#endif
+
 struct FirstHitPayload {
     bool hitSky;
     float surfaceDepth;
@@ -508,6 +520,7 @@ void tracePrimary(vec3 eyePos,
         vec3 tracedOrigin = rayState.origin;
         vec3 tracedDirection = rayState.direction;
         mainRay = rayState;
+        observeSharc(2u);
         mainRay.stateBits = uiPrimaryTraceState(mainRay.stateBits, uint(step));
         traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, len, 0);
         mainRay.stateBits &= ~rayUiPrimaryBit;
@@ -617,6 +630,7 @@ void traceSecondary(inout MainRay rayState,
         rayAdvanceQuery(rayState);
         resetMainRay(rayState, b);
         prepareSecondary(b, rayQueryPurpose(rayState), isHand, len, mask);
+        observeSharc(2u);
 
         vec3 tracedOrigin = rayState.origin;
         vec3 tracedDirection = rayState.direction;
@@ -643,11 +657,13 @@ void traceSecondary(inout MainRay rayState,
             vec3 positionWorld = hitWorldPos + vec3(worldUBO.cameraPos.xyz);
             if (sharcAllowQuery(isPrimaryCameraPath, rayState.hitT, hitMat.roughness, rayLobeType(rayState), sharcParameters,
                                 positionWorld)) {
+                observeSharc(0u);
                 SharcHitData sharcHitData;
                 sharcHitData.positionWorld = positionWorld;
                 sharcHitData.normalWorld = rayState.normal;
                 vec3 cachedRadiance = vec3(0.0);
                 if (SharcGetCachedRadiance(sharcParameters, sharcHitData, cachedRadiance, false)) {
+                    observeSharc(1u);
                     sharcCacheHit = true;
                     rayState.radiance += cachedRadiance * rayState.throughput;
                     break;
@@ -696,20 +712,25 @@ void traceSharcUpdate(
 
     initMainRay(origin, direction, worldUBO.seed ^ sharcConfig.frameIndex, coneSpreadFromFov(fovY, fovX, resolution), resolution,
                     mainRay);
-    raySetDirectImage(mainRay, false);
-
     for (int b = 0; b < VPT_NUM_RAY_BOUNCES; ++b) {
+        if (b != 0) rayAdvanceQuery(mainRay);
         resetMainRay(mainRay, b);
         mainRay.throughput = vec3(1.0);
         mainRay.radiance = vec3(0.0);
 
-        uint mask = queryMask(queryTransport, true);
+        uint mask = cacheUpdateMask(rayQueryPurpose(mainRay), worldUBO.isFirstPerson > 0);
         float len = (b <= 1) ? 1000.0 : 384.0;
 
         vec3 tracedOrigin = mainRay.origin;
         vec3 tracedDirection = mainRay.direction;
         traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, VPT_WORLD_NO_VOLUMETRIC_MISS_INDEX,
                     mainRay.origin, 0.0, mainRay.direction, len, 0);
+
+        if (b == 0) {
+            observeSharc(5u);
+            observeSharc(mainRay.hitT == INF_DISTANCE ? 6u : 7u);
+            if (mainRay.hitT < .75) observeSharc(4u);
+        }
 
         if (mainRay.hitT == INF_DISTANCE) {
             SharcUpdateMiss(sharcParameters, sharcState, mainRay.radiance);
@@ -821,6 +842,7 @@ void main() {
     SharcParameters sharcParameters = makeSharcParameters();
     int sharcDebugBounceCount = 0;
     bool sharcDebugCacheHit = false;
+    observeSharc(3u);
 #    endif
 
     MainRay worldRay;

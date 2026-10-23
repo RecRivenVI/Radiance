@@ -12,6 +12,7 @@
 | 线条不透明 | 默认不透明，保留来源 alpha 和可选透明实现，不改变零 alpha 分隔段 | [adr-4](../design/adr-4-world_line_opacity.md) |
 | 线条照明 | 当前普通实体／BER 线默认受光；调试、选框和部分事件入口显式发光。已核对的来源标准线本为不受光颜色绘制，这些分类属于项目介入，不能称原版等价 | [线条机制](../design/mechanism-line_capture.md)、[当前来源调查](../research/incident-emissive_layer_acceptance.md#线条照明的来源边界) |
 | 全亮与物理发光 | 显示全亮的几何必须实际影响其他世界几何，不保留仅自身显示发光的几何政策；不等于把所有原版不受光绘制自动改为全亮 | [adr-6](../design/adr-6-fullbright_transport.md) |
+| GUI 与 FG 启停 | 保留 Vulkan GUI 与 UI Alpha。使用者于 2026-10-23 确认：保留已求值反色准星；局部模糊保留不透明已求值方案，实际全屏菜单模糊直接关闭 FG；仅压暗且世界输入合法时不因暂停关闭。当前范围已工程收口，机器及 SDK 正计数通过，人工视觉验收尚未进行、后续补做；105 号全屏模糊继续 FG 的目标被此选择取代 | [实施计划](../project/plan-gui_frame_generation.md)、[当前产品证据](../research/experiment-gui_fg_policy.md) |
 | Ponder | 封存 Ponder PT，当前使用默认光栅语义的 Vulkan 翻译，不恢复旧 PT 或截图替代 | [路线图](../project/roadmap-radiance.md#已完成已封存与证据索引) |
 | 结构图解 | 保留内容选择、渲染偏好、纸张配色及淡出，取消原版低分辨率像素格和帧率限制 | [路线图](../project/roadmap-radiance.md#结构图解手杖与光栅翻译) |
 | Voxy 远景 LOD | 接受 Voxy 有意舍弃的 PBR、动态纹理和精度，沿用其代理与模型归并；完整 PT 参与约束所选代理，不追补远处原始全部细节，不降低精确近景 | [专用后端设计](../design/architecture-voxy_pt_backend.md#材质与原有渲染语义) |
@@ -20,7 +21,7 @@
 
 以下来自 2026-10-17 的部分验收反馈，只确认开发方向，不代表功能已实施或参数已定；范围与当前状态统一在[路线图](../project/roadmap-radiance.md#本轮验收新增的优先开发)维护。
 
-- 普通半透明保留随机覆盖默认值，并提供前景／背景混合选择，普通覆盖不变为物理透射；实现、分层预算和历史边界见[混合机制](../design/mechanism-ordinary_translucency.md)。新模式动态视觉待验，原版云顺延。
+- 普通半透明默认随机覆盖，普通覆盖不变为物理透射。使用者于 2026-10-21 决定验收和诊断不使用“前景／背景混合”，避免该模式影响渲染与归因；代码及设置入口仍保留，不在本轮删除。实现、分层预算和历史边界见[混合机制](../design/mechanism-ordinary_translucency.md)，当前实际配置见[楼内调查](../research/investigation-building_entity_drop.md)。原版云顺延。
 - 原版云保留来源语义，按完整 PT 场景要求重新处理几何剔除；顺延至半透明之后。
 - 折射建立统一参数适配入口，具体折射率、介质与表现不得凭计划直接改定。
 - 建立原版无 PBR 发光账本，区分来源不受光、来源全亮、当前物理发光和使用者个人偏好；adr-6 的世界照明贡献要求不变。

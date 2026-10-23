@@ -17,6 +17,10 @@ enum class OptionalFeatureLoadResult {
     Failed,
 };
 
+constexpr bool optionalFeaturePresentationChanged(bool runtimeReady, bool currentlyLoaded, bool requested) {
+    return runtimeReady && currentlyLoaded != requested;
+}
+
 constexpr OptionalFeatureLoadAction
 planOptionalFeatureLoad(bool runtimeReady, bool entryPointReady, bool currentlyLoaded, bool requested) {
     if (!runtimeReady || !entryPointReady) {

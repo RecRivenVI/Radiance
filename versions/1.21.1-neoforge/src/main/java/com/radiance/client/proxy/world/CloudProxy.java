@@ -208,7 +208,9 @@ public final class CloudProxy {
         previousMode = mode;
         previousViewMode = viewMode;
 
-        storage = new StorageVertexConsumerProvider(786432);
+        storage =
+                new StorageVertexConsumerProvider(786432)
+                        .procedural("CLOUD", net.minecraft.client.renderer.LevelRenderer.class);
         renderData = new EntityProxy.EntityRenderDataList();
         VertexConsumer builder = storage.getBuffer(RADIANCE_CLOUDS);
         buildCloudCells(builder, cellX, cellZ, color, mode == CloudStatus.FANCY, viewMode);

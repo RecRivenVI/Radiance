@@ -159,6 +159,8 @@ public final class RuntimeHooks {
     }
 
     public static void begin(Object client, boolean render) {
+        if (render && Boolean.getBoolean("radiance.audit.optimizeWorld"))
+            WorldOptimization.poll(client);
         if (correctnessOnly || !render) return;
         try {
             if (!bound) bind(client);
@@ -167,6 +169,141 @@ public final class RuntimeHooks {
             cpuStart = threads.isThreadCpuTimeSupported() ? threads.getCurrentThreadCpuTime() : -1;
         } catch (ReflectiveOperationException | RuntimeException ex) {
             fail(ex);
+        }
+    }
+
+    /** Drives vanilla Optimize World without loading a diagnostic or product mod. */
+    private static final class WorldOptimization {
+        private static boolean launched, done, stopped;
+        private static Object screen, upgrader, access;
+        private static long since = System.nanoTime();
+
+        private static Object invoke(Object target, String name, Object... args)
+                throws ReflectiveOperationException {
+            for (Method method : target.getClass().getMethods())
+                if (method.getName().equals(name) && method.getParameterCount() == args.length)
+                    return method.invoke(target, args);
+            throw new NoSuchMethodException(target.getClass().getName() + "." + name);
+        }
+
+        private static void poll(Object client) {
+            if (stopped) return;
+            try {
+                if (!Files.isRegularFile(Path.of(".radiance-vanilla-upgrade")))
+                    throw new IllegalStateException("Missing owned vanilla upgrade marker");
+                if (System.nanoTime() - since > 900_000_000_000L)
+                    throw new IllegalStateException("Vanilla Optimize World timeout");
+                if (!launched) {
+                    Object current = field(client.getClass(), "screen").get(client);
+                    if (current == null
+                            || !current.getClass()
+                                    .getName()
+                                    .equals("net.minecraft.client.gui.screens.TitleScreen")
+                            || invoke(client, "getOverlay") != null) return;
+                    ClassLoader loader = client.getClass().getClassLoader();
+                    Class<?> modList = Class.forName("net.neoforged.fml.ModList", true, loader);
+                    Object list = modList.getMethod("get").invoke(null);
+                    Class<?> info =
+                            Class.forName(
+                                    "net.neoforged.neoforgespi.language.IModInfo", true, loader);
+                    var ids = new TreeSet<String>();
+                    for (Object item : (Iterable<?>) invoke(list, "getMods"))
+                        ids.add((String) info.getMethod("getModId").invoke(item));
+                    if (!ids.equals(Set.of("minecraft", "neoforge")))
+                        throw new IllegalStateException(
+                                "World upgrade must be pure vanilla: " + ids);
+                    Object source = invoke(client, "getLevelSource");
+                    access = invoke(source, "validateAndCreateAccess", "Newport City");
+                    Class<?> type =
+                            Class.forName(
+                                    "net.minecraft.client.gui.screens.worldselection.OptimizeWorldScreen",
+                                    true,
+                                    loader);
+                    Method create =
+                            Arrays.stream(type.getMethods())
+                                    .filter(
+                                            m ->
+                                                    m.getName().equals("create")
+                                                            && m.getParameterCount() == 5)
+                                    .findFirst()
+                                    .orElseThrow();
+                    Object callback =
+                            Proxy.newProxyInstance(
+                                    loader,
+                                    new Class<?>[] {create.getParameterTypes()[1]},
+                                    (proxy, method, args) -> {
+                                        if (method.getName().equals("accept")) {
+                                            if (!Boolean.TRUE.equals(args[0]))
+                                                throw new IllegalStateException("Upgrade canceled");
+                                            done = true;
+                                            return null;
+                                        }
+                                        if (method.getName().equals("toString"))
+                                            return "Owned vanilla optimization callback";
+                                        if (method.getName().equals("hashCode"))
+                                            return System.identityHashCode(proxy);
+                                        if (method.getName().equals("equals"))
+                                            return proxy == args[0];
+                                        throw new UnsupportedOperationException(method.toString());
+                                    });
+                    screen =
+                            create.invoke(
+                                    null,
+                                    client,
+                                    callback,
+                                    invoke(client, "getFixerUpper"),
+                                    access,
+                                    false);
+                    if (screen == null)
+                        throw new IllegalStateException("Vanilla Optimize World refused data");
+                    upgrader = field(type, "upgrader").get(screen);
+                    invoke(client, "setScreen", screen);
+                    launched = true;
+                    System.out.println("VANILLA_OPTIMIZE started eraseCache=false mods=" + ids);
+                }
+                if (!done) return;
+                var result = new Properties();
+                for (String name :
+                        List.of("getTotalChunks", "getConverted", "getSkipped", "isFinished"))
+                    result.setProperty(name, String.valueOf(invoke(upgrader, name)));
+                Object status = invoke(upgrader, "getStatus");
+                Object contents = invoke(status, "getContents");
+                String key = String.valueOf(invoke(contents, "getKey"));
+                result.setProperty("statusKey", key);
+                int total = Integer.parseInt(result.getProperty("getTotalChunks"));
+                if (!key.equals("optimizeWorld.stage.finished.chunks")
+                        || total <= 0
+                        || total
+                                != Integer.parseInt(result.getProperty("getConverted"))
+                                        + Integer.parseInt(result.getProperty("getSkipped")))
+                    throw new IllegalStateException("Incomplete world optimization: " + result);
+                invoke(
+                        upgrader,
+                        "cancel"); // Joins only the completed vanilla worker, never a GPU wait.
+                invoke(access, "close");
+                result.setProperty("eraseCache", "false");
+                Path destination =
+                        Path.of(System.getProperty("validation.result"))
+                                .resolve("optimization.properties");
+                try (var writer = Files.newBufferedWriter(destination)) {
+                    result.store(writer, "Vanilla Optimize World");
+                }
+                stopped = true;
+                System.out.println("VANILLA_OPTIMIZE PASS " + result);
+                invoke(client, "stop");
+            } catch (Throwable failure) {
+                stopped = true;
+                failure.printStackTrace();
+                try {
+                    Files.writeString(
+                            Path.of(System.getProperty("validation.result"))
+                                    .resolve("optimization-failure.txt"),
+                            failure.toString());
+                    invoke(client, "stop");
+                } catch (Exception secondary) {
+                    failure.addSuppressed(secondary);
+                }
+            }
         }
     }
 

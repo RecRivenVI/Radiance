@@ -17,9 +17,13 @@ public final class RadianceAudit {
         }
         if (attached && ExperimentAccess.permitted()) {
             FgBoundaryProbe.register();
+            GuiReviewProbe.register();
             ChunkLatencyProbe.register();
             ChunkLoadingProbe.register();
             LineWorldProbe.register();
+            TakeoverFeasibilityProbe.register();
+            TakeoverBoundaryProbe.register();
+            TakeoverStageProbe.register();
         }
     }
 }

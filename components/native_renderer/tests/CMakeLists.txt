@@ -85,7 +85,10 @@ target_compile_features(mcvr_entity_vertex_packing_test PRIVATE cxx_std_23)
 target_compile_definitions(mcvr_entity_vertex_packing_test PRIVATE VK_NO_PROTOTYPES)
 target_include_directories(mcvr_entity_vertex_packing_test PRIVATE "${PROJECT_SOURCE_DIR}/src"
     "${PROJECT_SOURCE_DIR}/third_party/vulkan_headers/include" "${VOLK_INCLUDE_DIR}"
-    "${VMA_INCLUDE_DIR}" "${GLFW_INCLUDE_DIR}" "${GLM_INCLUDE_DIR}" "${STB_INCLUDE_DIR}")
+    "${VMA_INCLUDE_DIR}" "${GLFW_INCLUDE_DIR}" "${GLM_INCLUDE_DIR}" "${STB_INCLUDE_DIR}" "${SHADERC_INCLUDE_DIR}")
+if(MSVC)
+    target_compile_options(mcvr_entity_vertex_packing_test PRIVATE /utf-8)
+endif()
 add_test(NAME mcvr.entity-vertex-packing COMMAND mcvr_entity_vertex_packing_test)
 
 add_executable(mcvr_entity_conversion_gpu_test entity_conversion_gpu_test.cpp
@@ -684,6 +687,20 @@ set_tests_properties(mcvr.quad-twins-gpu PROPERTIES SKIP_RETURN_CODE 77)
 
 add_test(NAME mcvr.bilateral-faces-gpu COMMAND mcvr_material_faces_gpu_test "${MATERIAL_FACES_SPIRV}" --bilateral)
 set_tests_properties(mcvr.bilateral-faces-gpu PROPERTIES SKIP_RETURN_CODE 77)
+
+set(GUI_BACKGROUND_SPIRV "${CMAKE_CURRENT_BINARY_DIR}/shaders/gui_background.spv")
+add_custom_command(OUTPUT "${GUI_BACKGROUND_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+    COMMAND "${MCVR_TEST_GLSLANG}" -V "${CMAKE_CURRENT_SOURCE_DIR}/shaders/gui_background.frag"
+        --target-env vulkan1.2 -o "${GUI_BACKGROUND_SPIRV}"
+    DEPENDS shaders/gui_background.frag VERBATIM)
+target_sources(mcvr_framebuffer_gpu_test PRIVATE "${GUI_BACKGROUND_SPIRV}")
+add_test(NAME mcvr.gui-background-gpu COMMAND mcvr_framebuffer_gpu_test
+    "${PROJECT_BINARY_DIR}/src/shader/shaders/overlay/clear_vert.spv"
+    "${PROJECT_BINARY_DIR}/src/shader/shaders/overlay/clear_frag.spv"
+    "${PROJECT_BINARY_DIR}/src/shader/shaders/overlay/clear_2_frag.spv"
+    --gui-background "${GUI_BACKGROUND_SPIRV}")
+set_tests_properties(mcvr.gui-background-gpu PROPERTIES SKIP_RETURN_CODE 77)
 
 # GPU contracts are explicit opt-in; ordinary check never opens a Vulkan device.
 get_property(MCVR_REGISTERED_TESTS DIRECTORY PROPERTY TESTS)

@@ -173,7 +173,12 @@ public abstract class GameRendererMixins implements IGameRendererExt {
         // One hook makes build-before-fuse ordering explicit.
         EntityProxy.build();
         WorldMeshSink.flushNativeAuditOutcomes();
-        RendererProxy.fuseWorld();
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "SCENE", "GameRenderer.renderLevel", "DIRECT", "WORLD_COLOR_DEPTH")) {
+            RendererProxy.fuseWorld();
+            com.radiance.api.audit.DrawingAudit.consumed("native.world.fuse");
+        }
         AfterWorldRender.flush();
     }
 
@@ -221,7 +226,7 @@ public abstract class GameRendererMixins implements IGameRendererExt {
     @Inject(method = "render", at = @At(value = "HEAD"), cancellable = true)
     public void shouldRenderWorld(DeltaTracker tickCounter, boolean tick, CallbackInfo ci) {
         if (!RendererProxy.hasAcquiredFrame() && !RendererProxy.acquireContext()) {
-            RendererProxy.shouldRenderWorld(false);
+            RendererProxy.shouldRenderWorld(false, false);
             ci.cancel();
             return;
         }
@@ -229,7 +234,8 @@ public abstract class GameRendererMixins implements IGameRendererExt {
                 !this.minecraft.noRender
                         && minecraft.isGameLoadFinished()
                         && tick
-                        && minecraft.level != null);
+                        && minecraft.level != null,
+                minecraft.getOverlay() == null);
     }
 
     @Inject(

@@ -106,4 +106,26 @@ public final class RenderAuditBridge {
             failed(observer, error);
         }
     }
+
+    public static long beginDrawing(
+            String family, String source, String conclusion, String target) {
+        RenderAuditSink observer = sink;
+        if (observer == null) return 0;
+        try {
+            return observer.beginDrawing(family, source, conclusion, target);
+        } catch (Throwable error) {
+            failed(observer, error);
+            return 0;
+        }
+    }
+
+    public static void drawingEvent(long request, String event, String detail) {
+        RenderAuditSink observer = sink;
+        if (observer == null || request == 0) return;
+        try {
+            observer.drawingEvent(request, event, detail);
+        } catch (Throwable error) {
+            failed(observer, error);
+        }
+    }
 }

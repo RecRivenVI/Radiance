@@ -294,8 +294,11 @@ void UIModuleContext::syncColorAttachments() {
     // Streamline DLSS-G recomposition. Preserve Minecraft's RGB blend equation,
     // while accumulating source coverage as A + dstA * (1 - A). Off-screen
     // framebuffers retain their original alpha contract.
-    if (overlayMode != FRAMEBUFFER_DRAW && overlayBlendEnabled) {
-        mcvr::ui::coverageEquation(effectiveEquation, overlayColorLogicOpEnable);
+    if (mcvr::ui::drawComposition(overlayMode == FRAMEBUFFER_DRAW, overlayBlendEnabled, overlayColorLogicOpEnable,
+                                  overlayColorBlendEquation) != mcvr::ui::DrawComposition::Attachment &&
+        overlayBlendEnabled) {
+        mcvr::ui::coverageEquation(effectiveEquation, overlayColorLogicOpEnable,
+                                   overlayMode == DRAW && context->fgGuiRole == mcvr::ui::GuiRole::BackgroundEffect);
     }
     std::vector<VkColorBlendEquationEXT> equations(count, effectiveEquation);
     std::vector<VkColorComponentFlags> masks(count, overlayColorWriteMask);

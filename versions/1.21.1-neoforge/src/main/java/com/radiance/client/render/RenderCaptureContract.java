@@ -85,6 +85,11 @@ public final class RenderCaptureContract {
      */
     public static void reportDiscard(String operation, String reason) {
         Scope scope = currentScope();
+        try (var request =
+                com.radiance.api.audit.DrawingAudit.begin(
+                        "REJECTED", operation, "UNKNOWN", scope.kind().name())) {
+            com.radiance.api.audit.DrawingAudit.unknown(reason);
+        }
         if (claimDiscardReport(operation, scope)) {
             RadianceClient.LOGGER.warn(
                     "Radiance discarded unsupported render operation {} in {}[{}]: {}",
