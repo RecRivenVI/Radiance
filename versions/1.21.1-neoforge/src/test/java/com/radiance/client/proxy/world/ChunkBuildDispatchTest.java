@@ -9,6 +9,33 @@ import org.junit.jupiter.api.Test;
 
 class ChunkBuildDispatchTest {
     @Test
+    void aMissingSourceIsADependencyNotAnotherExecutableTask() {
+        var running = new AtomicBoolean();
+        var capacity = new AtomicInteger();
+        var workers = new ArrayDeque<Runnable>();
+        assertEquals(
+                ChunkBuildDispatch.Result.WAITING_FOR_SOURCE,
+                ChunkBuildDispatch.submit(
+                        running,
+                        capacity,
+                        1,
+                        ChunkBuildDispatch::awaitSource,
+                        workers::add,
+                        () -> fail("Unavailable work must not complete")));
+        assertTrue(workers.isEmpty());
+        assertFalse(running.get());
+        assertEquals(0, capacity.get());
+        // A later real source-arrival event can use the same owner and permit.
+        assertEquals(
+                ChunkBuildDispatch.Result.SUBMITTED,
+                ChunkBuildDispatch.submit(
+                        running, capacity, 1, () -> () -> {}, workers::add, () -> {}));
+        workers.remove().run();
+        assertFalse(running.get());
+        assertEquals(0, capacity.get());
+    }
+
+    @Test
     void queuedWorkerIsDiscardedAfterOwnerRevisionChangesAndCapacityReturns() {
         var generation = new AtomicInteger(7);
         var running = new AtomicBoolean();
@@ -162,12 +189,14 @@ class ChunkBuildDispatchTest {
 
     @Test
     void blockedHeadCannotRepeatAndAgedBackgroundCanBypassNewInteraction() {
-        var queue = new PriorityQueue<Integer>();
+        var queue =
+                new SectionBuildQueue<Integer>(
+                        x -> x, Comparator.naturalOrder(), Comparator.naturalOrder(), x -> x == 99);
         queue.addAll(List.of(1, 2, 3, 99));
         try (var round = new ChunkBuildDispatch.Round<>(queue, 8)) {
             assertEquals(1, round.poll());
             round.defer(1);
-            assertEquals(99, round.pollPreferred(x -> x == 99, Comparator.naturalOrder()));
+            assertEquals(99, round.pollPreferred(x -> x == 99));
             assertEquals(2, round.poll());
             assertEquals(3, round.poll());
             assertNull(round.poll());

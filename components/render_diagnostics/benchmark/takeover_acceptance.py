@@ -135,9 +135,11 @@ def prepare(product_override=None):
     print('Prepared pure acceptance instance:', CLIENT, flush=True)
 
 
-def refresh(product):
+def refresh(product, distance=8):
     """Replace the owned acceptance artifact while preserving the user's two saves."""
     product = product.resolve()
+    if not 2 <= distance <= 32:
+        raise ValueError('Acceptance view distance outside the supported range')
     if not product.is_relative_to(ROOT) or not product.is_file():
         raise ValueError('Use a frozen repository artifact')
     assert_stopped()
@@ -158,14 +160,14 @@ def refresh(product):
     if digest(mods/'radiance.jar') != digest(product):
         raise ValueError('Product copy differs')
     options = CLIENT/'options.txt'
-    updated = dict(renderDistance='8', soundCategory_master='0.5', soundCategory_music='0.0',
+    updated = dict(renderDistance=str(distance), soundCategory_master='0.5', soundCategory_music='0.0',
                    overrideWidth='2560', overrideHeight='1440', fullscreen='false')
     rows = [r for r in options.read_text(encoding='utf8').splitlines()
             if r.split(':', 1)[0] not in updated]
     options.write_text('\n'.join(rows + [f'{k}:{v}' for k,v in updated.items()])+'\n', encoding='utf8')
     receipt.update(product=digest(product), productPath=str(product.relative_to(ROOT)),
                    acceptance='Frozen product in this receipt awaits manual observation; not launched',
-                   probe=False, renderDistance=8, storageBefore=occupancy,
+                   probe=False, renderDistance=distance, storageBefore=occupancy,
                    stages=['1','2','3'], historicalStages='0 through 6; see adr-13',
                    checklist='validations/visual-takeover_stages/validation.md')
     write(RESULT/'prepared.json', receipt)
@@ -190,7 +192,8 @@ def launch():
 if __name__=='__main__':
     parser=argparse.ArgumentParser();parser.add_argument('action',choices=('prepare','refresh','run'))
     parser.add_argument('--product',type=Path)
+    parser.add_argument('--distance',type=int,default=8)
     options=parser.parse_args();action=options.action
     if action=='prepare': prepare(options.product)
-    elif action=='refresh': refresh(options.product)
+    elif action=='refresh': refresh(options.product,options.distance)
     else: raise SystemExit(launch())

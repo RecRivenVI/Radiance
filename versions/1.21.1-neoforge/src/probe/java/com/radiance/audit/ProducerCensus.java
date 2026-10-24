@@ -15,6 +15,11 @@ public final class ProducerCensus {
     private static final IdentityHashMap<Object, Row> providers = new IdentityHashMap<>();
     private static final IdentityHashMap<MeshData, Row> meshes = new IdentityHashMap<>();
     private static final IdentityHashMap<Object, Row> rigidOwners = new IdentityHashMap<>();
+
+    private record GeometryCounts(int vertices, boolean direct) {}
+
+    private static final IdentityHashMap<Object, GeometryCounts> geometryCounts =
+            new IdentityHashMap<>();
     private static boolean active;
     private static boolean countsOnly;
     private static Thread owner;
@@ -51,6 +56,7 @@ public final class ProducerCensus {
         providers.clear();
         meshes.clear();
         rigidOwners.clear();
+        geometryCounts.clear();
         frames = 0;
         rendering = null;
         face = null;
@@ -140,6 +146,13 @@ public final class ProducerCensus {
         if (old != null && old != r) providers.put(provider, row("mixed/provider"));
     }
 
+    public static void captureAllocation(int bytes) {
+        if (!enabled()) return;
+        Row r = rendering == null ? row("unattributed/capture-allocation") : rendering;
+        r.captureAllocations++;
+        r.captureRequestedBytes += bytes;
+    }
+
     public static void produced(Object provider, EntityRenderDataList data, int first) {
         if (!enabled()) return;
         Row r = providers.getOrDefault(provider, row("unattributed/dynamic"));
@@ -198,12 +211,25 @@ public final class ProducerCensus {
             rigidOwners.put(draw, r);
             try {
                 Object entry = RigidModelProbe.field(draw, "entry");
-                MeshData mesh = (MeshData) RigidModelProbe.field(entry, "mesh");
+                GeometryCounts counts = geometryCounts.get(entry);
+                if (counts == null) {
+                    MeshData mesh;
+                    try {
+                        mesh = (MeshData) RigidModelProbe.field(entry, "mesh");
+                    } catch (NoSuchFieldException boundResource) {
+                        var accessor = entry.getClass().getDeclaredMethod("mesh");
+                        accessor.setAccessible(true);
+                        mesh = (MeshData) accessor.invoke(entry);
+                    }
+                    counts =
+                            new GeometryCounts(mesh.drawState().vertexCount(), directSource(entry));
+                    if (geometryCounts.size() < LIMIT) geometryCounts.put(entry, counts);
+                }
                 r.persistentDraws++;
-                r.persistentVertices += mesh.drawState().vertexCount();
-                if (directSource(entry)) {
+                r.persistentVertices += counts.vertices;
+                if (counts.direct) {
                     r.directSourceDraws++;
-                    r.directSourceVertices += mesh.drawState().vertexCount();
+                    r.directSourceVertices += counts.vertices;
                 }
             } catch (ReflectiveOperationException failure) {
                 throw new IllegalStateException("Rigid census contract", failure);
@@ -214,8 +240,8 @@ public final class ProducerCensus {
     private static boolean directSource(Object entry) throws ReflectiveOperationException {
         String name = entry.getClass().getName();
         if (name.equals("com.radiance.client.vertex.PartModelCapture$Entry")
-                || name.equals("com.radiance.client.vertex.PaintingModelCapture$Entry"))
-            return true;
+                || name.equals("com.radiance.client.vertex.PaintingModelCapture$Entry")
+                || name.equals("com.radiance.client.vertex.BoundPartCapture$Resource")) return true;
         try {
             var type = Class.forName("com.radiance.client.vertex.BakedModelTakeover");
             var versions = type.getDeclaredField("VERSIONS");
@@ -274,7 +300,7 @@ public final class ProducerCensus {
         active = false;
         StringBuilder csv =
                 new StringBuilder(
-                        "producer,frames,renderer_calls,renderer_inclusive_ns,renderer_self_ns,model_calls,model_unique,model_ns,geometries,vertices,generated_bytes,submitted_geometries,entity_inputs,blas_candidates,face_calls,unique_layers,face_ns,setup_ns,clear_ns,backup_ns,restore_ns,consumer_classes,persistent_draws,persistent_vertices,direct_source_draws,direct_source_vertices,capture_policies\n");
+                        "producer,frames,renderer_calls,renderer_inclusive_ns,renderer_self_ns,model_calls,model_unique,model_ns,geometries,vertices,generated_bytes,submitted_geometries,entity_inputs,blas_candidates,face_calls,unique_layers,face_ns,setup_ns,clear_ns,backup_ns,restore_ns,consumer_classes,persistent_draws,persistent_vertices,direct_source_draws,direct_source_vertices,capture_policies,capture_allocations,capture_requested_bytes\n");
         for (Row r : rows.values())
             csv.append(r.name)
                     .append(',')
@@ -329,11 +355,16 @@ public final class ProducerCensus {
                     .append(r.directSourceVertices)
                     .append(',')
                     .append(String.join(";", r.capturePolicies))
+                    .append(',')
+                    .append(r.captureAllocations)
+                    .append(',')
+                    .append(r.captureRequestedBytes)
                     .append('\n');
         rows.clear();
         providers.clear();
         meshes.clear();
         rigidOwners.clear();
+        geometryCounts.clear();
         rendering = null;
         face = null;
         submission = null;
@@ -382,6 +413,7 @@ public final class ProducerCensus {
     }
 
     private static final class Row {
+        long captureAllocations, captureRequestedBytes;
         final String name;
         long calls,
                 renderNs,

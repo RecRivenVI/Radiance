@@ -11,7 +11,32 @@ inline constexpr uint64_t uploadBudget = 8ull * 1024 * 1024;
 // Bounds queued GPU build inputs separately from the per-poll preparation budget.
 // AS/scratch allocations have an additional bound from the existing in-flight fence count.
 inline constexpr uint64_t inFlightInputBudget = 32ull * 1024 * 1024;
+inline constexpr uint64_t pendingPublicationSections = 64;
+inline uint32_t remainingSections(uint64_t selected, uint32_t maximum) {
+    return uint32_t(
+        std::min<uint64_t>(maximum, pendingPublicationSections - std::min(selected, pendingPublicationSections)));
+}
 inline constexpr auto preparationBudget = std::chrono::milliseconds(2);
+// Background throughput is paced in real time, independently of the world FPS.
+// Interaction can borrow credit; its cost remains charged to subsequent background work.
+class UploadPacer {
+    double credit_ = double(uploadBudget);
+    Clock::time_point last_;
+
+  public:
+    explicit UploadPacer(Clock::time_point now) : last_(now) {}
+    uint64_t available(Clock::time_point now) {
+        credit_ =
+            std::min(double(uploadBudget), credit_ + std::max(0.0, std::chrono::duration<double>(now - last_).count()) *
+                                                         (double(uploadBudget) / 0.016));
+        last_ = now;
+        return uint64_t(std::max(0.0, credit_));
+    }
+    void consumed(uint64_t bytes, Clock::time_point now) {
+        available(now);
+        credit_ -= double(bytes);
+    }
+};
 struct Key {
     int priority;
     Clock::time_point queued;
@@ -43,12 +68,24 @@ std::vector<int64_t> selectBatch(const Range &queue,
                                  KeyOf key,
                                  BytesOf bytesOf,
                                  uint64_t inFlightBytes,
-                                 uint64_t admissionSequence = 0) {
+                                 uint64_t admissionSequence = 0,
+                                 uint64_t byteBudget = uploadBudget) {
     std::vector<int64_t> interactive, background, selected;
     interactive.reserve(maximum);
     background.reserve(maximum);
     selected.reserve(maximum);
     if (maximum == 0) return selected;
+    int64_t oversized = -1;
+    for (int64_t id : queue)
+        if (key(id).priority <= 0 && now - key(id).queued >= fairnessAge * 4 && bytesOf(id) > inFlightInputBudget &&
+            (oversized < 0 || key(id).queued < key(oversized).queued))
+            oversized = id;
+    if (oversized >= 0) {
+        // Temporarily drain bounded GPU work so a single oversized background
+        // owner cannot starve forever behind a continuous interaction stream.
+        if (inFlightBytes == 0 && byteBudget >= uploadBudget) selected.push_back(oversized);
+        return selected;
+    }
     auto less = [&](int64_t a, int64_t b) { return before(key(a), key(b), now); };
     for (int64_t id : queue) {
         auto &lane = key(id).priority > 0 ? interactive : background;
@@ -73,9 +110,15 @@ std::vector<int64_t> selectBatch(const Range &queue,
             i == interactive.size() || (agedBackground && (admissionSequence + selected.size()) % 4 == 3);
         const auto id = takeBackground ? background[b] : interactive[i];
         const uint64_t next = bytesOf(id);
-        if ((!selected.empty() && next > uploadBudget - std::min(bytes, uploadBudget)) ||
-            !canAdmit(inFlightBytes, bytes + next))
-            break;
+        if ((next > byteBudget - std::min(bytes, byteBudget) &&
+             (!selected.empty() || inFlightBytes != 0 || byteBudget < uploadBudget)) ||
+            !canAdmit(inFlightBytes, bytes + next)) {
+            if (takeBackground)
+                ++b;
+            else
+                ++i;
+            continue;
+        }
         bytes += next;
         selected.push_back(id);
         if (takeBackground)

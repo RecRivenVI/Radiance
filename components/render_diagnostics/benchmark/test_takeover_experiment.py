@@ -4,6 +4,7 @@ import io
 import zipfile
 import csv
 import json
+import tempfile
 from pathlib import Path
 from unittest.mock import patch
 import takeover_experiment as experiment
@@ -11,6 +12,17 @@ from takeover_snapshot import is_source_input
 
 
 class CompletionTests(unittest.TestCase):
+    def test_storage_includes_independent_radiance_scratch_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            scratch = Path(directory)/'RadianceFeasibility'
+            scratch.mkdir()
+            (scratch/'evidence.txt').write_bytes(b'proof')
+            def walk(path, **kwargs):
+                return [(str(scratch), [], ['evidence.txt'])] if Path(path)==scratch else []
+            with patch.object(Path, 'glob', lambda path, pattern: iter([scratch]) if pattern=='Radiance*' else iter([])), \
+                    patch.object(experiment.os, 'walk', side_effect=walk):
+                self.assertEqual(5, experiment.storage_preflight()['external'])
+
     def test_source_checkpoints_exclude_generated_evidence_and_local_settings(self):
         for name in ('validations/conformance-takeover/result/source-final.zip',
                      'validations/conformance-takeover/instance/client/options.txt',

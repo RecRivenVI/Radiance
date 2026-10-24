@@ -20,7 +20,7 @@ def distribution(values):
                 p99=ordered[math.ceil(len(ordered) * .99) - 1], max=ordered[-1])
 
 
-def analyze(directory):
+def analyze(directory, allow_absent_world=False):
     directory = Path(directory)
     status = dict(line.split('=', 1) for line in (directory / 'STATUS.txt').read_text().splitlines() if '=' in line)
     if status.get('finished') != 'true' or status.get('valid-cpu-sample') != 'true':
@@ -32,7 +32,7 @@ def analyze(directory):
         raise ValueError('Missing/duplicate/out-of-order frame token')
     if int(status['recorded-frames']) != len(tokens):
         raise ValueError('Frame count differs from completed writer status')
-    if any(row['failed'] != 'false' or row['world'] != 'true' for row in frames):
+    if any(row['failed'] != 'false' or (not allow_absent_world and row['world'] != 'true') for row in frames):
         raise ValueError('Failed frame or missing world')
     per_frame = defaultdict(lambda: defaultdict(int))
     inclusive = defaultdict(lambda: defaultdict(int))

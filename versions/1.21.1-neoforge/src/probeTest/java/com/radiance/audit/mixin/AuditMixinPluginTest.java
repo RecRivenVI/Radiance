@@ -26,6 +26,14 @@ class AuditMixinPluginTest {
                     plugin.shouldApplyMixin(
                             "com.radiance.client.proxy.world.EntityProxy",
                             "com.radiance.audit.mixin.ProfileEntityProxyMixin"));
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "com.radiance.client.vertex.StorageVertexConsumerProvider",
+                            "com.radiance.audit.mixin.ProfileProducerStorageMixin"));
+            assertTrue(
+                    plugin.shouldApplyMixin(
+                            "com.radiance.compatibility.vanilla.VanillaLivingReplacement",
+                            "com.radiance.audit.mixin.ProfileTakeoverWorkMixins$Living"));
         } finally {
             System.clearProperty(key);
         }

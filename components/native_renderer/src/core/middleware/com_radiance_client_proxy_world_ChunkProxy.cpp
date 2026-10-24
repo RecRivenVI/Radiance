@@ -7,6 +7,19 @@
 
 #include <iostream>
 
+JNIEXPORT jlong JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_advanceBuildsNative(JNIEnv *env, jclass) {
+    return jni::invoke<jlong>(env, "Chunk pipeline admission budget", 0, [&]() -> jlong {
+        auto world = Renderer::instance().world();
+        if (!world) return 0;
+        // Publish completed versions before admitting new Java snapshots. This
+        // releases pipeline credits now rather than making them wait another frame.
+        if (auto scheduler = world->chunks()->chunkBuildScheduler()) scheduler->tryCheckBatchesFinish();
+        const auto [count, bytes] = world->chunks()->buildBacklog();
+        return static_cast<jlong>((std::min<uint64_t>(bytes, UINT32_MAX) << 32) |
+                                  std::min<uint64_t>(count, UINT32_MAX));
+    });
+}
+
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_initNative(
     JNIEnv *env, jclass, jint chunkNum, jint sizeX, jint sizeY, jint sizeZ, jint bottomSectionCoord) {
     jni::invokeVoid(env, "Initialize chunk storage", [&] {
@@ -46,7 +59,6 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSi
                                                                                      jlong vertexFormats,
                                                                                      jlong vertexCounts,
                                                                                      jlong vertexAddrs,
-                                                                                     jboolean important,
                                                                                      jint priority,
                                                                                      jboolean collectEmission) {
     jni::invokeVoid(env, "Queue chunk rebuild", [&] {
@@ -67,7 +79,6 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSi
             .vertexFormats = reinterpret_cast<int *>(vertexFormats),
             .vertexCounts = reinterpret_cast<int *>(vertexCounts),
             .vertices = reinterpret_cast<vk::VertexFormat::PBRVertex **>(vertexAddrs),
-            .isImportant = static_cast<bool>(important),
             .priority = priority,
             .collectEmission = static_cast<bool>(collectEmission),
         });

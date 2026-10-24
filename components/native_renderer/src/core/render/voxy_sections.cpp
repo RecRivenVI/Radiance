@@ -71,8 +71,10 @@ std::shared_ptr<VoxyFrameTables> VoxySections::tables(Chunks &chunks,
     result->emptyRevision = emptyRevision_;
     result->farRevision = farRevision_;
     std::set<std::array<int32_t, 3>> coordinates;
-    for (const auto &instance : scene->instances)
+    scene->eachInstance([&](const auto &page, size_t i) {
+        const auto &instance = page.instances[i];
         coordinates.insert({instance.origin.x / 16, instance.origin.y / 16, instance.origin.z / 16});
+    });
     for (auto &[slot, origin] : emptyNear_) {
         if (slot >= chunks.primaryChunkCount()) continue;
         const auto &current = chunks.chunks()[slot];
@@ -87,15 +89,16 @@ std::shared_ptr<VoxyFrameTables> VoxySections::tables(Chunks &chunks,
         return (uint64_t(level) << 60) | (y << 52) | (z << 28) | (x << 4);
     };
     result->handoffNear = std::make_shared<StaticChunkScene>();
+    auto handoffPage = std::make_shared<StaticChunkPage>();
     uint64_t handoffBytes = 0;
     std::set<const void *> handoffBuffers;
     auto keepMissing = [&](const std::shared_ptr<const StaticChunkScene> &old) {
         if (!old) return;
-        for (size_t i = 0; i < old->instances.size(); ++i) {
-            const auto &instance = old->instances[i];
+        old->eachInstance([&](const auto &page, size_t i) {
+            const auto &instance = page.instances[i];
             const auto origin = instance.origin;
             const std::array<int32_t, 3> cell{origin.x / 16, origin.y / 16, origin.z / 16};
-            if (coordinates.contains(cell) || !requestedRoots_.contains(keyAt(4, origin))) continue;
+            if (coordinates.contains(cell) || !requestedRoots_.contains(keyAt(4, origin))) return;
             bool replacement = false;
             for (uint32_t level = 0; level <= 4; ++level) {
                 const auto key = keyAt(level, origin);
@@ -104,19 +107,20 @@ std::shared_ptr<VoxyFrameTables> VoxySections::tables(Chunks &chunks,
                     break;
                 }
             }
-            if (replacement) continue;
-            for (const auto &[identity, bytes] : old->owners[i]->memoryFootprint)
+            if (replacement) return;
+            for (const auto &[identity, bytes] : page.owners[i]->memoryFootprint)
                 if (identity && handoffBuffers.insert(identity).second) handoffBytes += bytes;
-            if (handoffBytes > 128ull * 1024 * 1024 || result->handoffNear->instances.size() >= 2048)
+            if (handoffBytes > 128ull * 1024 * 1024 || handoffPage->instances.size() >= 2048)
                 throw std::length_error("Voxy near/far handoff budget exceeded; no valid owner was overwritten");
-            result->handoffNear->add(instance.slot, origin, instance.blas, old->owners[i]);
+            handoffPage->add(instance.slot, origin, instance.blas, page.owners[i]);
             coordinates.insert(cell);
-        }
+        });
     };
     if (tables_) {
         keepMissing(tables_->nearScene);
         keepMissing(tables_->handoffNear);
     }
+    if (!handoffPage->instances.empty()) result->handoffNear->add(std::move(handoffPage));
     size_t capacity = 1;
     while (capacity < coordinates.size() * 2) capacity *= 2;
     if (capacity > 1u << 20) throw std::length_error("Voxy near coverage budget");

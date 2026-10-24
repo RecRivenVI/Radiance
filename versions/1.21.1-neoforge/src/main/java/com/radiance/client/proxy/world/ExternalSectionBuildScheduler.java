@@ -97,10 +97,16 @@ final class ExternalSectionBuildScheduler<T> {
         return new State();
     }
 
-    void request(long key, T owner, State state) {
-        if (state.cancelled.get()) return;
+    long request(long key, T owner, State state) {
+        if (state.cancelled.get()) return 0;
         long revision = state.requestedRevision.incrementAndGet();
         pending.put(key, new Ticket<>(key, owner, state, revision));
+        return revision;
+    }
+
+    long ensureRequested(long key, T owner, State state) {
+        if (state.cancelled.get() || state.running.get() || pending.containsKey(key)) return 0;
+        return request(key, owner, state);
     }
 
     void cancel(long key, State state) {

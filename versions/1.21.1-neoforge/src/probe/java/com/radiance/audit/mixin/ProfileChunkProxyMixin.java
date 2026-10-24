@@ -10,6 +10,13 @@ import org.spongepowered.asm.mixin.Mixin;
 
 @Mixin(value = ChunkProxy.class, remap = false)
 public abstract class ProfileChunkProxyMixin {
+    @WrapMethod(method = "onChunkLoaded")
+    private static void audit$received(
+            net.minecraft.world.level.ChunkPos pos, Operation<Void> original) {
+        original.call(pos);
+        com.radiance.audit.LoadingChainProbe.received();
+    }
+
     @WrapMethod(method = "rebuild")
     private static void audit$rebuild(Camera camera, Operation<Void> original) {
         try (var ignored = FrameProfiler.span(Stage.CHUNK_SCHEDULE)) {

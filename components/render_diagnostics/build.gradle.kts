@@ -247,7 +247,7 @@ val loadingFixtureTest =
             "-s",
             "benchmark",
             "-p",
-            "test_loading_validation.py",
+            "test_loading*.py",
             "-v",
         )
     }

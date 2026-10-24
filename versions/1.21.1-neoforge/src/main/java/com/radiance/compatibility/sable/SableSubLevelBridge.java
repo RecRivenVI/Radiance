@@ -526,6 +526,7 @@ public final class SableSubLevelBridge {
     }
 
     private static Collection<?> getSubLevels(ClientLevel level) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("sable")) return null;
         try {
             Method containerMethod = getContainer;
             if (containerMethod == null) {
@@ -562,6 +563,7 @@ public final class SableSubLevelBridge {
     }
 
     private static Object entitySubLevel(Entity entity, boolean tracking) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("sable")) return null;
         try {
             Object helper = sableHelper;
             if (helper == null) {
@@ -598,6 +600,7 @@ public final class SableSubLevelBridge {
     }
 
     private static Object blockSubLevel(ClientLevel level, BlockPos blockPos) {
+        if (!net.neoforged.fml.ModList.get().isLoaded("sable")) return null;
         try {
             Object helper = sableHelper;
             if (helper == null) {

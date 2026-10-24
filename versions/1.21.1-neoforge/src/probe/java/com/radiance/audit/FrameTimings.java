@@ -42,12 +42,19 @@ public final class FrameTimings {
         FACE_SETUP,
         FACE_CLEAR,
         FACE_BACKUP,
-        FACE_RESTORE
+        FACE_RESTORE,
+        ENTITY_SOURCE_STATE,
+        ENTITY_POSE_EXTRACT,
+        ENTITY_PART_BINDINGS,
+        ENTITY_BATCH_PACK,
+        ENTITY_OUTPUT,
+        ENTITY_SOURCE_LOOKUP
     }
 
     public final long[] inclusive = new long[Stage.values().length];
     public final long[] self = new long[Stage.values().length];
     public long generatedPbrVertices, generatedPbrBytes;
+    public long optionalSourceLookups;
     private final LongSupplier clock;
     private Span top;
 

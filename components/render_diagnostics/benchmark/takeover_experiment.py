@@ -40,8 +40,7 @@ def storage_preflight():
             total+=sum((Path(current)/f).stat().st_size for f in files if not (Path(current)/f).is_symlink())
         return total
     external=[Path('D:/Workspaces/Artifacts/Radiance'),*(p for p in Path('D:/Workspaces/Scratches').glob('Radiance*')
-                                                   if p.is_dir() and not p.is_junction()
-                                                   and p.name != 'RadianceFeasibility')]
+                                                   if p.is_dir() and not p.is_junction())]
     values=dict(workspace=size(ROOT,('.git','components/native_renderer/third_party')),
                 validations=sum(size(p) for p in (ROOT/'validations').glob('*/*') if p.name in ('instance','result')),
                 external=sum(size(p) for p in external))

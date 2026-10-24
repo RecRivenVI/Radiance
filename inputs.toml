@@ -51,3 +51,15 @@ version = "0.2.20-beta+1.21.1-neoforge"
 description = "voxy 本地移植构建，供 Radiance 可选远景 PT 后端编译与项目内功能验证"
 source = "https://github.com/RecRivenVI/voxy；本地 build/libs 构建，Manifest Voxy-Commit 为 11a3799，使用者确认与当前 Voxy 工作区源码一致"
 sha256 = ["182d4a19c06cdc769cf371a361c8e83c8741764313fedb3b5dd36546cbc86932"]
+
+[prism_rendering_baseline]
+version = "2026-10-24"
+description = "使用者授权只读复制的 Radiance 实例配置，用于项目内加载至平静的全链路诊断；不包含模组、运行库或世界"
+source = "使用者的 Radiance 1.21.1-neoforge Prism 实例；2026-10-24 停止后只读冻结"
+sha256 = ["5ccfbf65d7ad9a04d763549ff9b1798313a9d63bca943baee5b0957fc8f35e76"]
+
+[prism_runtime_baseline]
+version = "2026-10-24"
+description = "使用者 Radiance 实例继承的内存、额外 JVM 参数与 Java 身份，只读提取，不包含账户或凭据"
+source = "使用者授权的 Radiance 1.21.1-neoforge Prism 实例及其全局继承设置"
+sha256 = ["3a9bea919a5796f863abbd88a06758ed6affc4f9946aadc5766b910c52681d7b"]

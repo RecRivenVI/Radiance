@@ -193,6 +193,80 @@ int main() {
                 "changing-table policy creates independent versions without comparison copies");
         require(recording.submit(cache, mcvr::sceneTable<uint64_t>(dynamic)).uploaded,
                 "bypass clears stale reusable key");
+        // Production page plan: grow/shrink/reorder static publications while a dynamic
+        // prefix changes length. Simulate the exact GPU copies plus changed uploads.
+        mcvr::SceneTableCache<Buffer> paged;
+        std::vector<std::shared_ptr<const std::vector<uint64_t>>> pages;
+        for (uint64_t i = 0; i < 8; ++i)
+            pages.push_back(std::make_shared<const std::vector<uint64_t>>(size_t(i + 1), i + 100));
+        std::vector<std::shared_ptr<Buffer>> inflight, versions;
+        std::vector<std::vector<std::byte>> oldBytes;
+        size_t copiedBytes = 0, uploadedBytes = 0;
+        for (size_t turn = 0; turn < 150; ++turn) {
+            if (turn % 3 == 0)
+                pages[turn % pages.size()] = std::make_shared<const std::vector<uint64_t>>(turn % 7 + 1, turn + 200);
+            if (turn % 5 == 0) std::rotate(pages.begin(), pages.begin() + 1, pages.end());
+            std::vector<uint64_t> ends(turn % 11 + 2, turn);
+            const auto split = turn % ends.size();
+            auto table = mcvr::sceneTable<uint64_t>(ends, split);
+            for (const auto &page : pages) table.segments.push_back({std::as_bytes(std::span(*page)), page});
+            if (turn % 2) {
+                auto directory = std::make_shared<mcvr::SceneTable::Directory>();
+                for (const auto &segment : table.segments) directory->add(segment);
+                table.segments.clear();
+                table.directory = std::move(directory);
+            }
+            std::vector<std::byte> expected(table.size());
+            table.write(expected);
+            auto result = paged.acquirePatched(
+                table,
+                [&](const auto &input, const auto &, const auto &) {
+                    auto buffer = std::make_shared<Buffer>();
+                    buffer->bytes.resize(input.size(), std::byte{0xff});
+                    return buffer;
+                },
+                [&](const auto &buffer, const auto &patch, const auto &source) {
+                    size_t produced = 0;
+                    if (source)
+                        require(std::find(inflight.begin(), inflight.end(), source) != inflight.end(),
+                                "copy source retained before recording");
+                    for (const auto &copy : patch.copies) {
+                        require(source && copy.source + copy.bytes <= source->bytes.size() &&
+                                    copy.target + copy.bytes <= buffer->bytes.size(),
+                                "copy range");
+                        std::memcpy(buffer->bytes.data() + copy.target, source->bytes.data() + copy.source, copy.bytes);
+                        copiedBytes += copy.bytes;
+                        produced += copy.bytes;
+                    }
+                    for (const auto &upload : patch.uploads) {
+                        std::memcpy(buffer->bytes.data() + upload.target, upload.bytes.data(), upload.bytes.size());
+                        uploadedBytes += upload.bytes.size();
+                        produced += upload.bytes.size();
+                    }
+                    require(produced == buffer->bytes.size(), "new version completely initialized");
+                },
+                [&](const auto &buffer) { inflight.push_back(buffer); });
+            require(result.buffer->bytes == expected, "paged patch matches exact flat shader layout");
+            oldBytes.push_back(expected);
+            versions.push_back(result.buffer);
+            require(!paged
+                         .acquirePatched(
+                             table,
+                             [](const auto &, const auto &, const auto &) -> std::shared_ptr<Buffer> {
+                                 throw std::runtime_error("unchanged table must not allocate");
+                             },
+                             [](const auto &, const auto &, const auto &) {}, [](const auto &) {})
+                         .uploaded,
+                    "same page versions skip copies and uploads");
+        }
+        require(copiedBytes > uploadedBytes, "unchanged pages reduce host transfer rather than flatten again");
+        for (size_t i = 0; i < versions.size(); ++i)
+            require(versions[i]->bytes == oldBytes[i], "later patches never overwrite an in-flight table");
+        rejects([&] {
+            auto invalid = mcvr::sceneTable<uint64_t>(dynamic);
+            invalid.segments.push_back({std::as_bytes(std::span(dynamic)), {}});
+            recording.submit(cache, invalid);
+        });
         std::cout << checks << " scene-table checks passed\n";
         return 0;
     } catch (const std::exception &e) {

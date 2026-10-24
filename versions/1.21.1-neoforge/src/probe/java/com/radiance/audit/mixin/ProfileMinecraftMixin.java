@@ -11,6 +11,12 @@ import org.spongepowered.asm.mixin.Mixin;
 public abstract class ProfileMinecraftMixin {
     @WrapMethod(method = "runTick")
     private void audit$frame(boolean render, Operation<Void> original) {
+        // World opening may render nested loading frames. Keep one outer interval instead of
+        // overwriting its timer/partition; its wall time includes those loading frames.
+        if (FrameProfiler.collecting()) {
+            original.call(render);
+            return;
+        }
         boolean enabled;
         try {
             enabled = FrameProfiler.beginFrame();

@@ -29,6 +29,14 @@ class ProfileQualityTest(unittest.TestCase):
             self.assertEqual(result['stagesMs']['4/gpu']['mean'], 6)
             self.assertEqual(result['stagesMs']['4/gpu']['samples'], 1)
             self.assertEqual(result['workPerFrame']['upload']['logicalBytes'], 200)
+            path = root / 'frames.csv'
+            path.write_text(path.read_text().replace('false,true', 'false,false'))
+            with self.assertRaisesRegex(ValueError, 'missing world'):
+                analyze(root)
+            self.assertEqual(2, analyze(root, allow_absent_world=True)['frameCount'])
+            path.write_text(path.read_text().replace('false,false', 'true,false'))
+            with self.assertRaisesRegex(ValueError, 'Failed frame'):
+                analyze(root, allow_absent_world=True)
 
 
 if __name__ == '__main__':

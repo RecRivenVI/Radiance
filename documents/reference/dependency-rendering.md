@@ -65,6 +65,10 @@ Aftermath 的私有输入 `nsight_aftermath_sdk` 在 [inputs.toml](../../inputs.
 
 阶段 3 的纯原版城市输入为 `epicsawrunner_city_original`，取使用者提供的 By Epicsawrunner v1.2 ZIP；其发布名称为 v1.2，存档内部为 Minecraft 1.12.2 / DataVersion 1343。来源与允许哈希在 inputs.toml，原始文件路径仅在 local.toml。原文件只读，须在验证实例中经原版“优化世界”、保持不清除缓存，再冻结派生夹具。它不替代旧调查的历史输入身份。
 
+`prism_rendering_baseline` 是使用者于 2026-10-24 授权只读复制的实例配置，含 options.txt、Radiance 主设置、管线、独立着色器参数与 config 文本，不含世界、模组或运行库。停止源实例后逐文件核对并冻结，版本、哈希与本机路径仍分别由 inputs.toml、local.toml 提供。加载全链路诊断沿用上述纯原版城市，只在副本执行指定传送命令；自动实例的分辨率、静音和失焦暂停覆盖逐项记录，不沿用旧配置的性能结论。
+
+`prism_runtime_baseline` 只读提取该实例继承的最大／最小内存、额外 JVM 参数与 Java 身份，不读取账户或凭据。正式源配置基准使用此输入，避免将项目运行器默认的 8 GiB 堆与源实例继承的 16 GiB 混同。固定产品、探针和世界不变，启动参数差异在每个案例单独登记。
+
 ## 原生依赖
 
 原生子模块的来源写在 [.gitmodules](../../.gitmodules)，精确版本为父仓库登记的 gitlink。Streamline 的版本、官方下载地址与校验值集中在 [Streamline.cmake](../../components/native_renderer/cmake/Streamline.cmake)。

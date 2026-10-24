@@ -11,6 +11,7 @@ public final class AuditHooks {
             enabled("RADIANCE_AUDIT_DRAW_DETAILS", "radiance.audit.drawDetails");
     private static final boolean CHUNK_DIAGNOSTICS_ENABLED =
             enabled("RADIANCE_AUDIT_CHUNKS", "radiance.audit.chunks");
+    private static volatile boolean chunkWindow;
     private static final ThreadLocal<ArrayDeque<Boolean>> SCOPES =
             ThreadLocal.withInitial(ArrayDeque::new);
     private static final long CONTINUOUS_SAMPLE_INTERVAL_NS = 5_000_000_000L;
@@ -18,6 +19,10 @@ public final class AuditHooks {
             new ConcurrentHashMap<>();
 
     private AuditHooks() {}
+
+    static void chunkWindow(boolean active) {
+        chunkWindow = active;
+    }
 
     private static boolean enabled(String environmentName, String propertyName) {
         String environmentValue = System.getenv(environmentName);
@@ -101,7 +106,8 @@ public final class AuditHooks {
     public static boolean accepts(String category) {
         if (!AuditConfiguration.enabled()) return false;
         if ("SCREEN_EFFECT".equals(category)) return SCREEN_EFFECTS_ENABLED;
-        if (category.startsWith("CHUNK_")) return CHUNK_DIAGNOSTICS_ENABLED;
+        if (category.startsWith("CHUNK_"))
+            return CHUNK_DIAGNOSTICS_ENABLED || (chunkWindow && "CHUNK_UPDATE".equals(category));
         return switch (category) {
             case "BUFFER_DRAW", "RENDER_TYPE_DRAW", "PERSISTENT_BUFFER_DRAW" ->
                     DRAW_DETAILS_ENABLED;

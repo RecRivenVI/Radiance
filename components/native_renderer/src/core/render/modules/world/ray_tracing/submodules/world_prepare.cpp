@@ -133,9 +133,11 @@ void WorldPrepareContext::uploadBuffer(std::vector<uint32_t> &blasOffsets,
         // a fresh immutable buffer, never an in-place write into an in-flight version.
         const bool reusable = true;
         mcvr::profile::Scope selectionTime("pt.metadata.select-content");
-        const auto selection = metadataTables[table].acquire(
+        std::shared_ptr<vk::HostVisibleBuffer> staging;
+        std::vector<VkBufferCopy> uploads;
+        const auto selection = metadataTables[table].acquirePatched(
             data,
-            [&](const mcvr::SceneTable &input) {
+            [&](const mcvr::SceneTable &input, const mcvr::SceneTablePatch &patch, const auto &) {
                 std::shared_ptr<vk::DeviceLocalBuffer> buffer;
                 {
                     mcvr::profile::Scope allocation(allocationTime);
@@ -143,14 +145,48 @@ void WorldPrepareContext::uploadBuffer(std::vector<uint32_t> &blasOffsets,
                 }
                 {
                     mcvr::profile::Scope copy(copyTime);
-                    buffer->writeToStagingBuffer(
-                        [&](void *target, size_t length) { input.write({static_cast<std::byte *>(target), length}); });
+                    if (patch.uploadBytes) {
+                        staging = vk::HostVisibleBuffer::create(vma, device, patch.uploadBytes,
+                                                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+                        auto *target = static_cast<std::byte *>(staging->mappedPtr());
+                        size_t offset = 0;
+                        for (const auto &upload : patch.uploads) {
+                            std::memcpy(target + offset, upload.bytes.data(), upload.bytes.size());
+                            uploads.push_back({offset, upload.target, upload.bytes.size()});
+                            offset += upload.bytes.size();
+                        }
+                        staging->flush();
+                        framework->frameResourceRetainer().retain(staging);
+                    }
                 }
+                if (observing)
+                    mcvr::profile::emit(mcvr::profile::frame, 5, "metadata.host-upload", 1, patch.uploadBytes);
                 return buffer;
             },
-            [&](const auto &buffer) {
+            [&](const auto &buffer, const mcvr::SceneTablePatch &patch, const auto &source) {
                 mcvr::profile::Scope record(recordTime);
-                buffer->uploadToBuffer(cmdBuffer);
+                if (source) {
+                    // Source tables are immutable. This also covers a source uploaded earlier
+                    // in the same command stream, not just a completed previous frame.
+                    cmdBuffer->barriersBufferImage({{
+                                                       .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                                       .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                                       .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                                       .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                                                       .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                       .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                                                       .buffer = source,
+                                                   }},
+                                                   {});
+                    std::vector<VkBufferCopy> copies;
+                    copies.reserve(patch.copies.size());
+                    for (const auto &copy : patch.copies) copies.push_back({copy.source, copy.target, copy.bytes});
+                    vkCmdCopyBuffer(cmdBuffer->vkCommandBuffer(), source->vkBuffer(), buffer->vkBuffer(),
+                                    uint32_t(copies.size()), copies.data());
+                }
+                if (staging)
+                    vkCmdCopyBuffer(cmdBuffer->vkCommandBuffer(), staging->vkBuffer(), buffer->vkBuffer(),
+                                    uint32_t(uploads.size()), uploads.data());
                 // Fresh, immutable destination: no previous reads/writes need a pre-barrier.
                 const vk::CommandBuffer::BufferMemoryBarrier barrier{
                     .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -176,37 +212,30 @@ void WorldPrepareContext::uploadBuffer(std::vector<uint32_t> &blasOffsets,
     const VkBufferUsageFlags addressUsage = VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
                                             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
                                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
-    auto addresses = [&](const auto &values, auto constant) {
-        return mcvr::sceneTable<uint64_t>(values, staticGeometryPrefix, constant, staticScene);
+    auto addresses = [&](const auto &values, auto member) {
+        return staticScene ? staticScene->table<uint64_t>(values, staticGeometryPrefix, member) :
+                             mcvr::sceneTable<uint64_t>(values);
     };
-    const std::span<const uint64_t> empty;
     blasOffsetsBuffer = prepare(mcvr::sceneTable<uint32_t>(blasOffsets), 0, "metadata.offsets.changed", addressUsage);
-    indexBufferAddr =
-        prepare(addresses(indexBufferAddrs, staticScene ? std::span<const uint64_t>(staticScene->indices) : empty), 1,
-                "metadata.indices.changed", addressUsage);
-    positionBufferAddr =
-        prepare(addresses(positionBufferAddrs, staticScene ? std::span<const uint64_t>(staticScene->positions) : empty),
-                2, "metadata.positions.changed", addressUsage);
-    materialBufferAddr =
-        prepare(addresses(materialBufferAddrs, staticScene ? std::span<const uint64_t>(staticScene->materials) : empty),
-                3, "metadata.materials.changed", addressUsage);
-    lastIndexBufferAddr = prepare(
-        addresses(lastIndexBufferAddrs, staticScene ? std::span<const uint64_t>(staticScene->lastIndices) : empty), 4,
-        "metadata.last-indices.changed", addressUsage);
-    lastPositionBufferAddr = prepare(
-        addresses(lastPositionBufferAddrs, staticScene ? std::span<const uint64_t>(staticScene->lastPositions) : empty),
-        5, "metadata.last-positions.changed", addressUsage);
+    indexBufferAddr = prepare(addresses(indexBufferAddrs, &mcvr::StaticChunkPage::indices), 1,
+                              "metadata.indices.changed", addressUsage);
+    positionBufferAddr = prepare(addresses(positionBufferAddrs, &mcvr::StaticChunkPage::positions), 2,
+                                 "metadata.positions.changed", addressUsage);
+    materialBufferAddr = prepare(addresses(materialBufferAddrs, &mcvr::StaticChunkPage::materials), 3,
+                                 "metadata.materials.changed", addressUsage);
+    lastIndexBufferAddr = prepare(addresses(lastIndexBufferAddrs, &mcvr::StaticChunkPage::lastIndices), 4,
+                                  "metadata.last-indices.changed", addressUsage);
+    lastPositionBufferAddr = prepare(addresses(lastPositionBufferAddrs, &mcvr::StaticChunkPage::lastPositions), 5,
+                                     "metadata.last-positions.changed", addressUsage);
     lastObjToWorldMat =
         prepare(mcvr::sceneTable<glm::mat4>(lastObjToWorldMats), 6, "metadata.transforms.changed", addressUsage);
     static_assert(uint64_t(UINT32_MAX) / sizeof(vk::VertexFormat::InstanceAppearance) < (1u << 24u));
-    const auto totalGeometry = instanceAppearances.size() + (staticScene ? staticScene->appearances.size() : 0);
+    const auto totalGeometry = instanceAppearances.size() + (staticScene ? staticScene->geometryCount : 0);
     if (totalGeometry >= (1u << 24u)) throw std::overflow_error("Surface cache geometry tag capacity");
     instanceAppearanceBuffer =
-        prepare(mcvr::sceneTable<vk::VertexFormat::InstanceAppearance>(
-                    instanceAppearances, staticGeometryPrefix,
-                    staticScene ? std::span<const vk::VertexFormat::InstanceAppearance>(staticScene->appearances) :
-                                  std::span<const vk::VertexFormat::InstanceAppearance>{},
-                    staticScene),
+        prepare(staticScene ? staticScene->table<vk::VertexFormat::InstanceAppearance>(
+                                  instanceAppearances, staticGeometryPrefix, &mcvr::StaticChunkPage::appearances) :
+                              mcvr::sceneTable<vk::VertexFormat::InstanceAppearance>(instanceAppearances),
                 7, "metadata.appearances.changed",
                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
     waterExclusionBuffer = prepare(mcvr::sceneTable<glm::vec4>(waterExclusions), 8, "metadata.water.changed",
@@ -253,11 +282,7 @@ void WorldPrepareContext::render() {
 
     profile.next("pt.prepare.chunk-lock");
     std::unique_lock<std::recursive_mutex> lock(chunks->mutex());
-    profile.next("pt.prepare.blas-record");
 
-    if (chunks->importantBLASBuilders().size() > 0) {
-        vk::BLASBuilder::batchSubmit(chunks->importantBLASBuilders(), worldCommandBuffer);
-    }
 
     entities->recordGpuConversion(worldCommandBuffer);
     const auto entityBlasStamp = SceneRecordingScope::active() ?
@@ -303,10 +328,10 @@ void WorldPrepareContext::render() {
         mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.scene.static-rebuild",
                             chunks->staticSceneBuilds() - staticBuilds, 0);
         mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.scene.static-records",
-                            staticScene ? staticScene->instances.size() : 0,
+                            staticScene ? staticScene->instanceCount : 0,
                             staticScene ? staticScene->storageBytes() : 0);
         mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.scene.static-geometries",
-                            staticScene ? staticScene->indices.size() : 0, 0);
+                            staticScene ? staticScene->geometryCount : 0, 0);
     }
 
     profile.next("pt.prepare.metadata-init");
@@ -363,8 +388,8 @@ void WorldPrepareContext::render() {
         }
     }
     if (staticScene) {
-        instanceCapacity += staticScene->instances.size();
-        geometryCapacity += staticScene->indices.size();
+        instanceCapacity += staticScene->instanceCount;
+        geometryCapacity += staticScene->geometryCount;
     }
     const auto &capacityChunks = chunks->chunks();
     for (size_t i = staticScene ? chunks->primaryChunkCount() : 0; i < capacityChunks.size(); ++i) {
@@ -374,7 +399,7 @@ void WorldPrepareContext::render() {
             geometryCapacity += chunk->geometryCount;
         }
     }
-    const auto changingGeometryCapacity = geometryCapacity - (staticScene ? staticScene->indices.size() : 0);
+    const auto changingGeometryCapacity = geometryCapacity - (staticScene ? staticScene->geometryCount : 0);
     blasOffset.reserve(instanceCapacity);
     hitGroups.reserve(instanceCapacity + geometryCapacity);
     indexBufferAddrs.reserve(changingGeometryCapacity);
@@ -709,9 +734,8 @@ void WorldPrepareContext::render() {
             staticGeometryPrefix = indexBufferAddrs.size();
             staticScene->appendHeader(blasAccu, blasOffset, hitGroups);
             if (mcvr::profile::enabled())
-                mcvr::profile::emit(mcvr::profile::frame, 5, "metadata.static-copy-avoided",
-                                    staticScene->indices.size(),
-                                    staticScene->indices.size() *
+                mcvr::profile::emit(mcvr::profile::frame, 5, "metadata.static-copy-avoided", staticScene->geometryCount,
+                                    staticScene->geometryCount *
                                         (5 * sizeof(uint64_t) + sizeof(vk::VertexFormat::InstanceAppearance)));
             profile.next("pt.prepare.static-instance-append");
             staticScene->appendInstances(
@@ -719,15 +743,15 @@ void WorldPrepareContext::render() {
                 [&](const auto &transform, auto index, auto group, auto flags, const auto &blas) {
                     instanceBuilder.defineInstance(transform, index, 0x01, group, flags, blas);
                 });
-            cached += staticScene->instances.size();
-            blasAccu += uint32_t(staticScene->indices.size());
-            blasGroupAccu += uint32_t(staticScene->groups.size());
-            blasIndex += int(staticScene->instances.size());
+            cached += staticScene->instanceCount;
+            blasAccu += uint32_t(staticScene->geometryCount);
+            blasGroupAccu += uint32_t(staticScene->groupCount);
+            blasIndex += int(staticScene->instanceCount);
             if (verifyCache) {
-                for (size_t i = 0; i < staticScene->instances.size(); ++i) {
-                    const auto &entry = staticScene->instances[i];
+                staticScene->eachInstance([&](const auto &page, size_t i) {
+                    const auto &entry = page.instances[i];
                     const auto &chunk = chunk1s.at(entry.slot);
-                    const auto &metadata = staticScene->owners[i];
+                    const auto &metadata = page.owners[i];
                     if (chunk->blas != entry.blas || chunk->sceneMetadata() != metadata ||
                         glm::ivec3(chunk->x, chunk->y, chunk->z) != entry.origin)
                         throw std::logic_error("Static chunk snapshot ownership mismatch");
@@ -737,16 +761,16 @@ void WorldPrepareContext::render() {
                         const auto group = chunk->geometryGroupNames && j < chunk->geometryGroupNames->size() ?
                                                (*chunk->geometryGroupNames)[j] :
                                                "default";
-                        if (staticScene->indices[k] != (*chunk->indexBufferAddresses)[j] ||
-                            staticScene->positions[k] != (*chunk->positionBufferAddresses)[j] ||
-                            staticScene->materials[k] != (*chunk->materialBufferAddresses)[j] ||
-                            staticScene->appearances[k].materialFlags !=
+                        if (page.indices[k] != (*chunk->indexBufferAddresses)[j] ||
+                            page.positions[k] != (*chunk->positionBufferAddresses)[j] ||
+                            page.materials[k] != (*chunk->materialBufferAddresses)[j] ||
+                            page.appearances[k].materialFlags !=
                                 rules.shaderFlags((*chunk->geometryMaterialFlags)[j]) ||
-                            staticScene->groups[entry.groupOffset + 1 + j] != mcvr::hitgroups::intern(group))
+                            page.groups[entry.groupOffset + 1 + j] != mcvr::hitgroups::intern(group))
                             throw std::logic_error("Static chunk snapshot geometry mismatch");
                     }
                     ++verified;
-                }
+                });
             }
             profile.next("pt.prepare.external-metadata");
         }
@@ -941,9 +965,9 @@ void WorldPrepareContext::render() {
         std::map<std::pair<uint64_t, uint64_t>, std::pair<uint64_t, uint64_t>> current;
         framework->frameResourceRetainer().retain(tables);
         if (const auto &held = tables->handoffNear) {
-            for (size_t i = 0; i < held->instances.size(); ++i) {
-                const auto &entry = held->instances[i];
-                const auto &metadata = held->owners[i];
+            held->eachInstance([&](const auto &page, size_t i) {
+                const auto &entry = page.instances[i];
+                const auto &metadata = page.owners[i];
                 const auto objectToWorld =
                     mcvr::space::worldOriginFloatLocal(glm::mat4(1), glm::dvec3(entry.origin), cameraPos);
                 const auto transform = mcvr::space::affineRows<VkTransformMatrixKHR>(objectToWorld);
@@ -956,7 +980,7 @@ void WorldPrepareContext::render() {
                 blasAccu += uint32_t(metadata->indices.size());
                 blasGroupAccu += uint32_t(metadata->groups.size());
                 ++blasIndex;
-            }
+            });
         }
         for (auto &node : farSections->selected()) {
             framework->frameResourceRetainer().retain(node);

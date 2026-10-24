@@ -12,6 +12,32 @@ import org.spongepowered.asm.mixin.Mixin;
 
 @Mixin(value = SableSubLevelBridge.class, remap = false)
 public abstract class ProfileSableBridgeMixin {
+    @WrapMethod(method = "entityRenderTransform")
+    private static SableSubLevelBridge.EntityRenderTransform audit$entity(
+            net.minecraft.world.entity.Entity entity,
+            float partial,
+            double x,
+            double y,
+            double z,
+            Operation<SableSubLevelBridge.EntityRenderTransform> original) {
+        try (var stage = FrameProfiler.span(Stage.ENTITY_SOURCE_LOOKUP)) {
+            return original.call(entity, partial, x, y, z);
+        }
+    }
+
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = {"entitySubLevel", "blockSubLevel", "getSubLevels"},
+            at =
+                    @org.spongepowered.asm.mixin.injection.At(
+                            value = "INVOKE",
+                            target =
+                                    "Ljava/lang/Class;forName(Ljava/lang/String;)Ljava/lang/Class;"))
+    private static Class<?> audit$classLookup(String name, Operation<Class<?>> original)
+            throws ClassNotFoundException {
+        FrameProfiler.optionalSourceLookup();
+        return original.call(name);
+    }
+
     @WrapMethod(method = "update")
     private static void audit$update(
             ClientLevel level, Camera camera, float partialTick, Operation<Void> original) {

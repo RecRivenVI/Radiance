@@ -11,6 +11,22 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(value = StorageVertexConsumerProvider.class, remap = false)
 public abstract class ProfileProducerStorageMixin {
+    @com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation(
+            method = "getBuffer",
+            at = @At(value = "NEW", target = "(I)Lcom/mojang/blaze3d/vertex/ByteBufferBuilder;"))
+    private com.mojang.blaze3d.vertex.ByteBufferBuilder audit$allocation(
+            int size,
+            com.llamalad7.mixinextras.injector.wrapoperation.Operation<
+                            com.mojang.blaze3d.vertex.ByteBufferBuilder>
+                    original) {
+        try (var stage =
+                com.radiance.audit.FrameProfiler.span(
+                        com.radiance.audit.FrameTimings.Stage.GEOMETRY_ALLOCATE)) {
+            ProducerCensus.captureAllocation(size);
+            return original.call(size);
+        }
+    }
+
     @Inject(method = "getBuffer", at = @At("HEAD"))
     private void audit$owner(RenderType type, CallbackInfoReturnable<VertexConsumer> callback) {
         ProducerCensus.provider(this);

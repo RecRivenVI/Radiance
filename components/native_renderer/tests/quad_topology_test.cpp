@@ -153,6 +153,18 @@ triangles(const std::vector<Point> &points, const std::vector<uint32_t> &indices
     return out;
 }
 int main() {
+    // Integer grid coordinates must not all collide in a power-of-two bucket table.
+    // Equality and forced-collision correctness are exercised independently below.
+    std::array<size_t, 1024> buckets{};
+    for (int x = 0; x < 32; ++x)
+        for (int y = 0; y < 32; ++y) {
+            Key key{bits({float(x), float(y), 0}), bits({float(x + 1), float(y), 0}),
+                    bits({float(x + 1), float(y + 1), 0}), bits({float(x), float(y + 1), 0})};
+            std::sort(key.begin(), key.end());
+            ++buckets[KeyHash{}(key) & (buckets.size() - 1)];
+        }
+    require(std::count_if(buckets.begin(), buckets.end(), [](size_t n) { return n != 0; }) > 500);
+    require(*std::max_element(buckets.begin(), buckets.end()) < 16);
     const auto probeCases = admissionCases<3>() + admissionCases<4>();
     std::array<Point, 4> corners{{{0, 0, 0}, {1, 0, .1f}, {1, 1, 0}, {0, 1, 0}}};
     unsigned cases = 0;

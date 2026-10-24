@@ -4,6 +4,7 @@
 #include "core/failure_state.hpp"
 
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 
@@ -23,6 +24,10 @@ class Device : public SharedObject<Device> {
     VkDevice &vkDevice();
     VkQueue &mainVkQueue();
     VkQueue &secondaryQueue();
+    // Host synchronization for the independently advancing chunk queue and idle waits.
+    std::mutex &secondaryQueueMutex() {
+        return secondaryQueueMutex_;
+    }
 
     VkResult createGraphicsPipelines(uint32_t count,
                                      const VkGraphicsPipelineCreateInfo *createInfos,
@@ -76,6 +81,7 @@ class Device : public SharedObject<Device> {
     VkDevice device_ = VK_NULL_HANDLE;
     VkQueue mainQueue_ = VK_NULL_HANDLE;
     VkQueue secondaryQueue_ = VK_NULL_HANDLE;
+    std::mutex secondaryQueueMutex_;
     std::unique_ptr<PipelineCache> pipelineCache_;
 
     bool extendedDynamicState2LogicOp_ = false;

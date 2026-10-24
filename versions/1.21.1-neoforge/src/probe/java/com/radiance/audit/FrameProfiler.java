@@ -43,8 +43,12 @@ public final class FrameProfiler {
         return frame;
     }
 
-    static boolean collecting() {
+    public static boolean collecting() {
         return active && current != null && Thread.currentThread() == owner;
+    }
+
+    public static void requestStop() {
+        stop = true;
     }
 
     public static void register() {
@@ -300,6 +304,13 @@ public final class FrameProfiler {
         current.generatedPbrBytes += (long) draw.vertexCount() * draw.format().getVertexSize();
     }
 
+    public static void optionalSourceLookup() {
+        if (active
+                && mode == ProfileMode.TIMED
+                && current != null
+                && Thread.currentThread() == owner) current.optionalSourceLookups++;
+    }
+
     public static WorkerSample workerStart() {
         return active ? new WorkerSample(report, System.nanoTime()) : null;
     }
@@ -357,6 +368,11 @@ public final class FrameProfiler {
                     .append(',')
                     .append(timings.generatedPbrBytes)
                     .append('\n');
+        if (mode == ProfileMode.TIMED)
+            rows.append(frame)
+                    .append(",5,java.optional-source.class-lookups,")
+                    .append(timings.optionalSourceLookups)
+                    .append(",0\n");
         var mc = Minecraft.getInstance();
         long rates = failed ? 0 : RendererProxy.presentationRates();
         String frameRow =

@@ -1,5 +1,7 @@
 package com.radiance.mixins.vulkan_render_integration;
 
+import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
+import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.radiance.client.proxy.world.ChunkProxy;
 import com.radiance.compatibility.sable.SableRenderSectionCompatibility;
 import com.radiance.mixin_related.extensions.vulkan_render_integration.IChunkBuilderBuiltChunkExt;
@@ -24,8 +26,6 @@ public class ChunkBuilderBuiltChunkMixins implements IChunkBuilderBuiltChunkExt 
     public SectionRenderDispatcher radiance$getChunkBuilder() {
         return this$0;
     }
-
-    @Unique private boolean radiance$wasDirtyBeforeSet;
 
     @Redirect(
             method = "<init>",
@@ -53,17 +53,13 @@ public class ChunkBuilderBuiltChunkMixins implements IChunkBuilderBuiltChunkExt 
         SableRenderSectionCompatibility.handleDirty(self);
     }
 
-    @Inject(method = "setDirty(Z)V", at = @At("HEAD"))
-    private void captureDirtyState(boolean playerChanged, CallbackInfo ci) {
+    @WrapMethod(method = "setDirty(Z)V")
+    private void addToRebuildGridScheduleRebuild(boolean playerChanged, Operation<Void> original) {
         SectionRenderDispatcher.RenderSection self =
                 (SectionRenderDispatcher.RenderSection) (Object) this;
-        radiance$wasDirtyBeforeSet = self.isDirty();
-    }
-
-    @Inject(method = "setDirty(Z)V", at = @At("TAIL"))
-    private void addToRebuildGridScheduleRebuild(boolean playerChanged, CallbackInfo ci) {
-        SectionRenderDispatcher.RenderSection self =
-                (SectionRenderDispatcher.RenderSection) (Object) this;
+        boolean wasDirty = self.isDirty();
+        ChunkProxy.sectionChanged(self);
+        original.call(playerChanged);
         if (SableRenderSectionCompatibility.handleDirty(self)) {
             return;
         }
@@ -72,7 +68,7 @@ public class ChunkBuilderBuiltChunkMixins implements IChunkBuilderBuiltChunkExt 
                         || com.radiance.client.proxy.world.PlayerSectionUpdates.request(
                                         self.getOrigin())
                                 != 0;
-        if (radiance$wasDirtyBeforeSet) {
+        if (wasDirty) {
             if (interactive) ChunkProxy.promoteRebuild(self);
             return;
         }

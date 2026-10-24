@@ -15,6 +15,28 @@ import org.junit.jupiter.api.Test;
 
 final class ExternalSectionBuildSchedulerTest {
     @Test
+    void pollingAnUncompiledExternalSectionDoesNotCancelItsRunningRevision() {
+        var scheduler = new ExternalSectionBuildScheduler<String>(new AtomicInteger(), 1, 4);
+        var state = scheduler.createState();
+        Queue<Runnable> workers = new ArrayDeque<>();
+        List<Long> completed = new ArrayList<>();
+        assertEquals(1, scheduler.ensureRequested(1, "section", state));
+        assertEquals(0, scheduler.ensureRequested(1, "section", state));
+        scheduler.schedule(
+                ticket -> () -> completed.add(ticket.revision()), workers::add, failingHandler());
+        assertEquals(0, scheduler.ensureRequested(1, "section", state));
+        assertEquals(2, scheduler.request(1, "section", state));
+        workers.remove().run();
+        assertTrue(completed.isEmpty());
+        scheduler.schedule(
+                ticket -> () -> completed.add(ticket.revision()), workers::add, failingHandler());
+        workers.remove().run();
+        assertEquals(List.of(2L), completed);
+        scheduler.cancel(1, state);
+        assertEquals(0, scheduler.ensureRequested(1, "section", state));
+    }
+
+    @Test
     void capacityIsAcquiredBeforePreparationAndDeferredWorkResumes() {
         AtomicInteger inFlight = new AtomicInteger();
         ExternalSectionBuildScheduler<String> scheduler =

@@ -1,5 +1,6 @@
 #include "core/render/material_faces.hpp"
 #include "core/render/quad_topology.hpp"
+#include "core/render/scene_table.hpp"
 #include <glm/glm.hpp>
 #include <cmath>
 #include <array>
@@ -66,11 +67,11 @@ int main(int argc, char **argv) {
         vkGetPhysicalDeviceQueueFamilyProperties(physical, &count, qs.data());
         uint32_t family = 0;
         while (!(qs.at(family).queueFlags & VK_QUEUE_COMPUTE_BIT)) ++family;
-        float priority = 1;
+        float priorities[] = {1, 1};
         VkDeviceQueueCreateInfo qi{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
         qi.queueFamilyIndex = family;
-        qi.queueCount = 1;
-        qi.pQueuePriorities = &priority;
+        qi.queueCount = std::min(2u, qs.at(family).queueCount);
+        qi.pQueuePriorities = priorities;
         VkPhysicalDeviceRayQueryFeaturesKHR rq{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
         rq.rayQuery = VK_TRUE;
         VkPhysicalDeviceAccelerationStructureFeaturesKHR af{
@@ -161,6 +162,145 @@ int main(int argc, char **argv) {
             check(vkWaitForFences(device, 1, &fence, VK_TRUE, 10'000'000'000ull));
             check(vkResetFences(device, 1, &fence));
         };
+        if (qi.queueCount == 2) {
+            VkQueue backend;
+            vkGetDeviceQueue(device, family, 1, &backend);
+            VkCommandPool backendPool;
+            check(vkCreateCommandPool(device, &pc, nullptr, &backendPool));
+            auto allocation = ca;
+            allocation.commandPool = backendPool;
+            VkCommandBuffer backendCommands;
+            check(vkAllocateCommandBuffers(device, &allocation, &backendCommands));
+            VkFence backendFence;
+            check(vkCreateFence(device, &fc, nullptr, &backendFence));
+            for (uint32_t turn = 0; turn < 4; turn++) {
+                std::array<uint32_t, 256> values;
+                for (uint32_t i = 0; i < values.size(); i++) values[i] = i ^ (turn * 0xaabbccddu);
+                auto source = buffer(sizeof(values), VK_BUFFER_USAGE_TRANSFER_SRC_BIT, values.data());
+                auto target =
+                    buffer(sizeof(values), VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                auto readback = buffer(sizeof(values), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                auto target2 =
+                    buffer(sizeof(values), VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                auto readback2 = buffer(sizeof(values), VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+                VkSemaphoreCreateInfo semaphoreInfo{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
+                std::array<VkSemaphore, 2> ready;
+                const VkBufferCopy copy{0, 0, sizeof(values)};
+                for (size_t batch = 0; batch < ready.size(); ++batch) {
+                    check(vkCreateSemaphore(device, &semaphoreInfo, nullptr, &ready[batch]));
+                    check(vkResetCommandBuffer(backendCommands, 0));
+                    VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+                    check(vkBeginCommandBuffer(backendCommands, &begin));
+                    vkCmdCopyBuffer(backendCommands, source.handle, batch ? target2.handle : target.handle, 1, &copy);
+                    check(vkEndCommandBuffer(backendCommands));
+                    VkSubmitInfo build{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+                    build.commandBufferCount = 1;
+                    build.pCommandBuffers = &backendCommands;
+                    build.signalSemaphoreCount = 1;
+                    build.pSignalSemaphores = &ready[batch];
+                    check(vkQueueSubmit(backend, 1, &build, backendFence));
+                    check(vkWaitForFences(device, 1, &backendFence, VK_TRUE, 10'000'000'000ull));
+                    // Reuse recording capacity while the previous completed batch
+                    // is still waiting for publication; semaphore owners stay unique.
+                    check(vkResetFences(device, 1, &backendFence));
+                }
+                const std::array<VkPipelineStageFlags, 2> stages{VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                                 VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
+                VkSubmitInfo publication{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+                publication.waitSemaphoreCount = uint32_t(ready.size());
+                publication.pWaitSemaphores = ready.data();
+                publication.pWaitDstStageMask = stages.data();
+                check(vkQueueSubmit(queue, 1, &publication, VK_NULL_HANDLE));
+                submit([&] {
+                    vkCmdCopyBuffer(cmd, target.handle, readback.handle, 1, &copy);
+                    vkCmdCopyBuffer(cmd, target2.handle, readback2.handle, 1, &copy);
+                });
+                if (std::memcmp(values.data(), readback.mapped, sizeof(values)) ||
+                    std::memcmp(values.data(), readback2.mapped, sizeof(values)))
+                    throw std::runtime_error("Chunk queue publication memory dependency failed");
+                // The later main-queue fence also retires the empty publication wait.
+                for (auto semaphore : ready) vkDestroySemaphore(device, semaphore, nullptr);
+            }
+            vkDestroyFence(device, backendFence, nullptr);
+            vkDestroyCommandPool(device, backendPool, nullptr);
+            std::cout << "independent chunk queue -> completion -> main publication wait -> readback passed\n";
+        } else
+            std::cout << "secondary queue subset unavailable on this device\n";
+        // Exercise immutable metadata patches on the real queue, including copying a
+        // version uploaded earlier in the same command buffer and rebasing static pages.
+        {
+            mcvr::SceneTableCache<Buffer> cache;
+            std::vector<std::shared_ptr<Buffer>> retained, versions;
+            std::vector<std::vector<std::byte>> expected;
+            auto first = std::make_shared<const std::vector<uint32_t>>(256, 0x11223344u);
+            auto second = std::make_shared<const std::vector<uint32_t>>(128, 0xaabbccddu);
+            size_t copied = 0, uploaded = 0;
+            submit([&] {
+                for (uint32_t turn = 0; turn < 6; ++turn) {
+                    std::vector<uint32_t> dynamic(turn + 2, turn + 30);
+                    auto data = mcvr::sceneTable<uint32_t>(dynamic, turn);
+                    auto directory = std::make_shared<mcvr::SceneTable::Directory>();
+                    directory->add({std::as_bytes(std::span(*first)), first});
+                    if (turn != 4) directory->add({std::as_bytes(std::span(*second)), second});
+                    data.directory = std::move(directory);
+                    std::shared_ptr<Buffer> staging;
+                    auto result = cache.acquirePatched(
+                        data,
+                        [&](const auto &input, const auto &patch, const auto &) {
+                            auto target = std::make_shared<Buffer>(buffer(
+                                input.size(), VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT));
+                            if (patch.uploadBytes) {
+                                staging = std::make_shared<Buffer>(
+                                    buffer(patch.uploadBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+                                size_t offset = 0;
+                                for (const auto &upload : patch.uploads) {
+                                    std::memcpy(static_cast<std::byte *>(staging->mapped) + offset, upload.bytes.data(),
+                                                upload.bytes.size());
+                                    offset += upload.bytes.size();
+                                }
+                                retained.push_back(staging);
+                            }
+                            return target;
+                        },
+                        [&](const auto &target, const auto &patch, const auto &source) {
+                            if (source) {
+                                VkMemoryBarrier dependency{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                                dependency.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
+                                dependency.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+                                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                                     VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &dependency, 0, nullptr, 0,
+                                                     nullptr);
+                                for (const auto &copy : patch.copies) {
+                                    const VkBufferCopy region{copy.source, copy.target, copy.bytes};
+                                    vkCmdCopyBuffer(cmd, source->handle, target->handle, 1, &region);
+                                    copied += copy.bytes;
+                                }
+                            }
+                            size_t offset = 0;
+                            for (const auto &upload : patch.uploads) {
+                                const VkBufferCopy region{offset, upload.target, upload.bytes.size()};
+                                vkCmdCopyBuffer(cmd, staging->handle, target->handle, 1, &region);
+                                offset += upload.bytes.size();
+                            }
+                            uploaded += patch.uploadBytes;
+                        },
+                        [&](const auto &resource) { retained.push_back(resource); });
+                    versions.push_back(result.buffer);
+                    expected.emplace_back(data.size());
+                    data.write(expected.back());
+                }
+                VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+                vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT, 0, 1, &host, 0,
+                                     nullptr, 0, nullptr);
+            });
+            for (size_t i = 0; i < versions.size(); ++i)
+                if (std::memcmp(versions[i]->mapped, expected[i].data(), expected[i].size()))
+                    throw std::runtime_error("GPU metadata page copy changed shader-visible bytes or an old version");
+            if (copied <= uploaded) throw std::runtime_error("Metadata fixture did not reuse GPU pages");
+            std::cout << "immutable metadata page copies and same-command dependencies passed\n";
+        }
         auto build = [&](VkAccelerationStructureTypeKHR type, std::vector<VkAccelerationStructureGeometryKHR> geoms,
                          std::vector<uint32_t> sizes) {
             VkAccelerationStructureBuildGeometryInfoKHR bi{

@@ -927,6 +927,7 @@ VkResult Framework::warmupCurrentPipeline() {
 VkResult Framework::waitDeviceIdle() {
     if (device_ == nullptr) { return VK_SUCCESS; }
     if (device_->isDeviceLost()) { return VK_ERROR_DEVICE_LOST; }
+    std::lock_guard backend(device_->secondaryQueueMutex());
     const VkResult result = vkDeviceWaitIdle(device_->vkDevice());
     if (result != VK_SUCCESS) { return recordFailure(result, "vkDeviceWaitIdle"); }
     return VK_SUCCESS;
@@ -943,6 +944,7 @@ VkResult Framework::waitRenderQueueIdle() {
 VkResult Framework::waitBackendQueueIdle() {
     if (device_ == nullptr) { return VK_SUCCESS; }
     if (device_->isDeviceLost()) { return VK_ERROR_DEVICE_LOST; }
+    std::lock_guard backend(device_->secondaryQueueMutex());
     const VkResult result = vkQueueWaitIdle(device_->secondaryQueue());
     if (result != VK_SUCCESS) { return recordFailure(result, "vkQueueWaitIdle(secondary)"); }
     return VK_SUCCESS;

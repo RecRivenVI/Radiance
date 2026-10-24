@@ -36,7 +36,8 @@ public final class AuditMixinPlugin implements IMixinConfigPlugin {
         // These observers modify ModelPart/ItemRenderer/ModelBlockRenderer and correctly make
         // the product reject direct takeover. Performance attribution must retain normal inputs.
         if (Boolean.getBoolean("radiance.audit.vanillaPerformance")
-                && (name.startsWith("ProfileProducer")
+                && ((name.startsWith("ProfileProducer")
+                                && !name.equals("ProfileProducerStorageMixin"))
                         || Set.of("LevelRendererAccessor", "ProfileLevelSetupMixin")
                                 .contains(name))) return false;
         if (Boolean.getBoolean("radiance.audit.drawingCensus") && name.startsWith("Profile"))

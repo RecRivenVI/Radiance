@@ -23,8 +23,8 @@ struct Published {
 struct Fixture {
     std::map<uint32_t, std::shared_ptr<Published>> slots;
     uint64_t visits = 0;
-    std::shared_ptr<mcvr::StaticChunkScene> build(const std::set<uint32_t> &active) {
-        auto next = std::make_shared<mcvr::StaticChunkScene>();
+    std::shared_ptr<mcvr::StaticChunkPage> build(const std::set<uint32_t> &active) {
+        auto next = std::make_shared<mcvr::StaticChunkPage>();
         for (auto slot : active) {
             ++visits;
             auto &p = slots.at(slot);
@@ -45,56 +45,58 @@ void compare(const mcvr::StaticChunkScene &scene, const Fixture &fixture, uint32
     std::vector<vk::VertexFormat::InstanceAppearance> appearance(dynamicCount), refA = appearance;
     scene.append(dynamicCount, offsets, groups, indices, positions, materials, lastI, lastP, appearance);
     uint32_t base = dynamicCount;
-    for (const auto &entry : scene.instances) {
+    scene.eachInstance([&](const auto &page, size_t i) {
+        const auto &entry = page.instances[i];
         const auto &p = fixture.slots.at(entry.slot);
         mcvr::ChunkSceneMetadata uncached(p, 2, p->indices, p->positions, p->materials, p->groups, p->flags);
         referenceOffsets.push_back(base);
         uncached.append(false, refGroups, refI, refP, refM, refLI, refLP, refA);
         base += 2;
-    }
+    });
     check(offsets == referenceOffsets && groups == refGroups && indices == refI && positions == refP &&
           materials == refM && lastI == refLI && lastP == refLP);
     check(appearance.size() == refA.size());
     check(!std::memcmp(appearance.data(), refA.data(), appearance.size() * sizeof(appearance[0])));
     // Production upload layout: dynamic prefix + immutable primary chunks + external suffix.
-    const auto snapshot = std::make_shared<const mcvr::StaticChunkScene>(scene);
-    auto compareUpload = [&]<class T>(const std::vector<T> &flat, const std::vector<T> &constant) {
+    auto compareUpload = [&]<class T>(const std::vector<T> &flat, std::vector<T> mcvr::StaticChunkPage::*member) {
         std::vector<T> changing(flat.begin(), flat.begin() + dynamicCount);
         auto expected = flat;
         if (!flat.empty()) {
             changing.push_back(flat.back());
             expected.push_back(flat.back());
         }
-        const auto table = mcvr::sceneTable<T>(changing, dynamicCount, constant, snapshot);
+        const auto table = scene.table<T>(changing, dynamicCount, member);
+        check(table.directory == scene.table<T>(changing, dynamicCount, member).directory && table.segments.empty());
         std::vector<std::byte> packed(table.size());
         table.write(packed);
         const auto reference = std::as_bytes(std::span(expected));
         check(std::equal(packed.begin(), packed.end(), reference.begin(), reference.end()));
     };
-    compareUpload(refI, snapshot->indices);
-    compareUpload(refP, snapshot->positions);
-    compareUpload(refM, snapshot->materials);
-    compareUpload(refLI, snapshot->lastIndices);
-    compareUpload(refLP, snapshot->lastPositions);
-    compareUpload(refA, snapshot->appearances);
+    compareUpload(refI, &mcvr::StaticChunkPage::indices);
+    compareUpload(refP, &mcvr::StaticChunkPage::positions);
+    compareUpload(refM, &mcvr::StaticChunkPage::materials);
+    compareUpload(refLI, &mcvr::StaticChunkPage::lastIndices);
+    compareUpload(refLP, &mcvr::StaticChunkPage::lastPositions);
+    compareUpload(refA, &mcvr::StaticChunkPage::appearances);
+    std::vector<const mcvr::StaticChunkPage::Instance *> ordered;
+    scene.eachInstance([&](const auto &page, size_t i) { ordered.push_back(&page.instances[i]); });
     std::vector<glm::mat4> history;
     size_t count = 0;
     scene.appendInstances(camera, dynamicCount, 17, history,
                           [&](const auto &transform, auto index, auto group, auto flags, const auto &blas) {
-                              const auto &entry = scene.instances[count];
+                              const auto &entry = *ordered[count];
                               const auto &p = fixture.slots.at(entry.slot);
                               const auto d = glm::dvec3(p->origin) - camera;
-                              check(index == dynamicCount + count && group == 17 + entry.groupOffset &&
-                                    blas == p->blas);
+                              check(index == dynamicCount + count && group == 17 + count * 3 && blas == p->blas);
                               check(transform.matrix[0][3] == float(d.x) && transform.matrix[1][3] == float(d.y) &&
                                     transform.matrix[2][3] == float(d.z));
                               check(flags == mcvr::faces::ModelRules(p->flags).instanceFlags(transform));
                               ++count;
                           });
-    check(history.size() == scene.instances.size());
+    check(history.size() == scene.instanceCount);
     for (size_t i = 0; i < history.size(); ++i) {
         glm::dmat4 original(1);
-        original[3] = glm::dvec4(glm::dvec3(scene.instances[i].origin) - camera, 1);
+        original[3] = glm::dvec4(glm::dvec3(ordered[i]->origin) - camera, 1);
         check(history[i] == glm::mat4(original));
     }
 }
@@ -108,11 +110,11 @@ int main() {
     mcvr::StaticChunkSceneCache cache;
     auto get = [&] { return cache.get(publications, [&](const auto &active) { return fixture.build(active); }); };
     auto empty = get();
-    check(empty->instances.empty() && fixture.visits == 0);
+    check(empty->instanceCount == 0 && fixture.visits == 0);
     publications->changed(100000, true);
     publications->changed(5, true);
     auto frame = get();
-    check(frame->instances.size() == 2 && frame->instances[0].slot == 5 && fixture.visits == 2);
+    check(frame->instanceCount == 2 && frame->pages.front()->instances[0].slot == 5 && fixture.visits == 2);
     for (uint32_t i = 0; i < 100; ++i) {
         check(get() == frame);
         compare(*frame, fixture, i % 9, {30000000.125 + i * 0.125, -8, -30000000.25});
@@ -126,7 +128,8 @@ int main() {
     fixture.slots[5]->materials = {1001, 1002}; // Replacement / resource reload at same slot.
     publications->changed(5, true);
     auto updated = get();
-    check(updated != frame && updated->materials[0] == 1001 && !old.expired());
+    check(updated != frame && updated->pages.front()->materials[0] == 1001 && !old.expired());
+    check(updated->pages.back() == frame->pages.back() && fixture.visits == 3 && cache.pageBuilds() == 3);
     compare(*updated, fixture, 11, {0, 1, 2});
     frame.reset();
     retention.beginFrame(2, 0, 3);
@@ -135,22 +138,21 @@ int main() {
     check(old.expired());
     publications->changed(5, false);
     auto removed = get();
-    check(removed->instances.size() == 1 && removed->instances[0].slot == 100000);
+    check(removed->instanceCount == 1 && removed->pages.front()->instances[0].slot == 100000);
     publications->changed(100000, false); // Last geometry unloads, not a stale nonempty snapshot.
-    check(get()->instances.empty());
+    check(get()->instanceCount == 0);
     publications->changed(5, true);
     try {
-        cache.get(publications,
-                  [](const auto &) -> std::shared_ptr<mcvr::StaticChunkScene> { throw std::bad_alloc(); });
+        cache.get(publications, [](const auto &) -> std::shared_ptr<mcvr::StaticChunkPage> { throw std::bad_alloc(); });
         check(false);
     } catch (const std::bad_alloc &) {}
-    check(get()->instances.size() == 1); // Failed refresh does not acknowledge the revision.
+    check(get()->instanceCount == 1); // Failed refresh does not acknowledge the revision.
     auto oldPublications = publications;
     publications = std::make_shared<mcvr::ChunkScenePublications>(); // World reset / identity ABA.
-    check(get()->instances.empty());
+    check(get()->instanceCount == 0);
     oldPublications->changed(5, true); // An old world cannot dirty the current world.
     auto reset = get();
-    check(get() == reset && reset->instances.empty());
+    check(get() == reset && reset->instanceCount == 0);
     cache.reset();
     check(get() != reset);
     std::cout

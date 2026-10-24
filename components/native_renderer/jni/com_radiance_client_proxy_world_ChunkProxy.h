@@ -46,10 +46,10 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_releaseSc
 /*
  * Class:     com_radiance_client_proxy_world_ChunkProxy
  * Method:    rebuildSingle
- * Signature: (IIIJJIJJJJJJJZIZ)V
+ * Signature: (IIIJJIJJJJJJJIZ)V
  */
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_rebuildSingle
-  (JNIEnv *, jclass, jint, jint, jint, jlong, jlong, jint, jlong, jlong, jlong, jlong, jlong, jlong, jlong, jboolean, jint, jboolean);
+  (JNIEnv *, jclass, jint, jint, jint, jlong, jlong, jint, jlong, jlong, jlong, jlong, jlong, jlong, jlong, jint, jboolean);
 
 /*
  * Class:     com_radiance_client_proxy_world_ChunkProxy
@@ -89,6 +89,14 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_isChu
  * Signature: ()I
  */
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_countReadyChunksNative
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     com_radiance_client_proxy_world_ChunkProxy
+ * Method:    advanceBuildsNative
+ * Signature: ()J
+ */
+JNIEXPORT jlong JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_advanceBuildsNative
   (JNIEnv *, jclass);
 
 /*

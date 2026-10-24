@@ -49,19 +49,21 @@ public abstract class ProfileEntityProxyMixin {
             EntityRenderDataList data,
             Operation<Void> original) {
         int first = data.size();
-        original.call(
-                provider,
-                hash,
-                x,
-                y,
-                z,
-                visibility,
-                postFlag,
-                prebuilt,
-                reflect,
-                names,
-                post,
-                data);
+        try (var stage = FrameProfiler.span(Stage.ENTITY_OUTPUT)) {
+            original.call(
+                    provider,
+                    hash,
+                    x,
+                    y,
+                    z,
+                    visibility,
+                    postFlag,
+                    prebuilt,
+                    reflect,
+                    names,
+                    post,
+                    data);
+        }
         com.radiance.audit.ProducerCensus.produced(provider, data, first);
         com.radiance.audit.InstanceInputCensus.produced(provider, data, first);
         com.radiance.audit.PartModelProbe.captured(hash, data, first);
@@ -132,6 +134,22 @@ public abstract class ProfileEntityProxyMixin {
                     entityRenderDispatcher,
                     tickCounter,
                     canDrawEntityOutlines);
+        }
+    }
+
+    @WrapMethod(method = "renderEntityAtOrigin")
+    private static void audit$fallback(
+            EntityRenderDispatcher dispatcher,
+            Entity entity,
+            float partialTick,
+            com.mojang.blaze3d.vertex.PoseStack pose,
+            net.minecraft.client.renderer.MultiBufferSource buffers,
+            int light,
+            Operation<Void> original) {
+        try (var producer =
+                com.radiance.audit.ProducerCensus.renderer(
+                        "capture/entity", dispatcher.getRenderer(entity))) {
+            original.call(dispatcher, entity, partialTick, pose, buffers, light);
         }
     }
 

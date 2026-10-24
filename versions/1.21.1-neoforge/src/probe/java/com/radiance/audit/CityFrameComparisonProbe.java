@@ -42,6 +42,10 @@ public final class CityFrameComparisonProbe {
                         ProfileMode.FRAME_ONLY, ProfileMode.TIMED, ProfileMode.JFR_ONLY
                     };
             case "producers" -> new ProfileMode[] {ProfileMode.PRODUCERS};
+            case "incremental" ->
+                    new ProfileMode[] {
+                        ProfileMode.TIMED, ProfileMode.PRODUCERS, ProfileMode.CPU_SAMPLES
+                    };
             case "calibration" ->
                     new ProfileMode[] {
                         ProfileMode.FRAME_ONLY,
@@ -83,6 +87,10 @@ public final class CityFrameComparisonProbe {
     }
 
     public static void poll(Minecraft mc) {
+        if (LoadingChainProbe.enabled()) {
+            LoadingChainProbe.poll(mc);
+            return;
+        }
         if (CrouchRegressionProbe.enabled()) {
             CrouchRegressionProbe.poll(mc);
             return;
@@ -240,7 +248,7 @@ public final class CityFrameComparisonProbe {
         }
     }
 
-    private static void writeSourceObservations() throws java.io.IOException {
+    static void writeSourceObservations() throws java.io.IOException {
         Object coverage;
         try {
             coverage =

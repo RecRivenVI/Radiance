@@ -525,102 +525,6 @@ void ChunkBuildData::buildLightInfos(const Emission &emission) {
     }
 }
 
-void ChunkBuildData::build(bool persistStaging) {
-    mcvr::profile::Scope auditProfile("chunk-build-record");
-    // Own allocation tag so Audit reports separate chunk geometry from per-frame scene data.
-    mcvr::diag::AllocTraceTagScope allocationTag("Chunk immediate build");
-    auto framework = Renderer::instance().framework();
-    auto vma = framework->vma();
-    auto device = framework->device();
-    auto physicalDevice = framework->physicalDevice();
-
-    buildLightBuffer(vma, device, persistStaging);
-
-    if (geometryCount == 0) {
-        blas = nullptr;
-        blasBuilder = nullptr;
-        return;
-    }
-
-    std::vector<uint32_t> geometryVertexOffsets;
-    std::vector<uint32_t> geometryIndexOffsets;
-    geometryVertexOffsets.reserve(geometryCount);
-    geometryIndexOffsets.reserve(geometryCount);
-
-    uint32_t totalVertexCount = 0;
-    uint32_t totalIndexCount = 0;
-    for (int i = 0; i < geometryCount; i++) {
-        geometryVertexOffsets.push_back(totalVertexCount);
-        geometryIndexOffsets.push_back(totalIndexCount);
-        totalVertexCount += vertices[i].size();
-        totalIndexCount += indices[i].size();
-    }
-
-    positionBuffer = vk::DeviceLocalBuffer::create(
-        vma, device, persistStaging, totalVertexCount * sizeof(vk::VertexFormat::PositionVertex),
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    materialBuffer = vk::DeviceLocalBuffer::create(
-        vma, device, persistStaging, totalVertexCount * sizeof(vk::VertexFormat::MaterialVertex),
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-    indexBuffer = vk::DeviceLocalBuffer::create(
-        vma, device, persistStaging, totalIndexCount * sizeof(uint32_t),
-        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-            VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-
-    std::vector<vk::VertexFormat::PositionVertex> packedPositions;
-    std::vector<vk::VertexFormat::MaterialVertex> packedMaterials;
-    std::vector<uint32_t> packedIndices;
-    packedPositions.reserve(totalVertexCount);
-    packedMaterials.reserve(totalVertexCount);
-    packedIndices.reserve(totalIndexCount);
-    buildChunkPackedVertices(vertices, indices, packedPositions, packedMaterials, packedIndices, topologyVertexFlags);
-
-    if (!packedPositions.empty()) {
-        positionBuffer->uploadToStagingBuffer(packedPositions.data(),
-                                              packedPositions.size() * sizeof(vk::VertexFormat::PositionVertex), 0);
-        materialBuffer->uploadToStagingBuffer(packedMaterials.data(),
-                                              packedMaterials.size() * sizeof(vk::VertexFormat::MaterialVertex), 0);
-    }
-    if (!packedIndices.empty()) {
-        indexBuffer->uploadToStagingBuffer(packedIndices.data(), packedIndices.size() * sizeof(uint32_t), 0);
-    }
-
-    indexBufferAddresses.reserve(geometryCount);
-    positionBufferAddresses.reserve(geometryCount);
-    materialBufferAddresses.reserve(geometryCount);
-
-    blasBuilder = vk::BLASBuilder::create();
-    auto blasGeometryBuilder = blasBuilder->beginGeometries();
-    const mcvr::faces::ModelRules faceRules(geometryMaterialFlags);
-    for (int i = 0; i < geometryCount; i++) {
-        const VkDeviceAddress geometryIndexAddress =
-            indexBuffer->bufferAddress() + geometryIndexOffsets[i] * sizeof(uint32_t);
-        const VkDeviceAddress geometryPositionAddress =
-            positionBuffer->bufferAddress() + geometryVertexOffsets[i] * sizeof(vk::VertexFormat::PositionVertex);
-        const VkDeviceAddress geometryMaterialAddress =
-            materialBuffer->bufferAddress() + geometryVertexOffsets[i] * sizeof(vk::VertexFormat::MaterialVertex);
-
-        indexBufferAddresses.push_back(geometryIndexAddress);
-        positionBufferAddresses.push_back(geometryPositionAddress);
-        materialBufferAddresses.push_back(geometryMaterialAddress);
-
-        blasGeometryBuilder->defineTriangleGeomrtry<vk::VertexFormat::PositionVertex>(
-            geometryPositionAddress, vertices[i].size(), geometryIndexAddress, indices[i].size(),
-            geometryTypes[i] == World::WORLD_SOLID && !faceRules.needsAnyHit(geometryMaterialFlags[i]));
-    }
-
-    positionBuffer->flushStagingBuffer();
-    materialBuffer->flushStagingBuffer();
-    indexBuffer->flushStagingBuffer();
-
-    blasGeometryBuilder->endGeometries();
-    blas = blasBuilder->defineBuildProperty(VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR)
-               ->querySizeInfo(device)
-               ->allocateBuffers(physicalDevice, device, vma)
-               ->build(device);
-}
-
 ChunkBuildDataBatch::ChunkBuildDataBatch(std::vector<std::shared_ptr<ChunkBuildData>> &&batchData)
     : batchData(std::move(batchData)) {}
 
@@ -630,7 +534,8 @@ ChunkBuildDataBatch::ChunkBuildDataBatch(uint32_t maxBatchSize,
                                          std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas,
                                          glm::vec3 cameraPos,
                                          uint64_t inFlightBytes,
-                                         uint64_t admissionSequence) {
+                                         uint64_t admissionSequence,
+                                         uint64_t byteBudget) {
     auto currentTime = std::chrono::steady_clock::now();
     auto queuedChunkPos = [&](int64_t id) -> glm::vec3 {
         const auto &chunkBuildData = chunkBuildDatas[id];
@@ -655,10 +560,10 @@ ChunkBuildDataBatch::ChunkBuildDataBatch(uint32_t maxBatchSize,
     auto bytesOf = [&](int64_t id) {
         const auto &data = chunkBuildDatas[id];
         return uint64_t(data->allVertexCount) * sizeof(vk::VertexFormat::PBRVertex) +
-               uint64_t(data->allIndexCount) * sizeof(uint32_t) + uint64_t(data->lightCount) * sizeof(LightInfo);
+               uint64_t(data->allIndexCount) * sizeof(uint32_t) + uint64_t(data->lightInfos.size()) * sizeof(LightInfo);
     };
     auto selected = mcvr::chunkScheduling::selectBatch(queuedIndexSet, maxBatchSize, currentTime, key, bytesOf,
-                                                       inFlightBytes, admissionSequence);
+                                                       inFlightBytes, admissionSequence, byteBudget);
     for (auto id : selected) {
         queuedIndexSet.erase(id);
         batchData.push_back(std::exchange(chunkBuildDatas[id], nullptr));
@@ -823,6 +728,13 @@ void ChunkBuildDataBatch::build() {
             if (data->blas) trackChunkBuffer(data->blas->blasBuffer(), data->id, data->version);
         }
     }
+    // After staging and AS descriptors exist, no GPU command references these
+    // CPU arrays. Their lifetime must not grow with publication/frame retirement.
+    for (const auto &data : batchData) {
+        decltype(data->vertices){}.swap(data->vertices);
+        decltype(data->indices){}.swap(data->indices);
+        decltype(data->topologyVertexFlags){}.swap(data->topologyVertexFlags);
+    }
 }
 
 ChunkBuildScheduler::ChunkBuildScheduler(std::set<int64_t> &queuedIndex,
@@ -845,138 +757,189 @@ ChunkBuildScheduler::ChunkBuildScheduler(std::set<int64_t> &queuedIndex,
     auto device = framework->device();
     auto physicalDevice = framework->physicalDevice();
     useSecondaryQueue_ = physicalDevice->mainQueueIndex() == physicalDevice->secondaryQueueIndex();
-    auto commandPool = useSecondaryQueue_ ? framework->asyncCommandPool() : framework->mainCommandPool();
+    commandPool_ = vk::CommandPool::create(physicalDevice, device,
+                                           useSecondaryQueue_ ? physicalDevice->secondaryQueueIndex() :
+                                                                physicalDevice->mainQueueIndex());
 
     uint32_t numFences = chunkBuildingTotalBatches_;
     for (int i = 0; i < numFences; i++) {
         freeFences_.push(vk::Fence::create(device));
-        freeCommandBuffers_.push(vk::CommandBuffer::create(device, commandPool));
+        freeCommandBuffers_.push(vk::CommandBuffer::create(device, commandPool_));
     }
+}
+
+ChunkBuildScheduler::~ChunkBuildScheduler() {
+    stopWorker();
+}
+
+void ChunkBuildScheduler::stopWorker() {
+    worker_.stop();
+}
+
+void ChunkBuildScheduler::notifyWork() {
+    worker_.notify();
+}
+
+void ChunkBuildScheduler::pollBatches(bool wait) {
+    auto framework = Renderer::instance().framework();
+    auto device = framework->device();
+    std::lock_guard pipeline(pipelineMutex_);
+    auto fence = buildingFences_.begin();
+    auto commands = buildingCommandBuffers_.begin();
+    auto batch = buildingBatches_.begin();
+    while (fence != buildingFences_.end()) {
+        const VkResult result =
+            vkWaitForFences(device->vkDevice(), 1, &(*fence)->vkFence(), true, wait ? UINT64_MAX : 0);
+        if (result == VK_TIMEOUT || result == VK_NOT_READY) {
+            ++fence;
+            ++commands;
+            ++batch;
+            continue;
+        }
+        if (result != VK_SUCCESS) {
+            framework->recordFailure(result, "vkWaitForFences(chunk worker)");
+            return;
+        }
+        mcvr::diagnostics::device_loss::note("chunk-fence-completed", result, 0, 0,
+                                             (uint64_t)(*commands)->vkCommandBuffer(), (uint64_t)(*fence)->vkFence());
+        if (chunkPerformanceEnabled) {
+            ++chunkPerformance.batchCompleteCount;
+            if ((*batch)->submittedAt.time_since_epoch().count())
+                chunkPerformance.batchQueueGpuWallNs += elapsedNs((*batch)->submittedAt);
+        }
+        for (const auto &data : (*batch)->batchData) {
+            mcvr::chunkTrace::note("gpu-complete", data->id, data->version, 0, data->slotGeneration);
+            data->completion = mcvr::scene::Completion::gpuComplete;
+        }
+        const VkResult reset = vkResetFences(device->vkDevice(), 1, &(*fence)->vkFence());
+        if (reset != VK_SUCCESS) {
+            framework->recordFailure(reset, "vkResetFences(chunk worker)");
+            return;
+        }
+        const VkResult resetCommands = vkResetCommandBuffer((*commands)->vkCommandBuffer(), 0);
+        if (resetCommands != VK_SUCCESS) {
+            framework->recordFailure(resetCommands, "vkResetCommandBuffer(chunk worker)");
+            return;
+        }
+        // The fence completed every transfer/build use. Keep only publication
+        // owners, not the upload and BLAS scratch allocation for another frame.
+        (*batch)->blasBatchBuilder.reset();
+        (*batch)->geometryStaging.reset();
+        (*batch)->geometryUploads.clear();
+        completed_.push_back({*batch});
+        // GPU completion releases recording capacity independently of the next
+        // render frame. Publication data still holds section/byte credits.
+        freeFences_.push(*fence);
+        freeCommandBuffers_.push(*commands);
+        fence = buildingFences_.erase(fence);
+        commands = buildingCommandBuffers_.erase(commands);
+        batch = buildingBatches_.erase(batch);
+    }
+}
+
+void ChunkBuildScheduler::publishCompleted() {
+    std::vector<Completed> ready;
+    {
+        std::lock_guard lock(pipelineMutex_);
+        ready.swap(completed_);
+    }
+    if (ready.empty()) return;
+    auto framework = Renderer::instance().framework();
+    auto device = framework->device();
+    std::vector<VkSemaphore> semaphores;
+    for (const auto &entry : ready) {
+        framework->frameResourceRetainer().retain(entry.batch);
+        if (entry.batch->readySemaphore) semaphores.push_back(entry.batch->readySemaphore->vkSemaphore());
+    }
+    if (!semaphores.empty()) {
+        // Fence polling proves completion to the CPU; this wait supplies the memory
+        // dependency from the chunk queue to every later main-queue scene submission.
+        std::vector<VkPipelineStageFlags> stages(semaphores.size(), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT);
+        VkSubmitInfo wait{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        wait.waitSemaphoreCount = uint32_t(semaphores.size());
+        wait.pWaitSemaphores = semaphores.data();
+        wait.pWaitDstStageMask = stages.data();
+        auto result = vkQueueSubmit(device->mainVkQueue(), 1, &wait, VK_NULL_HANDLE);
+        if (result != VK_SUCCESS) {
+            framework->recordFailure(result, "vkQueueSubmit(chunk publication wait)");
+            return;
+        }
+    }
+    std::unique_lock<std::recursive_mutex> lock(mutex_);
+    for (const auto &entry : ready) {
+        for (const auto &data : entry.batch->batchData) {
+            releaseChunkBuildDataStaging(data);
+            if (externalHandles_.isCurrent(uint32_t(data->id), data->slotGeneration) &&
+                chunks_[data->id]->enqueue(data))
+                storeChunkPackedData(chunkPackedData_, data->id, data->x, data->y, data->z, data->geometryCount,
+                                     data->lightCount, data->lightBuffer ? data->lightBuffer->bufferAddress() : 0);
+        }
+        selectedCount_.fetch_sub(entry.batch->batchData.size());
+        selectedBytes_.fetch_sub(entry.batch->reservedInputBytes);
+    }
+    notifyWork();
 }
 
 void ChunkBuildScheduler::tryCheckBatchesFinish() {
-    auto framework = Renderer::instance().framework();
-    auto device = framework->device();
-
-    std::unique_lock<std::recursive_mutex> lock(mutex_);
-    auto iterFence = buildingFences_.begin();
-    auto iterCommandBuffer = buildingCommandBuffers_.begin();
-    auto iterBatch = buildingBatches_.begin();
-    for (; iterFence != buildingFences_.end() && iterCommandBuffer != buildingCommandBuffers_.end() &&
-           iterBatch != buildingBatches_.end();) {
-        const VkResult waitResult = vkWaitForFences(device->vkDevice(), 1, &(*iterFence)->vkFence(), true, 0);
-        if (waitResult == VK_SUCCESS) {
-            mcvr::diagnostics::device_loss::note("chunk-fence-completed", waitResult, 0, 0,
-                                                 (uint64_t)(*iterCommandBuffer)->vkCommandBuffer(),
-                                                 (uint64_t)(*iterFence)->vkFence());
-            if (chunkPerformanceEnabled) {
-                chunkPerformance.batchCompleteCount.fetch_add(1, std::memory_order_relaxed);
-            }
-            if (chunkPerformanceEnabled && (*iterBatch)->submittedAt.time_since_epoch().count() != 0) {
-                chunkPerformance.batchQueueGpuWallNs.fetch_add(elapsedNs((*iterBatch)->submittedAt),
-                                                               std::memory_order_relaxed);
-            }
-            const VkResult resetFenceResult = vkResetFences(device->vkDevice(), 1, &(*iterFence)->vkFence());
-            if (resetFenceResult != VK_SUCCESS) {
-                framework->recordFailure(resetFenceResult, "vkResetFences(chunk poll)");
-                return;
-            }
-            const VkResult resetCommandResult = vkResetCommandBuffer((*iterCommandBuffer)->vkCommandBuffer(), 0);
-            if (resetCommandResult != VK_SUCCESS) {
-                framework->recordFailure(resetCommandResult, "vkResetCommandBuffer(chunk poll)");
-                return;
-            }
-            freeFences_.push(*iterFence);
-            freeCommandBuffers_.push(*iterCommandBuffer);
-
-            for (auto chunkBuildData : (*iterBatch)->batchData) {
-                mcvr::chunkTrace::note("gpu-complete", chunkBuildData->id, chunkBuildData->version, 0,
-                                       chunkBuildData->slotGeneration);
-                chunkBuildData->completion = mcvr::scene::Completion::gpuComplete;
-                if (!externalHandles_.isCurrent(static_cast<uint32_t>(chunkBuildData->id),
-                                                chunkBuildData->slotGeneration)) {
-                    releaseChunkBuildDataStaging(chunkBuildData);
-                    continue;
-                }
-                bool wasEnqueued = chunks_[chunkBuildData->id]->enqueue(chunkBuildData);
-                releaseChunkBuildDataStaging(chunkBuildData);
-                if (!wasEnqueued) { continue; }
-
-                storeChunkPackedData(
-                    chunkPackedData_, chunkBuildData->id, chunkBuildData->x, chunkBuildData->y, chunkBuildData->z,
-                    chunkBuildData->geometryCount, chunkBuildData->lightCount,
-                    chunkBuildData->lightBuffer != nullptr ? chunkBuildData->lightBuffer->bufferAddress() : 0);
-            }
-
-            iterFence = buildingFences_.erase(iterFence);
-            iterCommandBuffer = buildingCommandBuffers_.erase(iterCommandBuffer);
-            iterBatch = buildingBatches_.erase(iterBatch);
-        } else if (waitResult == VK_TIMEOUT || waitResult == VK_NOT_READY) {
-            ++iterFence;
-            ++iterCommandBuffer;
-            ++iterBatch;
-        } else {
-            framework->recordFailure(waitResult, "vkWaitForFences(chunk poll)");
-            return;
-        }
-    }
+    if (!useSecondaryQueue_) pollBatches(false);
+    publishCompleted();
 }
 
 void ChunkBuildScheduler::waitAllBatchesFinish() {
+    stopWorker();
+    pollBatches(true);
+    publishCompleted();
+    // World leave/reload may clear the frame retainer immediately after this
+    // boundary. Consume the publication waits before their semaphore owners retire.
     auto framework = Renderer::instance().framework();
-    auto device = framework->device();
-
-    std::unique_lock<std::recursive_mutex> lock(mutex_);
-    auto iterFence = buildingFences_.begin();
-    auto iterCommandBuffer = buildingCommandBuffers_.begin();
-    auto iterBatch = buildingBatches_.begin();
-    for (; iterFence != buildingFences_.end() && iterCommandBuffer != buildingCommandBuffers_.end() &&
-           iterBatch != buildingBatches_.end();) {
-        const VkResult waitResult = vkWaitForFences(device->vkDevice(), 1, &(*iterFence)->vkFence(), true, UINT64_MAX);
-        if (waitResult == VK_SUCCESS) {
-            const VkResult resetFenceResult = vkResetFences(device->vkDevice(), 1, &(*iterFence)->vkFence());
-            if (resetFenceResult != VK_SUCCESS) {
-                framework->recordFailure(resetFenceResult, "vkResetFences(chunk wait)");
-                return;
-            }
-            const VkResult resetCommandResult = vkResetCommandBuffer((*iterCommandBuffer)->vkCommandBuffer(), 0);
-            if (resetCommandResult != VK_SUCCESS) {
-                framework->recordFailure(resetCommandResult, "vkResetCommandBuffer(chunk wait)");
-                return;
-            }
-            freeFences_.push(*iterFence);
-            freeCommandBuffers_.push(*iterCommandBuffer);
-
-            for (auto chunkBuildData : (*iterBatch)->batchData) {
-                mcvr::chunkTrace::note("gpu-complete", chunkBuildData->id, chunkBuildData->version, 0,
-                                       chunkBuildData->slotGeneration);
-                if (!externalHandles_.isCurrent(static_cast<uint32_t>(chunkBuildData->id),
-                                                chunkBuildData->slotGeneration)) {
-                    releaseChunkBuildDataStaging(chunkBuildData);
-                    continue;
-                }
-                chunkBuildData->completion = mcvr::scene::Completion::gpuComplete;
-                bool wasEnqueued = chunks_[chunkBuildData->id]->enqueue(chunkBuildData);
-                releaseChunkBuildDataStaging(chunkBuildData);
-                if (!wasEnqueued) { continue; }
-
-                storeChunkPackedData(
-                    chunkPackedData_, chunkBuildData->id, chunkBuildData->x, chunkBuildData->y, chunkBuildData->z,
-                    chunkBuildData->geometryCount, chunkBuildData->lightCount,
-                    chunkBuildData->lightBuffer != nullptr ? chunkBuildData->lightBuffer->bufferAddress() : 0);
-            }
-
-            iterFence = buildingFences_.erase(iterFence);
-            iterCommandBuffer = buildingCommandBuffers_.erase(iterCommandBuffer);
-            iterBatch = buildingBatches_.erase(iterBatch);
-        } else {
-            framework->recordFailure(waitResult, "vkWaitForFences(chunk wait)");
-            return;
-        }
-    }
+    if (!framework->isDeviceLost()) framework->waitRenderQueueIdle();
 }
 
 void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
+    bool moved;
+    {
+        std::lock_guard lock(mutex_);
+        auto next = glm::vec3(Renderer::instance().world()->getCameraPos());
+        moved = next != camera_;
+        camera_ = next;
+    }
+    if (!useSecondaryQueue_) {
+        scheduleBatches(maxBatchSize);
+        return;
+    }
+    auto framework = Renderer::instance().framework();
+    if (!worker_.running())
+        worker_.start(
+            [this, framework](std::stop_token stop) {
+                if (!framework->isRunning()) return mcvr::ChunkBuildWorker::State::stop;
+                mcvr::failure::throwIfFatal();
+                pollBatches(false);
+                if (stop.stop_requested()) return mcvr::ChunkBuildWorker::State::stop;
+                mcvr::failure::throwIfFatal();
+                scheduleBatches(chunkBuildingBatchSize_);
+                std::lock_guard lock(mutex_);
+                return selectedCount_.load() || !queuedIndex_.empty() ? mcvr::ChunkBuildWorker::State::busy :
+                                                                        mcvr::ChunkBuildWorker::State::idle;
+            },
+            [framework](std::exception_ptr failure) noexcept {
+                try {
+                    std::rethrow_exception(failure);
+                } catch (const mcvr::failure::FatalError &error) {
+                    mcvr::failure::record(error.kind(), error.result(), error.operation(), error.what());
+                    framework->recordFailure(error.result(), "chunk worker");
+                } catch (const std::exception &error) {
+                    mcvr::failure::record(mcvr::failure::Kind::runtime, VK_ERROR_UNKNOWN, "chunk worker", error.what());
+                    framework->recordFailure(VK_ERROR_UNKNOWN, "chunk worker");
+                } catch (...) {
+                    mcvr::failure::record(mcvr::failure::Kind::runtime, VK_ERROR_UNKNOWN, "chunk worker",
+                                          "unknown exception");
+                    framework->recordFailure(VK_ERROR_UNKNOWN, "chunk worker");
+                }
+            });
+    if (moved) notifyWork();
+}
+
+void ChunkBuildScheduler::scheduleBatches(uint32_t maxBatchSize) {
     if (!Renderer::instance().framework()->isRunning()) return;
     uint32_t submittedThisFrame = 0;
     uint64_t submittedBytes = 0;
@@ -988,7 +951,9 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
         std::shared_ptr<ChunkBuildDataBatch> chunkBuildDataBatch;
         {
             std::unique_lock<std::recursive_mutex> lock(mutex_);
-            if (freeFences_.empty() || freeCommandBuffers_.empty()) return;
+            std::unique_lock pipeline(pipelineMutex_);
+            const auto remaining = mcvr::chunkScheduling::remainingSections(selectedCount_.load(), maxBatchSize);
+            if (freeFences_.empty() || freeCommandBuffers_.empty() || remaining == 0) return;
             // Reject stale work before packing or reserving GPU storage. A slot generation and
             // its latest requested mesh revision must both still match.
             for (auto it = queuedIndex_.begin(); it != queuedIndex_.end();) {
@@ -1012,21 +977,23 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
                 return;
             // Small interactive batches do not wait to fill. Weighted admission keeps old
             // background owners progressing without placing the entire old queue before interaction.
-            uint64_t inFlightBytes = 0;
-            for (const auto &batch : buildingBatches_)
-                for (const auto &data : batch->batchData)
-                    inFlightBytes += uint64_t(data->allVertexCount) * sizeof(vk::VertexFormat::PBRVertex) +
-                                     uint64_t(data->allIndexCount) * sizeof(uint32_t) +
-                                     uint64_t(data->lightCount) * sizeof(LightInfo);
-            chunkBuildDataBatch = ChunkBuildDataBatch::create(
-                interactive ? std::min(4u, maxBatchSize) : maxBatchSize, queuedIndex_, chunks_, chunkBuildDatas_,
-                Renderer::instance().world()->getCameraPos(), inFlightBytes, admissionSequence_);
+            const uint64_t inFlightBytes = selectedBytes_.load();
+            chunkBuildDataBatch =
+                ChunkBuildDataBatch::create(interactive ? std::min(4u, remaining) : remaining, queuedIndex_, chunks_,
+                                            chunkBuildDatas_, camera_, inFlightBytes, admissionSequence_,
+                                            interactive ? mcvr::chunkScheduling::uploadBudget :
+                                                          uploadPacer_.available(mcvr::chunkScheduling::Clock::now()));
             if (chunkBuildDataBatch->batchData.empty()) return;
             admissionSequence_ += chunkBuildDataBatch->batchData.size();
+            const auto previousBytes = submittedBytes;
             for (const auto &data : chunkBuildDataBatch->batchData)
                 submittedBytes += uint64_t(data->allVertexCount) * sizeof(vk::VertexFormat::PBRVertex) +
                                   uint64_t(data->allIndexCount) * sizeof(uint32_t) +
-                                  uint64_t(data->lightCount) * sizeof(LightInfo);
+                                  uint64_t(data->lightInfos.size()) * sizeof(LightInfo);
+            selectedCount_ += chunkBuildDataBatch->batchData.size();
+            chunkBuildDataBatch->reservedInputBytes = submittedBytes - previousBytes;
+            selectedBytes_ += chunkBuildDataBatch->reservedInputBytes;
+            ++preparingBatches_;
             fence = freeFences_.front();
             freeFences_.pop();
             commandBuffer = freeCommandBuffers_.front();
@@ -1040,9 +1007,28 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
         for (const auto &data : chunkBuildDataBatch->batchData)
             mcvr::chunkTrace::note("build-prepare", data->id, data->version, 0, data->slotGeneration);
         chunkBuildDataBatch->build();
+        mcvr::failure::throwIfFatal();
         if (chunkPerformanceEnabled) {
             chunkPerformance.batchBuildCount.fetch_add(1, std::memory_order_relaxed);
             chunkPerformance.batchBuildCpuNs.fetch_add(elapsedNs(batchBuildStart), std::memory_order_relaxed);
+        }
+
+        {
+            std::unique_lock owner(mutex_);
+            const bool current = std::any_of(
+                chunkBuildDataBatch->batchData.begin(), chunkBuildDataBatch->batchData.end(), [&](const auto &data) {
+                    return externalHandles_.isCurrent(uint32_t(data->id), data->slotGeneration) &&
+                           data->version == chunks_[data->id]->desiredVersion;
+                });
+            if (!current) {
+                selectedCount_ -= chunkBuildDataBatch->batchData.size();
+                selectedBytes_ -= chunkBuildDataBatch->reservedInputBytes;
+                std::lock_guard pipeline(pipelineMutex_);
+                --preparingBatches_;
+                freeFences_.push(fence);
+                freeCommandBuffers_.push(commandBuffer);
+                continue;
+            }
         }
 
         bool hasLightUploads = false;
@@ -1054,23 +1040,12 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
         }
 
         if (chunkBuildDataBatch->blasBatchBuilder == nullptr && !hasLightUploads) {
-            std::unique_lock<std::recursive_mutex> lock(mutex_);
+            for (const auto &data : chunkBuildDataBatch->batchData) data->completion = mcvr::scene::Completion::empty;
+            std::lock_guard pipeline(pipelineMutex_);
+            completed_.push_back({chunkBuildDataBatch});
             freeFences_.push(fence);
             freeCommandBuffers_.push(commandBuffer);
-
-            for (auto &chunkBuildData : chunkBuildDataBatch->batchData) {
-                if (!externalHandles_.isCurrent(static_cast<uint32_t>(chunkBuildData->id),
-                                                chunkBuildData->slotGeneration)) {
-                    continue;
-                }
-                chunkBuildData->completion = mcvr::scene::Completion::empty;
-                if (!chunks_[chunkBuildData->id]->enqueue(chunkBuildData)) { continue; }
-
-                storeChunkPackedData(
-                    chunkPackedData_, chunkBuildData->id, chunkBuildData->x, chunkBuildData->y, chunkBuildData->z,
-                    chunkBuildData->geometryCount, chunkBuildData->lightCount,
-                    chunkBuildData->lightBuffer != nullptr ? chunkBuildData->lightBuffer->bufferAddress() : 0);
-            }
+            --preparingBatches_;
             continue;
         }
 
@@ -1130,10 +1105,20 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
         vkSubmitInfo.commandBufferCount = 1;
         vkSubmitInfo.pCommandBuffers = &commandBuffer->vkCommandBuffer();
 
+        if (useSecondaryQueue_) {
+            chunkBuildDataBatch->readySemaphore = vk::Semaphore::create(device);
+            vkSubmitInfo.signalSemaphoreCount = 1;
+            vkSubmitInfo.pSignalSemaphores = &chunkBuildDataBatch->readySemaphore->vkSemaphore();
+        }
         const auto submitStart = std::chrono::steady_clock::now();
+        std::unique_lock queueLock(device->secondaryQueueMutex(), std::defer_lock);
+        if (useSecondaryQueue_) queueLock.lock();
+        mcvr::failure::throwIfFatal();
+        if (!framework->isRunning()) return;
         const VkResult submitResult = useSecondaryQueue_ ?
                                           vkQueueSubmit(device->secondaryQueue(), 1, &vkSubmitInfo, fence->vkFence()) :
                                           vkQueueSubmit(device->mainVkQueue(), 1, &vkSubmitInfo, fence->vkFence());
+        if (queueLock.owns_lock()) queueLock.unlock();
         mcvr::diagnostics::device_loss::note(
             "chunk-queue-submit", submitResult, static_cast<uint32_t>(chunkBuildDataBatch->batchData.size()), 0,
             (uint64_t)commandBuffer->vkCommandBuffer(), (uint64_t)fence->vkFence(), 0,
@@ -1145,7 +1130,8 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
         if (submitResult != VK_SUCCESS) {
             framework->recordFailure(submitResult, "vkQueueSubmit(chunk build)");
             commandBuffer->reset();
-            std::unique_lock<std::recursive_mutex> lock(mutex_);
+            std::lock_guard pipeline(pipelineMutex_);
+            --preparingBatches_;
             freeFences_.push(fence);
             freeCommandBuffers_.push(commandBuffer);
             for (const auto &chunkBuildData : chunkBuildDataBatch->batchData) {
@@ -1153,6 +1139,8 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
             }
             return;
         }
+
+        uploadPacer_.consumed(chunkBuildDataBatch->reservedInputBytes, mcvr::chunkScheduling::Clock::now());
 
         for (const auto &data : chunkBuildDataBatch->batchData)
             mcvr::chunkTrace::note("build-submit", data->id, data->version, 0, data->slotGeneration);
@@ -1165,7 +1153,8 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
             mcvr::chunkTrace::note("upload-bytes", int64_t(bytes), int64_t(chunkBuildDataBatch->batchData.size()));
         }
         if (chunkPerformanceEnabled) chunkBuildDataBatch->submittedAt = std::chrono::steady_clock::now();
-        std::unique_lock<std::recursive_mutex> lock(mutex_);
+        std::lock_guard pipeline(pipelineMutex_);
+        --preparingBatches_;
         buildingFences_.push_back(fence);
         buildingCommandBuffers_.push_back(commandBuffer);
         buildingBatches_.push_back(chunkBuildDataBatch);
@@ -1181,22 +1170,30 @@ uint32_t ChunkBuildScheduler::chunkBuildingTotalBatches() {
 }
 
 size_t ChunkBuildScheduler::pendingBuildCount() const {
-    return 0; // Unsubmitted requests stay in queuedIndex_; there is no hidden partial batch.
+    return preparingBatches_.load();
 }
 
 size_t ChunkBuildScheduler::activeBatchCount() const {
-    return buildingBatches_.size();
+    std::lock_guard lock(pipelineMutex_);
+    return buildingBatches_.size() + completed_.size();
+}
+
+std::pair<uint64_t, uint64_t> ChunkBuildScheduler::pendingInput() const {
+    return {selectedCount_.load(), selectedBytes_.load()};
 }
 
 void ChunkBuildScheduler::collectInFlightBuffers(std::unordered_set<const void *> &buffers) const {
-    std::unique_lock<std::recursive_mutex> lock(mutex_);
-    for (const auto &batch : buildingBatches_) {
-        for (const auto &upload : batch->geometryUploads) buffers.insert(upload.buffer.get());
+    std::lock_guard pipeline(pipelineMutex_);
+    auto collect = [&](const auto &batch) {
         for (const auto &data : batch->batchData) {
+            for (const auto &buffer : {data->indexBuffer, data->positionBuffer, data->materialBuffer})
+                if (buffer) buffers.insert(buffer.get());
             if (data->lightBuffer) buffers.insert(data->lightBuffer.get());
             if (data->blas) buffers.insert(data->blas->blasBuffer().get());
         }
-    }
+    };
+    for (const auto &batch : buildingBatches_) collect(batch);
+    for (const auto &entry : completed_) collect(entry.batch);
 }
 
 std::string Chunks::orphanCensus() {
@@ -1245,15 +1242,21 @@ std::string Chunks::orphanCensus() {
 
 ChunkBuildScheduler::Census ChunkBuildScheduler::census() const {
     std::unique_lock<std::recursive_mutex> lock(mutex_);
+    std::lock_guard pipeline(pipelineMutex_);
     Census result;
     result.queued = queuedIndex_.size();
-    for (const auto &batch : buildingBatches_) {
+    auto collect = [&](const auto &batch) {
         ++result.batches;
         result.chunks += batch->batchData.size();
-        for (const auto &upload : batch->geometryUploads) result.bytes += upload.buffer->size();
-        for (const auto &data : batch->batchData)
+        for (const auto &data : batch->batchData) {
+            for (const auto &buffer :
+                 {data->indexBuffer, data->positionBuffer, data->materialBuffer, data->lightBuffer})
+                if (buffer) result.bytes += buffer->size();
             if (data->blas) result.bytes += data->blas->blasBuffer()->size();
-    }
+        }
+    };
+    for (const auto &batch : buildingBatches_) collect(batch);
+    for (const auto &entry : completed_) collect(entry.batch);
     return result;
 }
 
@@ -1478,9 +1481,7 @@ const std::shared_ptr<mcvr::ChunkSceneMetadata> &Chunk1::sceneMetadata() {
     });
 }
 
-Chunks::Chunks(std::shared_ptr<Framework> framework) {
-    importantBLASBuilders_ = std::make_shared<std::vector<std::shared_ptr<vk::BLASBuilder>>>();
-}
+Chunks::Chunks(std::shared_ptr<Framework> framework) {}
 
 void Chunks::allocateChunkPackedDataBuffers() {
     auto framework = Renderer::instance().framework();
@@ -1523,6 +1524,7 @@ void Chunks::releaseEmissionResources() {
 }
 
 void Chunks::reset(uint32_t numChunks, uint32_t sizeX, uint32_t sizeY, uint32_t sizeZ, int32_t bottomSectionCoord) {
+    if (chunkBuildScheduler_) chunkBuildScheduler_->stopWorker();
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     auto framework = Renderer::instance().framework();
@@ -1537,7 +1539,6 @@ void Chunks::reset(uint32_t numChunks, uint32_t sizeX, uint32_t sizeY, uint32_t 
     externalHandles_.reset(numChunks);
     chunkStorageSectionPos_ = glm::ivec3(0, bottomSectionCoord, 0);
 
-    importantBLASBuilders_ = std::make_shared<std::vector<std::shared_ptr<vk::BLASBuilder>>>();
 
     chunks_.clear();
     chunks_.resize(numChunks);
@@ -1565,6 +1566,7 @@ void Chunks::reset(uint32_t numChunks, uint32_t sizeX, uint32_t sizeY, uint32_t 
 }
 
 void Chunks::resetScheduler() {
+    if (chunkBuildScheduler_) chunkBuildScheduler_->stopWorker();
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     if (chunkBuildScheduler_ == nullptr) return;
@@ -1579,6 +1581,7 @@ void Chunks::resetScheduler() {
 }
 
 void Chunks::setCollectChunkEmission(bool collect) {
+    if (chunkBuildScheduler_) chunkBuildScheduler_->stopWorker();
     std::unique_lock<std::recursive_mutex> lock(mutex_);
 
     if (chunkBuildScheduler_ != nullptr) {
@@ -1614,8 +1617,6 @@ void Chunks::resetFrame() {
     auto framework = Renderer::instance().framework();
     auto &frr = framework->frameResourceRetainer();
 
-    frr.retain(importantBLASBuilders_);
-    importantBLASBuilders_ = std::make_shared<std::vector<std::shared_ptr<vk::BLASBuilder>>>();
 
     if (Renderer::options.collectChunkEmission && !chunkPackedData_.empty() &&
         context->frameIndex < chunkPackedDataBuffers_.size()) {
@@ -1758,36 +1759,9 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
                 }
             }
 
-            if (task.isImportant) {
-                auto &frr = Renderer::instance().framework()->frameResourceRetainer();
-                queuedIndex_.erase(task.id);
-                frr.retain(chunkBuildDatas_[task.id]);
-                chunkBuildDatas_[task.id] = nullptr;
-
-                chunkBuildData->build(false);
-                if (chunkBuildData->positionBuffer != nullptr) {
-                    Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->indexBuffer);
-                    Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->positionBuffer);
-                    Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->materialBuffer);
-                }
-                if (chunkBuildData->lightBuffer != nullptr) {
-                    Renderer::instance().buffers()->queueImportantWorldUpload(chunkBuildData->lightBuffer);
-                }
-                if (chunkBuildData->blasBuilder != nullptr) {
-                    importantBLASBuilders_->push_back(chunkBuildData->blasBuilder);
-                }
-
-                chunkBuildData->completion = mcvr::scene::Completion::orderedFrame;
-                if (!chunks_[task.id]->enqueue(chunkBuildData)) { return; }
-
-                storeChunkPackedData(
-                    chunkPackedData_, chunkBuildData->id, chunkBuildData->x, chunkBuildData->y, chunkBuildData->z,
-                    chunkBuildData->geometryCount, chunkBuildData->lightCount,
-                    chunkBuildData->lightBuffer != nullptr ? chunkBuildData->lightBuffer->bufferAddress() : 0);
-            } else {
-                queuedIndex_.insert(task.id);
-                chunkBuildDatas_[task.id] = chunkBuildData;
-            }
+            queuedIndex_.insert(task.id);
+            chunkBuildDatas_[task.id] = std::move(chunkBuildData);
+            if (chunkBuildScheduler_) chunkBuildScheduler_->notifyWork();
         });
     if (copiedInput) recordInputTiming();
 }
@@ -1883,7 +1857,22 @@ std::string Chunks::performanceSnapshot() {
     return result.str();
 }
 
+std::pair<uint64_t, uint64_t> Chunks::buildBacklog() {
+    std::unique_lock lock(mutex_);
+    auto result = chunkBuildScheduler_ ? chunkBuildScheduler_->pendingInput() : std::pair<uint64_t, uint64_t>{};
+    result.first += queuedIndex_.size();
+    for (auto slot : queuedIndex_) {
+        const auto &data = chunkBuildDatas_[slot];
+        if (data)
+            result.second += uint64_t(data->allVertexCount) * sizeof(vk::VertexFormat::PBRVertex) +
+                             uint64_t(data->allIndexCount) * sizeof(uint32_t) +
+                             data->lightInfos.size() * sizeof(LightInfo);
+    }
+    return result;
+}
+
 void Chunks::close() {
+    if (chunkBuildScheduler_) chunkBuildScheduler_->stopWorker();
     std::unique_lock<std::recursive_mutex> lock(mutex_);
     if (chunkBuildScheduler_ != nullptr) {
         chunkBuildScheduler_->waitAllBatchesFinish();
@@ -1892,7 +1881,6 @@ void Chunks::close() {
 
     queuedIndex_.clear();
     chunkBuildDatas_.clear();
-    importantBLASBuilders_ = nullptr;
     chunkPackedData_.clear();
     chunkPackedDataBuffers_.clear();
     chunks_.clear();
@@ -1908,6 +1896,7 @@ void Chunks::close() {
 }
 
 void Chunks::releaseScene() {
+    if (chunkBuildScheduler_) chunkBuildScheduler_->stopWorker();
     std::unique_lock<std::recursive_mutex> lock(mutex_);
     if (chunkBuildScheduler_ != nullptr) {
         chunkBuildScheduler_->waitAllBatchesFinish();
@@ -1915,7 +1904,6 @@ void Chunks::releaseScene() {
     }
     queuedIndex_.clear();
     chunkBuildDatas_.clear();
-    importantBLASBuilders_ = std::make_shared<std::vector<std::shared_ptr<vk::BLASBuilder>>>();
     chunkPackedData_.clear();
     chunkPackedDataBuffers_.clear();
     chunks_.clear();
@@ -1936,7 +1924,7 @@ std::vector<std::shared_ptr<Chunk1>> &Chunks::chunks() {
 const std::shared_ptr<const mcvr::StaticChunkScene> &Chunks::staticScene() {
     if (!scenePublications_) scenePublications_ = std::make_shared<mcvr::ChunkScenePublications>();
     return staticSceneCache_.get(scenePublications_, [&](const auto &active) {
-        auto next = std::make_shared<mcvr::StaticChunkScene>();
+        auto next = std::make_shared<mcvr::StaticChunkPage>();
         size_t geometryCount = 0;
         for (auto slot : active) geometryCount += chunks_.at(slot)->geometryCount;
         next->reserve(active.size(), geometryCount);
@@ -1959,9 +1947,6 @@ std::shared_ptr<ChunkBuildScheduler> Chunks::chunkBuildScheduler() {
     return chunkBuildScheduler_;
 }
 
-std::vector<std::shared_ptr<vk::BLASBuilder>> &Chunks::importantBLASBuilders() {
-    return *importantBLASBuilders_;
-}
 
 std::shared_ptr<vk::DeviceLocalBuffer> Chunks::chunkPackedData() {
     auto context = Renderer::instance().framework()->safeAcquireCurrentContext();

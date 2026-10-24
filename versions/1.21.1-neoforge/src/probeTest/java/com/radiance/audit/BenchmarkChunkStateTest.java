@@ -49,4 +49,24 @@ class BenchmarkChunkStateTest {
                 ReflectiveOperationException.class,
                 () -> BenchmarkChunkState.captureJava(Object.class, new Properties()));
     }
+
+    @Test
+    void emptyQueueSnapshotsDoNotHideShortCompletedBatches() {
+        Properties state = new Properties();
+        String idle =
+                "build_input_count=0; batch_build_count=0; batch_submit_count=0; batch_complete_count=0";
+        assertFalse(BenchmarkChunkState.noNativeWork(state));
+        state.setProperty("chunk.native", idle);
+        assertTrue(BenchmarkChunkState.noNativeWork(state));
+        for (String key :
+                new String[] {
+                    "build_input_count",
+                    "batch_build_count",
+                    "batch_submit_count",
+                    "batch_complete_count"
+                }) {
+            state.setProperty("chunk.native", idle.replace(key + "=0", key + "=1"));
+            assertFalse(BenchmarkChunkState.noNativeWork(state), key);
+        }
+    }
 }

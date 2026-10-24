@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 import zipfile
+import ctypes
 
 import gpu_monitor
 import profile_quality
@@ -40,7 +41,21 @@ def other_games(pid):
 
 def monitor(case, stop, own_pid):
     reader = None
+    process_handle = None
     try:
+        class MemoryCounters(ctypes.Structure):
+            _fields_ = [('cb', ctypes.c_ulong), ('PageFaultCount', ctypes.c_ulong)] + [
+                (key, ctypes.c_size_t) for key in ('PeakWorkingSetSize','WorkingSetSize',
+                'QuotaPeakPagedPoolUsage','QuotaPagedPoolUsage','QuotaPeakNonPagedPoolUsage',
+                'QuotaNonPagedPoolUsage','PagefileUsage','PeakPagefileUsage','PrivateUsage')]
+        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
+        psapi = ctypes.WinDLL('psapi', use_last_error=True)
+        kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
+        psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(MemoryCounters), ctypes.c_ulong]
+        process_handle = kernel.OpenProcess(0x410, False, own_pid)
+        if not process_handle: raise ctypes.WinError(ctypes.get_last_error())
         reader = gpu_monitor.Reader()
         with (case / 'noise.jsonl').open('x', encoding='utf8') as stream:
             games, next_games = [], 0
@@ -48,8 +63,14 @@ def monitor(case, stop, own_pid):
                 if time.monotonic() >= next_games:
                     games = other_games(own_pid)
                     next_games = time.monotonic() + 5
+                memory = MemoryCounters()
+                memory.cb = ctypes.sizeof(memory)
+                process_memory = None
+                if psapi.GetProcessMemoryInfo(process_handle, ctypes.byref(memory), memory.cb):
+                    process_memory = dict(workingSet=memory.WorkingSetSize,peakWorkingSet=memory.PeakWorkingSetSize,
+                                          privateBytes=memory.PrivateUsage,peakCommit=memory.PeakPagefileUsage)
                 stream.write(json.dumps(dict(time=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                                            gpu=reader.sample(), otherGames=games)) + '\n')
+                                            gpu=reader.sample(), otherGames=games, processMemory=process_memory)) + '\n')
                 stream.flush()
                 stop.wait(1)
     except Exception as error:
@@ -57,9 +78,25 @@ def monitor(case, stop, own_pid):
     finally:
         if reader:
             reader.close()
+        if process_handle:
+            kernel.CloseHandle(process_handle)
 
 
-def analyze(case, width, height, distance):
+def validate_sources(source, allow_unobserved=False):
+    missing = []
+    for family in ('PARTS', 'BAKED', 'STATIC_STATE'):
+        value = source['coverage'].get(family)
+        if value is None and allow_unobserved:
+            missing.append(family)
+        elif not value or not value.get('compatible'):
+            raise RuntimeError('Performance probe changed or failed to observe source contract: ' + family)
+    if any(not value['compatible'] and any('radiance_probe' in evidence for evidence in value['evidence'])
+           for value in source['coverage'].values()):
+        raise RuntimeError('Probe changed a producer source; do not interpret its performance')
+    return missing
+
+
+def analyze(case, width, height, distance, allow_empty=False):
     windows = {}
     noise = [json.loads(line) for line in (case / 'noise.jsonl').read_text().splitlines()]
     base_gpu, allocations = [], []
@@ -72,7 +109,10 @@ def analyze(case, width, height, distance):
             memory = re.search(r'vma-bytes=(\d+) vma-count=(\d+)', line)
             if memory:
                 allocations.append((base_gpu[-1][0], int(memory[1]), int(memory[2])))
-    for directory in sorted((case / 'profiles').iterdir()):
+    directories = sorted((case / 'profiles').iterdir()) if (case / 'profiles').is_dir() else []
+    if not directories and not allow_empty:
+        raise RuntimeError('No requested profiling windows were produced')
+    for directory in directories:
         data = profile_quality.analyze(directory)
         meta = dict(line.split('=', 1) for line in (directory / 'METADATA.txt').read_text().splitlines() if '=' in line)
         with (directory / 'frames.csv').open() as stream:
@@ -109,23 +149,22 @@ def analyze(case, width, height, distance):
                         scope='Whole-card NVML; process list does not prove each process GPU share'))
         windows[meta['profile-mode']] = data
     source = json.loads((case / 'source-observations.json').read_text())
-    for family in ('PARTS', 'BAKED', 'STATIC_STATE'):
-        if not source['coverage'].get(family, {}).get('compatible'):
-            raise RuntimeError('Performance probe changed or failed to observe source contract: ' + family)
-    if any(not value['compatible'] and any('radiance_probe' in evidence for evidence in value['evidence'])
-           for value in source['coverage'].values()):
-        raise RuntimeError('Probe changed a producer source; do not interpret its performance')
-    write(case / 'analysis.json', dict(windows=windows, source=source))
+    # An untimed reload case can legitimately close before one source is drawn again.
+    # Record that coverage gap; measured windows still require every family observed.
+    missing = validate_sources(source, allow_unobserved=allow_empty and not directories)
+    write(case / 'analysis.json', dict(windows=windows, source=source, unobservedFamilies=missing))
     return windows
 
 
-def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_probe=None, fixture=None):
+def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_probe=None, fixture=None, settings=None,
+        memory_max='8G', memory_min=None, baseline=None, loading_detail=False, loading_movement=False,
+        loading_interactions=False):
     global PRODUCT
     if product is not None:
         PRODUCT=Path(product).resolve()
         if not PRODUCT.is_relative_to(ROOT) or not PRODUCT.is_file(): raise ValueError('Use a built/frozen repository artifact')
     distance, resolution = map(int, label.removeprefix('r').split('-'))
-    width, height = (1920, 1080) if resolution == 1080 else (2560, 1440)
+    width, height = {1080:(1920,1080),1440:(2560,1440),2160:(3840,2160)}[resolution]
     fixture = Path(fixture).resolve() if fixture is not None else FIXTURE
     assert_stopped()
     if (RESULT / 'STOP.json').exists() or CLIENT.exists():
@@ -141,6 +180,8 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
     if not probe.is_relative_to(ROOT) or not probe.is_file(): raise ValueError('Frozen probe is not a repository artifact')
     case = RESULT / ((group+'-' if group else '')+label + '-' + time.strftime('%Y%m%d-%H%M%S'))
     case.mkdir(parents=True, exist_ok=False)
+    if baseline is not None:
+        write(case/'frozen-inputs.json',baseline)
     CLIENT.mkdir(parents=True)
     with zipfile.ZipFile(fixture) as source:
         for name in source.namelist():
@@ -152,10 +193,20 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
                 raise ValueError('Fixture path leaves owned client')
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(source.read(name))
+    if settings is not None:
+        with zipfile.ZipFile(settings) as source:
+            for item in source.infolist():
+                target = CLIENT / item.filename
+                if not target.resolve().is_relative_to(CLIENT.resolve()) or item.is_dir():
+                    raise ValueError('Settings entry leaves owned client or is a directory')
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read(item))
     options = CLIENT / 'options.txt'
     values = options.read_text(encoding='utf8').splitlines()
     values = [f'renderDistance:{distance}' if line.startswith('renderDistance:')
-              else 'pauseOnLostFocus:false' if line.startswith('pauseOnLostFocus:') else line for line in values]
+              else 'pauseOnLostFocus:false' if line.startswith('pauseOnLostFocus:')
+              else 'soundCategory_master:0.0' if settings is not None and line.startswith('soundCategory_master:')
+              else 'fullscreen:false' if settings is not None and line.startswith('fullscreen:') else line for line in values]
     if 'soundCategory_master:0.0' not in values:
         raise RuntimeError('Frozen automatic fixture must be muted')
     options.write_text('\n'.join(values) + '\n', encoding='utf8')
@@ -174,21 +225,36 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
     agent = ROOT / 'components/render_diagnostics/build/benchmark-support/radiance-benchmark-agent.jar'
     aftermath = ROOT / 'components/render_diagnostics/build/native/aftermath/RelWithDebInfo/radiance-aftermath-agent.dll'
     args = [str(java), f'-javaagent:{agent}', f'-agentpath:{aftermath}=gpu-diagnostics']
+    if plan == 'loading' and loading_detail:
+        args += [f'-XX:StartFlightRecording=name=loading_chain,settings=profile,dumponexit=true,maxsize=32m,filename={case / "loading-chain.jfr"}',
+                 '-XX:FlightRecorderOptions=stackdepth=128']
     flags = dict(experiments='true', cityComparison='true', correctnessOnly='true', benchmark='true',
                  unattended='true', nativePerformance='true', vanillaPerformance='true', profileControl='true',
                  cityProfilePlan=plan, cityProfileSeconds=str(seconds), cityLabel=label,
                  cityWidth=str(width), cityHeight=str(height), cityBorderless='true')
+    if plan == 'loading':
+        flags['loadingChain'] = 'true'
+        flags['loadingDetail'] = str(loading_detail).lower()
+        flags['loadingMovement'] = str(loading_movement).lower()
+        flags['loadingInteractions'] = str(loading_interactions).lower()
     args += [f'-Dradiance.audit.{key}={value}' for key, value in flags.items()]
     args += ['-Dradiance.audit.benchmark.version=1.21.1-neoforge', f'-Dvalidation.result={case}',
-             f'@{case / "classpath.args"}', f'@{moddev / "packagedClientRunVmArgs.txt"}', '-Xmx8G',
+             f'@{case / "classpath.args"}', f'@{moddev / "packagedClientRunVmArgs.txt"}', f'-Xmx{memory_max}',
+             *([f'-Xms{memory_min}'] if memory_min else []),
              f'@{moddev / "packagedClientRunProgramArgs.txt"}', '--username', 'RecRivenVI',
              '--width', str(width), '--height', str(height)]
     env = dict(os.environ, MCVR_DEVICE_LOSS_TRACE='1', MCVR_LOCAL_AFTERMATH='1',
-               RADIANCE_CHUNK_TRACE='0', RADIANCE_CHUNK_PERF='1')
+               RADIANCE_CHUNK_TRACE='1' if loading_interactions else '0', RADIANCE_CHUNK_PERF='1')
     env.pop('MOD_CLASSES', None)
     write(case / 'launch.json', dict(args=args, frozenProduct=str(PRODUCT.relative_to(ROOT)),product=digest(PRODUCT),group=group,
           probe=digest(probe), fixture=str(fixture.relative_to(ROOT)), distance=distance,
-          width=width, height=height, storage=occupancy, normalPriority=True, affinity='unchanged'))
+          width=width, height=height, storage=occupancy, normalPriority=True, affinity='unchanged',
+          memoryMax=memory_max,memoryMin=memory_min))
+    if settings is not None:
+        write(case / 'settings-input.json', dict(sha256=digest(settings),
+              overrides=[f'{width}x{height} framebuffer', f'renderDistance={distance}', 'master volume=0', 'pauseOnLostFocus=false', 'fullscreen=false'],
+              files={p.relative_to(CLIENT).as_posix():digest(p) for p in CLIENT.rglob('*')
+                     if p.is_file() and (p.name=='options.txt' or p.is_relative_to(CLIENT/'radiance'))}))
     stop = threading.Event()
     observer = None
     process = None
@@ -206,19 +272,29 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
                 if 'VK_ERROR_DEVICE_LOST' in log:
                     write(RESULT / 'STOP.json', dict(case=str(case), deviceLost=True, automaticRetry=False))
                     until = min(until, time.monotonic() + 30)
-                if not verified and 'CITY_COMPARISON world-ready' in log:
+                if not verified and ('CITY_COMPARISON world-ready' in log or 'LOADING_CHAIN world-ready' in log):
                     loaded_core(process.pid, CLIENT, PRODUCT, case / 'loaded-core.json')
                     verified = True
                 stop.wait(1)
             if process.poll() is None:
                 raise RuntimeError('Bounded run timed out; retain client, no retry')
         log = (case / 'console.log').read_text(encoding='utf8', errors='replace')
-        if process.returncode or not verified or 'CITY_COMPARISON reload-complete normal-stop' not in log or 'All dimensions are saved' not in log or any(
-                token in log for token in ('VK_ERROR_DEVICE_LOST', 'CITY_COMPARISON FAIL', 'MCVR fatal')):
+        completed = 'LOADING_CHAIN normal-stop' if plan == 'loading' else 'CITY_COMPARISON reload-complete normal-stop'
+        if process.returncode or not verified or completed not in log or 'All dimensions are saved' not in log or any(
+                token in log for token in ('VK_ERROR_DEVICE_LOST', 'CITY_COMPARISON FAIL', 'LOADING_CHAIN FAIL', 'MCVR fatal')):
             raise RuntimeError('Client failed; preserve evidence and stop group')
         # Retain only raw data used by this diagnosis; generated clients and shader copies retire.
         shutil.copytree(CLIENT / 'logs', case / 'logs')
-        windows = analyze(case, width, height, distance)
+        if plan == 'loading' and (CLIENT/'radiance-audit/benchmark').is_dir():
+            shutil.copytree(CLIENT/'radiance-audit/benchmark', case/'benchmark-observations')
+        if plan == 'loading':
+            from loading_chain import analyze_case
+            windows = analyze_case(case, width, height, distance)
+            if loading_interactions:
+                import chunk_interactions
+                chunk_interactions.report(case)
+        else:
+            windows = analyze(case, width, height, distance, allow_empty=plan=='functional')
         for name in ('radiance-device-loss-trace.log', 'radiance-gpu-capabilities.log', 'radiance-as-lifetime-close.log'):
             if (CLIENT / name).is_file():
                 shutil.copy2(CLIENT / name, case / name)

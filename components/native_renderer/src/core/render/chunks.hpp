@@ -11,6 +11,8 @@
 #include "core/render/static_chunk_scene.hpp"
 #include "core/render/external_chunk_handle.hpp"
 #include "core/render/world.hpp"
+#include "core/render/chunk_build_worker.hpp"
+#include "core/render/chunk_scheduling.hpp"
 
 #include <chrono>
 #include <atomic>
@@ -25,6 +27,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <thread>
 
 class Framework;
 class FrameResourceRetainer;
@@ -51,7 +54,6 @@ struct ChunkBuildTask {
     int *vertexFormats;
     int *vertexCounts;
     vk::VertexFormat::PBRVertex **vertices;
-    bool isImportant; // ordered same-command publication, independent of queue priority
     int priority = 0;
     bool collectEmission = true;
 };
@@ -105,7 +107,6 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     void buildLightBuffer(const std::shared_ptr<vk::VMA> &vma,
                           const std::shared_ptr<vk::Device> &device,
                           bool persistStaging = true);
-    void build(bool persistStaging = true);
 };
 
 struct Chunk1;
@@ -123,6 +124,8 @@ struct ChunkBuildDataBatch : public SharedObject<ChunkBuildDataBatch> {
     std::vector<GeometryUpload> geometryUploads;
     std::shared_ptr<vk::BLASBatchBuilder> blasBatchBuilder;
     std::chrono::steady_clock::time_point submittedAt{};
+    std::shared_ptr<vk::Semaphore> readySemaphore;
+    uint64_t reservedInputBytes = 0;
 
     ChunkBuildDataBatch(std::vector<std::shared_ptr<ChunkBuildData>> &&batchData);
     ChunkBuildDataBatch(uint32_t maxBatchSize,
@@ -131,7 +134,8 @@ struct ChunkBuildDataBatch : public SharedObject<ChunkBuildDataBatch> {
                         std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas,
                         glm::vec3 cameraPos,
                         uint64_t inFlightBytes,
-                        uint64_t admissionSequence);
+                        uint64_t admissionSequence,
+                        uint64_t byteBudget);
     void build();
 };
 
@@ -145,6 +149,10 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
                         mcvr::ExternalChunkHandleTable &externalHandles,
                         uint32_t chunkBuildingBatchSize,
                         uint32_t chunkBuildingTotalBatches);
+    ~ChunkBuildScheduler();
+    // Never join while holding the chunk publication mutex.
+    void stopWorker();
+    void notifyWork();
 
     void tryCheckBatchesFinish();
     void waitAllBatchesFinish();
@@ -154,6 +162,7 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
     uint32_t chunkBuildingTotalBatches();
     size_t pendingBuildCount() const;
     size_t activeBatchCount() const;
+    std::pair<uint64_t, uint64_t> pendingInput() const;
 
     // Diagnostics only: builds waiting for admission and submitted batches not yet completed.
     struct Census {
@@ -164,6 +173,9 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
     void collectInFlightBuffers(std::unordered_set<const void *> &buffers) const;
 
   private:
+    void scheduleBatches(uint32_t maxBatchSize);
+    void pollBatches(bool wait);
+    void publishCompleted();
     std::set<int64_t> &queuedIndex_;
     std::vector<std::shared_ptr<Chunk1>> &chunks_;
     std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas_;
@@ -176,8 +188,19 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
     std::list<std::shared_ptr<vk::Fence>> buildingFences_;
     std::list<std::shared_ptr<vk::CommandBuffer>> buildingCommandBuffers_;
     std::list<std::shared_ptr<ChunkBuildDataBatch>> buildingBatches_;
+    struct Completed {
+        std::shared_ptr<ChunkBuildDataBatch> batch;
+    };
+    std::vector<Completed> completed_;
+    std::shared_ptr<vk::CommandPool> commandPool_;
+    mutable std::mutex pipelineMutex_;
+    mcvr::ChunkBuildWorker worker_;
+    glm::vec3 camera_{}; // Updated under mutex_; background selection never reads the mutable world.
+    std::atomic<uint64_t> selectedCount_{0}, selectedBytes_{0};
+    std::atomic<uint32_t> preparingBatches_{0};
     bool useSecondaryQueue_ = false;
     uint64_t admissionSequence_ = 0;
+    mcvr::chunkScheduling::UploadPacer uploadPacer_{mcvr::chunkScheduling::Clock::now()};
 
     uint32_t chunkBuildingBatchSize_;
     uint32_t chunkBuildingTotalBatches_;
@@ -269,6 +292,7 @@ class Chunks : public SharedObject<Chunks> {
     bool isChunkReady(int64_t id);
     uint32_t countReadyPrimaryChunks();
     std::string performanceSnapshot();
+    std::pair<uint64_t, uint64_t> buildBacklog();
 
     void close();
     // GPU idle, client left its world: drop every slot, queued build and in-flight batch until the
@@ -281,7 +305,6 @@ class Chunks : public SharedObject<Chunks> {
     // Diagnostics only (RADIANCE_CHUNK_CENSUS=1): tracked chunk buffers alive although neither their
     // slot nor an in-flight batch references them. Empty when disabled.
     std::string orphanCensus();
-    std::vector<std::shared_ptr<vk::BLASBuilder>> &importantBLASBuilders();
     std::shared_ptr<vk::DeviceLocalBuffer> chunkPackedData();
     glm::ivec4 chunkGridInfo();
     void setChunkStorageSectionPos(glm::ivec3 sectionPos);
@@ -309,7 +332,6 @@ class Chunks : public SharedObject<Chunks> {
     std::set<int64_t> queuedIndex_;
     std::shared_ptr<ChunkBuildScheduler> chunkBuildScheduler_;
 
-    std::shared_ptr<std::vector<std::shared_ptr<vk::BLASBuilder>>> importantBLASBuilders_;
     int32_t sizeX_ = 0;
     int32_t sizeY_ = 0;
     int32_t sizeZ_ = 0;

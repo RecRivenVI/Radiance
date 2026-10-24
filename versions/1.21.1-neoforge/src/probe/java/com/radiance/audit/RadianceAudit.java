@@ -20,6 +20,7 @@ public final class RadianceAudit {
             GuiReviewProbe.register();
             ChunkLatencyProbe.register();
             ChunkLoadingProbe.register();
+            LoadingChainProbe.register();
             LineWorldProbe.register();
             TakeoverFeasibilityProbe.register();
             TakeoverBoundaryProbe.register();

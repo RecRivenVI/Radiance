@@ -8,6 +8,15 @@ import java.util.function.Supplier;
 
 /** Actual preparation/admission boundary used by the primary section scheduler. */
 final class ChunkBuildDispatch {
+    private static final Runnable SOURCE_DEPENDENCY =
+            () -> {
+                throw new IllegalStateException("A source dependency is not executable work");
+            };
+
+    static Runnable awaitSource() {
+        return SOURCE_DEPENDENCY;
+    }
+
     static Runnable currentWork(java.util.function.BooleanSupplier current, Runnable work) {
         return () -> {
             if (current.getAsBoolean()) work.run();
@@ -17,6 +26,7 @@ final class ChunkBuildDispatch {
     enum Result {
         SATURATED,
         DEFERRED,
+        WAITING_FOR_SOURCE,
         SUBMITTED
     }
 
@@ -37,6 +47,7 @@ final class ChunkBuildDispatch {
         try {
             Runnable work = prepare.get();
             if (work == null) return Result.DEFERRED;
+            if (work == SOURCE_DEPENDENCY) return Result.WAITING_FOR_SOURCE;
             executor.execute(
                     () -> {
                         try {
@@ -59,11 +70,11 @@ final class ChunkBuildDispatch {
 
     /** Capacity-blocked items are returned only after the round; they cannot monopolize it. */
     static final class Round<T> implements AutoCloseable {
-        private final Queue<T> queue;
+        private final SectionBuildQueue<T> queue;
         private final List<T> deferred = new ArrayList<>();
         private int remaining;
 
-        Round(Queue<T> queue, int maximum) {
+        Round(SectionBuildQueue<T> queue, int maximum) {
             this.queue = queue;
             remaining = Math.min(queue.size(), maximum);
         }
@@ -72,14 +83,10 @@ final class ChunkBuildDispatch {
             return remaining-- > 0 ? queue.poll() : null;
         }
 
-        T pollPreferred(java.util.function.Predicate<T> eligible, Comparator<T> age) {
+        T pollPreferred(java.util.function.Predicate<T> eligible) {
             if (remaining <= 0) return null;
-            T chosen = queue.stream().filter(eligible).min(age).orElse(null);
-            if (chosen != null && queue.remove(chosen)) {
-                remaining--;
-                return chosen;
-            }
-            return poll();
+            remaining--;
+            return queue.pollAged(eligible);
         }
 
         void defer(T item) {

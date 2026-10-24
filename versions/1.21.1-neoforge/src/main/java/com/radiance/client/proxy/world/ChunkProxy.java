@@ -72,8 +72,12 @@ public class ChunkProxy {
                 }
             };
     private static final Map<Integer, ChunkBuildState> chunkBuildStates = new ConcurrentHashMap<>();
-    private static final PriorityBlockingQueue<BuildRequest> rebuildQueue =
-            new PriorityBlockingQueue<>();
+    private static final SectionBuildQueue<BuildRequest> rebuildQueue =
+            new SectionBuildQueue<>(
+                    BuildRequest::index,
+                    Comparator.naturalOrder(),
+                    Comparator.comparingLong(BuildRequest::enqueuedAt),
+                    request -> !request.interactive());
     private static final PriorityBlockingQueue<ColumnRequest> columnQueue =
             new PriorityBlockingQueue<>();
     private static final Set<Long> queuedColumns = ConcurrentHashMap.newKeySet();
@@ -81,13 +85,15 @@ public class ChunkProxy {
             new ConcurrentHashMap<>();
     private static final List<Future<?>> rebuildTasks = new ArrayList<>();
     private static final AtomicLong storageEpoch = new AtomicLong();
+    private static final AtomicLong regionSnapshotRevision = new AtomicLong();
     private static final AtomicLong queueSequence = new AtomicLong();
     private static final AtomicInteger importantBuildsInFlight = new AtomicInteger();
     private static final AtomicInteger normalBuildsInFlight = new AtomicInteger();
+    private static final AtomicInteger externalBuildsInFlight = new AtomicInteger();
     private static final int MAX_EXTERNAL_REBUILDS_PER_FRAME = 8;
     private static final ExternalSectionBuildScheduler<ExternalChunk> externalBuildScheduler =
             new ExternalSectionBuildScheduler<>(
-                    new AtomicInteger(), 1, MAX_EXTERNAL_REBUILDS_PER_FRAME);
+                    externalBuildsInFlight, 1, MAX_EXTERNAL_REBUILDS_PER_FRAME);
     private static volatile ViewArea currentStorage = null;
     private static final SectionPresenceIndex<
                     SectionRenderDispatcher.RenderSection, SectionRenderDispatcher.CompiledSection>
@@ -342,6 +348,22 @@ public class ChunkProxy {
         enqueueRebuild(chunk, chunk.isDirtyFromPlayer());
     }
 
+    public static void sectionChanged(SectionRenderDispatcher.RenderSection section) {
+        if (!acceptingSectionEvents) return;
+        // Even an already-dirty section may change a neighbor snapshot reused later
+        // in this preparation round. Coalescing requests must not hide invalidation.
+        regionSnapshotRevision.incrementAndGet();
+        var state = chunkBuildStates.get(section.index);
+        if (state != null && state.section == section) {
+            state.changedAt = System.nanoTime();
+            if (state.waitingForSource) {
+                state.waitingForSource = false;
+                var origin = section.getOrigin();
+                requestColumn(origin.getX() >> 4, origin.getZ() >> 4);
+            }
+        }
+    }
+
     public static void promoteRebuild(SectionRenderDispatcher.RenderSection chunk) {
         if (!acceptingSectionEvents) return;
         ChunkBuildState state =
@@ -350,7 +372,7 @@ public class ChunkProxy {
         synchronized (state) {
             state.interactive = true;
             state.section = chunk;
-            rebuildQueue.removeIf(request -> request.index() == chunk.index);
+            rebuildQueue.removeSection(chunk.index);
             state.queued.set(false);
             queueState(state);
         }
@@ -369,6 +391,7 @@ public class ChunkProxy {
             state.interactive |= interactive;
             state.occupancyEmpty = false;
             state.skipNeighborRefresh = false;
+            state.changedAt = System.nanoTime();
             long generation = state.generation.incrementAndGet();
             markChunkDirtyNative(chunk.index, generation);
             if (RenderAuditBridge.accepts("CHUNK_UPDATE"))
@@ -391,7 +414,7 @@ public class ChunkProxy {
             // Preserve all dirty dependency notifications, but do not delay this section behind a
             // column scan.
             synchronized (state) {
-                rebuildQueue.removeIf(request -> request.index() == chunk.index);
+                rebuildQueue.removeSection(chunk.index);
                 state.queued.set(false);
                 queueState(state);
             }
@@ -433,11 +456,13 @@ public class ChunkProxy {
     }
 
     private static void queueState(ChunkBuildState state) {
+        state.waitingForSource = false;
         if (state.running.get()) {
             RenderAuditBridge.counter("CHUNK_BUILD", "COALESCED_RUNNING", 1, "");
             return;
         }
         if (state.queued.compareAndSet(false, true)) {
+            if (state.changedAt == 0) state.changedAt = System.nanoTime();
             BlockPos origin = state.section.getOrigin();
             int sectionX = SectionPos.blockToSectionCoord(origin.getX());
             int sectionZ = SectionPos.blockToSectionCoord(origin.getZ());
@@ -484,14 +509,24 @@ public class ChunkProxy {
                 transform.m32());
         if (section.isDirty()
                 || section.getCompiled() == SectionRenderDispatcher.CompiledSection.UNCOMPILED) {
-            externalBuildScheduler.request(external.nativeId, external, external.buildState);
+            synchronized (external) {
+                long revision =
+                        externalBuildScheduler.ensureRequested(
+                                external.nativeId, external, external.buildState);
+                if (revision != 0) markChunkDirtyNative(external.nativeId, revision);
+            }
         }
     }
 
     public static void enqueueExternalRebuild(SectionRenderDispatcher.RenderSection section) {
         ExternalChunk external = externalChunks.get(section);
         if (external != null && external.nativeId >= 0) {
-            externalBuildScheduler.request(external.nativeId, external, external.buildState);
+            synchronized (external) {
+                long revision =
+                        externalBuildScheduler.request(
+                                external.nativeId, external, external.buildState);
+                if (revision != 0) markChunkDirtyNative(external.nativeId, revision);
+            }
         }
     }
 
@@ -532,6 +567,7 @@ public class ChunkProxy {
         if (!acceptingSectionEvents || currentStorage == null) {
             return;
         }
+        regionSnapshotRevision.incrementAndGet();
         for (int dx = -1; dx <= 1; dx++) {
             for (int dz = -1; dz <= 1; dz++) {
                 int candidateX = loadedChunk.x + dx;
@@ -573,13 +609,14 @@ public class ChunkProxy {
             }
             BlockPos origin = section.getOrigin();
             if (SectionPos.blockToSectionCoord(origin.getX()) != sectionX
-                    || SectionPos.blockToSectionCoord(origin.getZ()) != sectionZ
-                    || section.isDirty()
-                    || section.getCompiled()
-                            == SectionRenderDispatcher.CompiledSection.UNCOMPILED) {
+                    || SectionPos.blockToSectionCoord(origin.getZ()) != sectionZ) {
                 continue;
             }
             ChunkBuildState state = chunkBuildStates.get(section.index);
+            if (state != null && state.section == section) state.changedAt = System.nanoTime();
+            if (section.isDirty()
+                    || section.getCompiled() == SectionRenderDispatcher.CompiledSection.UNCOMPILED)
+                continue;
             if (state != null && state.section == section && state.skipNeighborRefresh) {
                 skippedKnownEmpty++;
                 continue;
@@ -723,9 +760,25 @@ public class ChunkProxy {
             if (com.radiance.compatibility.voxy.VoxyPresence.PRESENT)
                 com.radiance.compatibility.voxy.VoxyNative.nearEmpty(
                         section.index, origin.getX(), origin.getY(), origin.getZ());
-            if (state.hasNativeGeometry.getAndSet(false)) {
+            boolean removed = state.hasNativeGeometry.getAndSet(false);
+            if (removed) {
                 invalidateSingle(section.index, generation);
             }
+            if (RenderAuditBridge.accepts("CHUNK_UPDATE"))
+                RenderAuditBridge.counter(
+                        "CHUNK_UPDATE",
+                        "EMPTY_CONFIRMED",
+                        generation,
+                        "action="
+                                + PlayerSectionUpdates.request(origin)
+                                + "; id="
+                                + section.index
+                                + "; java_ns="
+                                + System.nanoTime()
+                                + "; origin="
+                                + origin
+                                + "; removed="
+                                + removed);
         }
         RenderAuditBridge.counter("CHUNK_BUILD", "EMPTY", 1, "");
         RenderAuditBridge.counter("CHUNK_BUILD", "PUBLISHED", 1, "");
@@ -758,6 +811,16 @@ public class ChunkProxy {
         }
         RenderAuditBridge.counter("CHUNK_BUILD", "COLUMN_SCANNED", columns, "");
         int attempts = 0;
+        var preparationCache = new SectionPreparationCache<>(RenderRegionCache::new);
+        // Producers enter native before releasing their Java permits. Sampling in
+        // this order can double-count a transfer, but cannot lose it between stages.
+        int outstandingAtRoundStart =
+                importantBuildsInFlight.get()
+                        + normalBuildsInFlight.get()
+                        + externalBuildsInFlight.get();
+        int externalReserve = externalBuildScheduler.pendingCount() > 0 ? 1 : 0;
+        long nativeBacklog = advanceBuildsNative();
+        int preparedThisRound = 0;
         try (var round =
                 new ChunkBuildDispatch.Round<>(rebuildQueue, MAX_REBUILD_ATTEMPTS_PER_FRAME)) {
             while (attempts < MAX_REBUILD_ATTEMPTS_PER_FRAME
@@ -770,8 +833,7 @@ public class ChunkProxy {
                                         r ->
                                                 !r.interactive()
                                                         && System.nanoTime() - r.enqueuedAt()
-                                                                >= 250_000_000L,
-                                        Comparator.comparingLong(BuildRequest::enqueuedAt))
+                                                                >= 250_000_000L)
                                 : round.poll();
                 if (request == null) {
                     break;
@@ -795,6 +857,21 @@ public class ChunkProxy {
                 SectionRenderDispatcher chunkBuilder = builtChunkExt.radiance$getChunkBuilder();
                 IChunkBuilderExt chunkBuilderExt = (IChunkBuilderExt) chunkBuilder;
                 boolean isImportant = state.interactive || builtChunk.isDirtyFromPlayer();
+                if (!SectionUpdatePolicy.settled(
+                                request.enqueuedAt(),
+                                state.changedAt,
+                                isImportant,
+                                System.nanoTime())
+                        || !SectionUpdatePolicy.canPrepare(
+                                outstandingAtRoundStart
+                                        + preparedThisRound
+                                        + (isImportant ? 0 : externalReserve),
+                                nativeBacklog,
+                                isImportant)) {
+                    if (state.queued.compareAndSet(false, true)) round.defer(request);
+                    RenderAuditBridge.counter("CHUNK_BUILD", "PIPELINE_DEFERRED", 1, "");
+                    continue;
+                }
                 AtomicInteger inFlight =
                         isImportant ? importantBuildsInFlight : normalBuildsInFlight;
                 int limit =
@@ -819,7 +896,10 @@ public class ChunkProxy {
                                                                 origin.getZ()),
                                                         ChunkStatus.FULL,
                                                         false);
-                                        if (source == null) return null;
+                                        if (source == null) {
+                                            state.waitingForSource = true;
+                                            return ChunkBuildDispatch.awaitSource();
+                                        }
                                         List<AddSectionGeometryEvent.AdditionalSectionRenderer>
                                                 additionalRenderers =
                                                         ClientHooks.gatherAdditionalRenderers(
@@ -837,7 +917,8 @@ public class ChunkProxy {
                                                         ? System.nanoTime()
                                                         : 0L;
                                         RenderChunkRegion region =
-                                                new RenderRegionCache()
+                                                preparationCache
+                                                        .get(regionSnapshotRevision.get())
                                                         .createRegion(
                                                                 chunkBuilderExt.radiance$getWorld(),
                                                                 SectionPos.of(origin),
@@ -854,7 +935,8 @@ public class ChunkProxy {
                                         if (region == null) {
                                             RenderAuditBridge.counter(
                                                     "CHUNK_BUILD", "REGION_UNAVAILABLE", 1, "");
-                                            return null;
+                                            state.waitingForSource = true;
+                                            return ChunkBuildDispatch.awaitSource();
                                         }
                                         ChunkBuildTicket ticket =
                                                 new ChunkBuildTicket(
@@ -921,7 +1003,12 @@ public class ChunkProxy {
                                     () -> {
                                         if (builtChunk.isDirty()) queueState(state);
                                     });
-                    if (result != ChunkBuildDispatch.Result.SUBMITTED) {
+                    if (result == ChunkBuildDispatch.Result.SUBMITTED) preparedThisRound++;
+                    else if (result == ChunkBuildDispatch.Result.WAITING_FOR_SOURCE) {
+                        // Keep dirty/old geometry. onChunkLoaded scans this column
+                        // and its dependencies; another dirty event also wakes it.
+                        RenderAuditBridge.counter("CHUNK_BUILD", "SOURCE_WAIT", 1, "");
+                    } else {
                         if (state.queued.compareAndSet(false, true)) round.defer(request);
                         RenderAuditBridge.counter(
                                 "CHUNK_BUILD", "CAPACITY_DEFERRED", 1, result.name());
@@ -948,15 +1035,18 @@ public class ChunkProxy {
         }
 
         int externalScheduled =
-                externalBuildScheduler.schedule(
-                        ChunkProxy::prepareExternalBuild,
-                        backgroundChunkRebuildExecutor::execute,
-                        (ticket, phase, failure) ->
-                                RenderAuditBridge.counter(
-                                        "CHUNK_BUILD",
-                                        "EXTERNAL_" + phase + "_FAILED",
-                                        1,
-                                        failure.getClass().getSimpleName()));
+                SectionUpdatePolicy.canPrepare(
+                                outstandingAtRoundStart + preparedThisRound, nativeBacklog, false)
+                        ? externalBuildScheduler.schedule(
+                                ChunkProxy::prepareExternalBuild,
+                                backgroundChunkRebuildExecutor::execute,
+                                (ticket, phase, failure) ->
+                                        RenderAuditBridge.counter(
+                                                "CHUNK_BUILD",
+                                                "EXTERNAL_" + phase + "_FAILED",
+                                                1,
+                                                failure.getClass().getSimpleName()))
+                        : 0;
         RenderAuditBridge.counter("CHUNK_BUILD", "EXTERNAL_SCHEDULED", externalScheduled, "");
     }
 
@@ -987,7 +1077,9 @@ public class ChunkProxy {
         BlockPos origin = builtChunk.getOrigin().immutable();
         Map<ResourceLocation, Integer> textureIds = snapshotChunkTextureIds();
         Map<RenderType, Integer> faceStates = snapshotChunkFaces();
-        ExternalBuildTicket ticket = new ExternalBuildTicket(schedulerTicket, external, origin);
+        ExternalBuildTicket ticket =
+                new ExternalBuildTicket(
+                        schedulerTicket, external, origin, builtChunk.isDirtyFromPlayer());
         builtChunk.setNotDirty();
         return () ->
                 runExternalBuild(
@@ -1019,7 +1111,7 @@ public class ChunkProxy {
                     storage,
                     additionalRenderers,
                     ticket.external.nativeId,
-                    true,
+                    ticket.interactive,
                     false,
                     null,
                     ticket,
@@ -1098,6 +1190,10 @@ public class ChunkProxy {
             Map<ResourceLocation, Integer> textureIds,
             Map<RenderType, Integer> faceStates) {
 
+        long requestedRevision =
+                ticket != null
+                        ? ticket.generation
+                        : externalTicket != null ? externalTicket.schedulerTicket.revision() : -1L;
         SectionPos chunkSectionPos = SectionPos.of(buildOrigin);
 
         Vec3 vec3d = chunkBuilder.getCameraPosition();
@@ -1114,7 +1210,7 @@ public class ChunkProxy {
             RenderAuditBridge.counter(
                     "CHUNK_UPDATE",
                     "COMPILE_BEGIN",
-                    ticket == null ? -1 : ticket.generation,
+                    requestedRevision,
                     "id=" + nativeIndex + "; java_ns=" + System.nanoTime());
         SectionCompiler.Results renderData =
                 ((IChunkBuilderExt) chunkBuilder)
@@ -1135,7 +1231,7 @@ public class ChunkProxy {
             RenderAuditBridge.counter(
                     "CHUNK_UPDATE",
                     "COMPILE_END",
-                    ticket == null ? -1 : ticket.generation,
+                    requestedRevision,
                     "id=" + nativeIndex + "; java_ns=" + System.nanoTime());
 
         Map<RenderType, MeshData> allBuffers = renderData.renderedLayers;
@@ -1184,7 +1280,7 @@ public class ChunkProxy {
                     builtChunkNum++;
                 }
 
-                invalidateSingle(nativeIndex, ticket == null ? -1L : ticket.generation);
+                invalidateSingle(nativeIndex, requestedRevision);
                 if (ticket != null) {
                     ticket.state.hasNativeGeometry.set(false);
                 }
@@ -1331,13 +1427,6 @@ public class ChunkProxy {
                             RenderAuditBridge.accepts("CHUNK_PERF") ? System.nanoTime() : 0L;
                     boolean replacingNativeGeometry =
                             ticket != null && ticket.state.hasNativeGeometry.get();
-                    // Primary sections must use one publication model. Mixing an immediate in-frame
-                    // first build with a fenced replacement lets consecutive generations of the
-                    // same
-                    // slot execute concurrently before the first GPU build is complete. External
-                    // sections retain their existing immediate path; primary sections publish only
-                    // after the native batch fence signals.
-                    boolean nativeImmediate = important && ticket == null;
                     long nativeSubmitIntent =
                             RenderAuditBridge.beginIntent(
                                     "CHUNK_NATIVE_SUBMIT",
@@ -1345,7 +1434,7 @@ public class ChunkProxy {
                                     "nativeId="
                                             + nativeIndex
                                             + "; generation="
-                                            + (ticket == null ? -1L : ticket.generation)
+                                            + (requestedRevision)
                                             + "; origin="
                                             + buildOrigin.getX()
                                             + ','
@@ -1356,15 +1445,13 @@ public class ChunkProxy {
                                             + buffers.size()
                                             + "; javaPriority="
                                             + important
-                                            + "; nativeImmediate="
-                                            + nativeImmediate
                                             + "; replacing="
                                             + replacingNativeGeometry);
                     if (RenderAuditBridge.accepts("CHUNK_UPDATE"))
                         RenderAuditBridge.counter(
                                 "CHUNK_UPDATE",
                                 "NATIVE_CALL",
-                                ticket == null ? -1 : ticket.generation,
+                                requestedRevision,
                                 "id=" + nativeIndex + "; java_ns=" + System.nanoTime());
                     try (var request =
                             com.radiance.api.audit.DrawingAudit.begin(
@@ -1377,7 +1464,7 @@ public class ChunkProxy {
                                 buildOrigin.getY(),
                                 buildOrigin.getZ(),
                                 nativeIndex,
-                                ticket == null ? -1L : ticket.generation,
+                                requestedRevision,
                                 buffers.size(),
                                 geometryTypeAddr,
                                 geometryGroupNameAddr,
@@ -1386,7 +1473,6 @@ public class ChunkProxy {
                                 vertexFormatAddr,
                                 vertexCountAddr,
                                 verticesAddr,
-                                nativeImmediate,
                                 important ? 1 : 0,
                                 countBuiltChunk);
                         com.radiance.api.audit.DrawingAudit.consumed("native.section.enqueue");
@@ -1519,7 +1605,6 @@ public class ChunkProxy {
             long vertexFormats,
             long vertexCounts,
             long vertices,
-            boolean important,
             int priority,
             boolean collectEmission);
 
@@ -1545,6 +1630,10 @@ public class ChunkProxy {
     public static native boolean isChunkReady(long index);
 
     public static native int countReadyChunksNative();
+
+    // Low word: queued + preparing + submitted + awaiting-publication owners.
+    // High word: saturating logical native input bytes; this is not total GPU allocation.
+    private static native long advanceBuildsNative();
 
     public static boolean isChunkReady(SectionRenderDispatcher.RenderSection builtChunk) {
         return isChunkReady(builtChunk.index);
@@ -1581,24 +1670,22 @@ public class ChunkProxy {
                             request.sequence()));
         }
 
-        List<BuildRequest> builds = new ArrayList<>();
-        rebuildQueue.drainTo(builds);
-        for (BuildRequest request : builds) {
-            ChunkBuildState state = chunkBuildStates.get(request.index());
-            if (state == null || !state.queued.get()) {
-                continue;
-            }
-            BlockPos origin = state.section.getOrigin();
-            rebuildQueue.offer(
-                    new BuildRequest(
+        rebuildQueue.reprioritize(
+                request -> {
+                    ChunkBuildState state = chunkBuildStates.get(request.index());
+                    if (state == null || !state.queued.get()) {
+                        return null;
+                    }
+                    BlockPos origin = state.section.getOrigin();
+                    return new BuildRequest(
                             request.index(),
                             sectionDistanceSquared(origin),
                             request.sequence(),
                             state.interactive
                                     || state.section.isDirtyFromPlayer()
                                     || request.interactive(),
-                            request.enqueuedAt()));
-        }
+                            request.enqueuedAt());
+                });
     }
 
     private record ColumnRequest(long column, long distanceSquared, long sequence)
@@ -1639,6 +1726,8 @@ public class ChunkProxy {
         private volatile boolean interactive;
         private volatile boolean occupancyEmpty;
         private volatile boolean skipNeighborRefresh;
+        private volatile boolean waitingForSource;
+        private volatile long changedAt;
 
         private ChunkBuildState(SectionRenderDispatcher.RenderSection section) {
             this.section = section;
@@ -1670,7 +1759,8 @@ public class ChunkProxy {
     private record ExternalBuildTicket(
             ExternalSectionBuildScheduler.Ticket<ExternalChunk> schedulerTicket,
             ExternalChunk external,
-            BlockPos origin) {
+            BlockPos origin,
+            boolean interactive) {
         private boolean isCurrent() {
             return isCurrentExternal(schedulerTicket)
                     && external.section.getOrigin().equals(origin);

@@ -35,6 +35,22 @@ public final class BenchmarkChunkState {
                 String.valueOf(value(source, "initialSeedPending")));
     }
 
+    static boolean noNativeWork(Properties state) {
+        var values = new Properties();
+        for (String field : state.getProperty("chunk.native", "").split(";")) {
+            String[] pair = field.trim().split("=", 2);
+            if (pair.length == 2) values.setProperty(pair[0], pair[1]);
+        }
+        for (String key :
+                new String[] {
+                    "build_input_count",
+                    "batch_build_count",
+                    "batch_submit_count",
+                    "batch_complete_count"
+                }) if (!"0".equals(values.getProperty(key))) return false;
+        return true;
+    }
+
     private static Object value(Class<?> source, String name) throws ReflectiveOperationException {
         Field f = source.getDeclaredField(name);
         f.setAccessible(true);

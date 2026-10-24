@@ -42,6 +42,13 @@ struct KeyHash {
                 hash ^= value;
                 hash *= 1099511628211ull;
             }
+        // Whole float words often share all low mantissa bits (especially block
+        // coordinates). Mix high bits before power-of-two hash tables select a bucket.
+        hash ^= hash >> 33;
+        hash *= 0xff51afd7ed558ccdull;
+        hash ^= hash >> 33;
+        hash *= 0xc4ceb9fe1a85ec53ull;
+        hash ^= hash >> 33;
         return static_cast<size_t>(hash);
     }
 };
@@ -89,13 +96,6 @@ bool hasReversePolygonPair(size_t count, Fetch fetch, Hash hashKey = {}) {
             // corner permutations: equal corner sets can describe different faces.
             for (size_t i = 0; i < N; ++i) key[i] = ordered[(first + (forward ? i : N - i)) % N];
             uint64_t hash = hashKey(key);
-            // Float positions often have identical low bits; mix the whole key
-            // before selecting a power-of-two bucket.
-            hash ^= hash >> 33;
-            hash *= 0xff51afd7ed558ccdull;
-            hash ^= hash >> 33;
-            hash *= 0xc4ceb9fe1a85ec53ull;
-            hash ^= hash >> 33;
             size_t slot = hash & (smallKeys.size() - 1);
             while (smallDirections[slot] != 0) {
                 if (smallKeys[slot] == key) {
@@ -189,8 +189,18 @@ inline Result reconcile(std::span<const Point> positions,
     }
     if (indices.size() % 6 != 0) throw std::invalid_argument("Quad index count");
     std::vector<Quad> quads;
-    std::unordered_map<Key, std::vector<size_t>, KeyHash> groups;
+    struct Members {
+        size_t first = 0, second = 0;
+        unsigned count = 0;
+        void add(size_t id) {
+            if (count == 0) first = id;
+            if (count == 1) second = id;
+            count = std::min(3u, count + 1);
+        }
+    };
+    std::unordered_map<Key, Members, KeyHash> groups;
     quads.reserve(indices.size() / 6);
+    groups.reserve(indices.size() / 6);
     for (size_t at = 0; at < indices.size(); at += 6) {
         if (indices[at + 3] != indices[at + 2] || indices[at + 5] != indices[at])
             throw std::invalid_argument("Unrecognized explicit QUADS expansion");
@@ -219,15 +229,15 @@ inline Result reconcile(std::span<const Point> positions,
         const double deviation = std::abs(dot(n0, subtract(p3, p0))) / std::sqrt(dot(n0, n0));
         auto id = quads.size();
         quads.push_back({at, vertices, ordered, deviation > planarityEpsilon});
-        groups[key].push_back(id);
+        groups[key].add(id);
     }
     for (const auto &[key, members] : groups) {
-        if (members.size() < 2) continue;
-        if (members.size() != 2) {
+        if (members.count < 2) continue;
+        if (members.count != 2) {
             ++out.report.ambiguous;
             continue;
         }
-        const auto &first = quads[members[0]], &second = quads[members[1]];
+        const auto &first = quads[members.first], &second = quads[members.second];
         std::array<int, 4> map{};
         for (int i = 0; i < 4; ++i)
             map[i] =
