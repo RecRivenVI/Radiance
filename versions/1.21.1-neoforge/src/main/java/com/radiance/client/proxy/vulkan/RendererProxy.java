@@ -16,6 +16,8 @@ public class RendererProxy {
     private static final int VK_ERROR_DEVICE_LOST = -4;
     private static volatile boolean initialized;
     private static final FrameLifecycle FRAME = new FrameLifecycle();
+    private static final boolean NATIVE_FRAME_WORKER =
+            "1".equals(System.getenv("RADIANCE_NATIVE_FRAME_WORKER"));
 
     public static native void initFolderPath(String folderPath);
 
@@ -48,6 +50,12 @@ public class RendererProxy {
     private static native int submitCommandNative();
 
     private static native int presentNative(boolean menuFrame);
+
+    private static native int executeFrameNative(boolean menuFrame);
+
+    public static boolean nativeFrameWorker() {
+        return NATIVE_FRAME_WORKER;
+    }
 
     private static boolean menuFrame() {
         Minecraft client = Minecraft.getInstance();
@@ -108,6 +116,10 @@ public class RendererProxy {
             return;
         }
         try {
+            if (NATIVE_FRAME_WORKER) {
+                checkVkResult("交接 Vulkan 帧", executeFrameNative(menuFrame()));
+                return;
+            }
             int result;
             synchronized (TextureProxy.class) {
                 result = submitCommandNative();

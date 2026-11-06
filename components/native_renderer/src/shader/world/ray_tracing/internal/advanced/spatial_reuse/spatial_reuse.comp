@@ -86,6 +86,7 @@ SpatialReuseReferenceCache loadSpatialReuseReferenceCache(ivec2 pixel) {
 
 struct SpatialReuseReservoirCandidate {
     vec3 point;
+    uvec4 source;
     float valid;
     vec3 normal;
     vec3 emission;
@@ -112,6 +113,7 @@ bool tryLoadSpatialReuseReservoirCandidate(ivec2 pixel, out SpatialReuseReservoi
 
     vec4 reservoir1 = loadRestirLightReservoirLayer(pixel, ADV_RESERVOIR_PING_INPUT, 1);
     candidate.point = reservoir0.xyz;
+    candidate.source = loadRestirLightReservoirSource(pixel, ADV_RESERVOIR_PING_INPUT);
     candidate.normal = normalizeF(reservoir1.xyz, vec3(0.0, 1.0, 0.0));
     return true;
 }
@@ -130,32 +132,30 @@ float evaluateSpatialReuseReservoirTargetAtQuery(SpatialReuseReservoirCandidate 
     evaluateAreaLightSampleContribution(surface, query.viewDir, cache.textureUV, cache.planeHitWorldPos,
                                         cache.atlasUvMin, cache.atlasUvMax, cache.dPduWorld, cache.dPdvWorld,
                                         cache.baseGeoNormal, query.traceLocalHeight, query.normalTextureID,
-                                        query.maxDepthWorld, candidate.emission, candidate.point, candidate.normal, false,
+                                        query.maxDepthWorld, candidate.emission,
+                                        areaLightScenePoint(candidate.source.w, candidate.point), candidate.normal, false,
                                         targetFunction);
     return targetFunction;
 }
 
-AreaLightSample areaLightSampleFromSpatialReuseReservoir(ivec2 pixel,
-                                                         SpatialReuseReservoirCandidate candidate,
+AreaLightSample areaLightSampleFromSpatialReuseReservoir(SpatialReuseReservoirCandidate candidate,
                                                          float targetFunction) {
     AreaLightSample lightSample = makeEmptyAreaLightSample();
     if (!(candidate.valid > 0.5)) { return lightSample; }
 
-    uvec4 reservoirSource = loadRestirLightReservoirSource(pixel, ADV_RESERVOIR_PING_INPUT);
     lightSample.point = candidate.point;
     lightSample.targetFunction = targetFunction;
     lightSample.normal = candidate.normal;
     lightSample.contributionWeight = candidate.contributionWeight;
     lightSample.emission = candidate.emission;
     lightSample.confidence = candidate.confidence;
-    lightSample.sourceID = reservoirSource.xy;
-    lightSample.sourceLightIndex = reservoirSource.z;
-    lightSample.sourceChunkIndex = reservoirSource.w;
+    lightSample.sourceID = candidate.source.xy;
+    lightSample.sourceLightIndex = candidate.source.z;
+    lightSample.sourceChunkIndex = candidate.source.w;
     return lightSample;
 }
 
 void spatialReuseRisAddReservoirCandidate(inout AreaLightRisState ris,
-                                          ivec2 pixel,
                                           SpatialReuseReservoirCandidate candidate,
                                           float targetFunction,
                                           float weight,
@@ -167,7 +167,7 @@ void spatialReuseRisAddReservoirCandidate(inout AreaLightRisState ris,
 
     ris.weightSum += weight;
     if (!ris.hasSampleOut || rand(seed) * ris.weightSum < weight) {
-        ris.sampleOut = areaLightSampleFromSpatialReuseReservoir(pixel, candidate, targetFunction);
+        ris.sampleOut = areaLightSampleFromSpatialReuseReservoir(candidate, targetFunction);
         ris.hasSampleOut = true;
     }
 }
@@ -265,7 +265,7 @@ void main() {
         float curTarget = evaluateSpatialReuseReservoirTargetAtQuery(cur, queryQ, cacheQ);
         if (curTarget > 1e-8) {
             float w = curSampleCount * curTarget * cur.contributionWeight;
-            spatialReuseRisAddReservoirCandidate(r, q, cur, curTarget, w, seed);
+            spatialReuseRisAddReservoirCandidate(r, cur, curTarget, w, seed);
         }
     }
 
@@ -304,7 +304,7 @@ void main() {
 
         sampleCountSum += donorMergeCount;
         float w = donorMergeCount * target * s.contributionWeight;
-        spatialReuseRisAddReservoirCandidate(r, p, s, target, w, seed);
+        spatialReuseRisAddReservoirCandidate(r, s, target, w, seed);
     }
 
     if (!(sampleCountSum > 1e-8) || !r.hasSampleOut) {

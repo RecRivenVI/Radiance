@@ -42,7 +42,8 @@ public final class BoundPartCapture {
 
     private record Key(List<RigidModelCapture.Binding> bindings) {}
 
-    private static final Map<Key, Resource> RESOURCES = new HashMap<>();
+    // Oldest successful use first. A failed binding match must not refresh its resource.
+    private static final LinkedHashMap<Key, Resource> RESOURCES = new LinkedHashMap<>();
     private static final long BYTE_CAPACITY = 16L * 1024 * 1024;
     private static long frame, bytes;
 
@@ -54,14 +55,12 @@ public final class BoundPartCapture {
 
     static void beginFrame(long value) {
         frame = value;
-        RESOURCES
-                .values()
-                .removeIf(
-                        resource -> {
-                            if (frame - resource.used <= 120) return false;
-                            bytes -= resource.bytes;
-                            return true;
-                        });
+        while (!RESOURCES.isEmpty()) {
+            var oldest = RESOURCES.firstEntry().getValue();
+            if (frame - oldest.used <= 120) break;
+            RESOURCES.pollFirstEntry();
+            bytes -= oldest.bytes;
+        }
     }
 
     private static final class Resource implements RigidModelCapture.Geometry {
@@ -69,7 +68,7 @@ public final class BoundPartCapture {
         final Key key;
         final RigidModelCapture.Geometry base;
         final long bytes;
-        long used;
+        long used = -1;
 
         Resource(Key key) {
             this.key = key;
@@ -346,20 +345,15 @@ public final class BoundPartCapture {
                 if (resource == null) {
                     long required = key.bindings.size() * 128L;
                     while (bytes + required > BYTE_CAPACITY) {
-                        var oldest =
-                                RESOURCES.entrySet().stream()
-                                        .filter(e -> e.getValue().used != frame)
-                                        .min(Comparator.comparingLong(e -> e.getValue().used))
-                                        .orElse(null);
-                        if (oldest == null) {
+                        var oldest = RESOURCES.firstEntry();
+                        if (oldest == null || oldest.getValue().used == frame) {
                             group.forEach(BoundPartCapture::emit);
                             continue groups;
                         }
-                        RESOURCES.remove(oldest.getKey());
+                        RESOURCES.pollFirstEntry();
                         bytes -= oldest.getValue().bytes;
                     }
                     resource = new Resource(key);
-                    RESOURCES.put(key, resource);
                     bytes += resource.bytes;
                 }
                 if (slot != null) {
@@ -370,7 +364,10 @@ public final class BoundPartCapture {
                         "SOURCE", "BINDING_PREPARED", 1, "");
             } else
                 com.radiance.api.audit.RenderAuditBridge.counter("SOURCE", "BINDING_REUSED", 1, "");
-            resource.used = frame;
+            if (resource.used != frame) {
+                RESOURCES.putLast(resource.key, resource);
+                resource.used = frame;
+            }
             for (var binding : resource.key.bindings) PartModelCapture.touch(binding.geometry());
             var draw =
                     new RigidModelCapture.Draw(

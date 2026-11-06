@@ -53,7 +53,7 @@ class Textures : public SharedObject<Textures> {
     bool isFramebufferTexture(uint32_t id) const;
     void releaseTexture(uint32_t id, uint32_t fallbackId);
     void setWorldMaterial(uint32_t id, const vk::Data::LayeredWorldMaterial &material);
-    uint64_t copyWorldMaterials(vk::Data::TextureMapping &mapping) const;
+    uint64_t copyWorldMaterials(vk::Data::TextureMapping &mapping, bool includeEmitters) const;
     uint64_t worldMaterialRevision() const;
     void initializeTexture(uint32_t id, uint32_t maxLevel, uint32_t width, uint32_t height, VkFormat format);
     void initializeAttachmentTexture(uint32_t id,

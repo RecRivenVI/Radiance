@@ -6,6 +6,9 @@
     "plugin": "com.radiance.mixin_related.MixinPlugin",
     "mixins": [],
     "client": [
+        "vulkan_render_integration.ClientLightingMixins$Packets",
+        "vulkan_render_integration.ClientLightingMixins$Engine",
+        "vulkan_render_integration.ClientLightingMixins$Notifications",
         "vulkan_render_integration.VanillaQuadLightingMixins",
         "vulkan_render_integration.VanillaDestructionSourceMixins",
         "vulkan_render_integration.VanillaCompositeBlockModelMixins$Weighted",
@@ -237,7 +240,10 @@
         "vulkan_render_integration.VanillaParticleAppearanceMixins$Spark",
         "vulkan_render_integration.accessor.LevelGeometryInvoker",
         "vulkan_render_integration.EntitySceneLifetimeMixins",
-        "vulkan_render_integration.BlockSceneLifetimeMixins"
+        "vulkan_render_integration.BlockSceneLifetimeMixins",
+        "vulkan_render_integration.BlockSceneWakeMixins$Events",
+        "vulkan_render_integration.BlockSceneWakeMixins$Packets",
+        "vulkan_render_integration.BlockEntityRenderDispatcherMixins"
     ],
     "injectors": {
         "defaultRequire": 1

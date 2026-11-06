@@ -20,6 +20,12 @@ inline bool contentAuditEnabled() noexcept {
 inline bool residencyCensusEnabled() noexcept {
     return enabled() && (flags.load(std::memory_order_relaxed) & MCVR_PROFILE_RESIDENCY_CENSUS);
 }
+inline bool flowAuditEnabled() noexcept {
+    return enabled() && (flags.load(std::memory_order_relaxed) & MCVR_PROFILE_FLOW_AUDIT);
+}
+inline bool allocationTimingEnabled() noexcept {
+    return enabled() && (flags.load(std::memory_order_relaxed) & MCVR_PROFILE_ALLOCATION_TIMING);
+}
 inline void beginFrame(uint64_t owner, uint32_t requested) noexcept {
     frame = owner;
     const bool recording = (requested & MCVR_PROFILE_TIMING) && sink.load() != nullptr;
@@ -110,6 +116,18 @@ class Phases {
     void next(const char *name) noexcept {
         current.reset();
         current.emplace(name, clock);
+    }
+};
+
+// Dormant in ordinary timing captures. Counts describe requested bytes, not residency.
+class AllocationScope {
+    std::optional<Scope> scope;
+
+  public:
+    explicit AllocationScope(const char *label, uint64_t bytes = 0, uint64_t (*clock)() noexcept = now) noexcept {
+        if (!allocationTimingEnabled()) return;
+        scope.emplace(label, clock);
+        emit(frame, 5, label, 1, bytes);
     }
 };
 } // namespace mcvr::profile

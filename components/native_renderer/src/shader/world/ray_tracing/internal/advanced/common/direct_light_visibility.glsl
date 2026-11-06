@@ -26,8 +26,7 @@ vec3 traceAreaLightReservoirTransmission(SampledSurface surface,
         return vec3(0.0);
     }
 
-    vec3 sampledPointScene = areaLightWorldToScene(sampledPoint);
-    vec3 lightVector = sampledPointScene - surface.worldPos;
+    vec3 lightVector = sampledPoint - surface.worldPos;
     float distance2 = dot(lightVector, lightVector);
     if (!isFiniteFloat(distance2) || distance2 <= 1e-8) { return vec3(0.0); }
 

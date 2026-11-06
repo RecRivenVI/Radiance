@@ -14,6 +14,7 @@
 #    define T_UINT uint32_t
 #    define T_INT int32_t
 #    define T_BOOL bool
+#    define T_DVEC3 glm::dvec3
 #    define T_DVEC4 glm::dvec4
 #else
 #    extension GL_EXT_shader_explicit_arithmetic_types_float64 : require
@@ -28,6 +29,7 @@
 #    define T_UINT uint
 #    define T_INT int
 #    define T_BOOL bool
+#    define T_DVEC3 dvec3
 #    define T_DVEC4 dvec4
 #    define WORLD_MASK QUERY_WORLD
 #    define PLAYER_MASK QUERY_SELF

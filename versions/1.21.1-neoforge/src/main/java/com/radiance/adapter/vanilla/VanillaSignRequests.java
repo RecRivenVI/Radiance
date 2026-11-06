@@ -11,6 +11,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.world.item.DyeColor;
 import net.minecraft.world.level.block.entity.SignBlockEntity;
+import net.minecraft.world.level.block.entity.SignText;
 import net.minecraft.world.phys.Vec3;
 
 /** A sign's cached original layout is an explicit world-text request, separate from its model. */
@@ -27,6 +28,30 @@ public final class VanillaSignRequests {
 
     public interface Hanging {
         ModelPart radiance$signRoot(SignBlockEntity sign);
+    }
+
+    private record TextState(
+            SignText front,
+            SignText back,
+            boolean filtered,
+            boolean frontOutline,
+            boolean backOutline,
+            long fontRevision) {}
+
+    public static Object stableInputs(SignBlockEntity sign) {
+        var front = sign.getFrontText();
+        var back = sign.getBackText();
+        return new TextState(
+                front,
+                back,
+                Minecraft.getInstance().isTextFilteringEnabled(),
+                outlined(sign, front),
+                outlined(sign, back),
+                com.radiance.client.texture.FontAtlasLifecycle.revision());
+    }
+
+    private static boolean outlined(SignBlockEntity sign, SignText text) {
+        return text.hasGlowingText() && outline(sign.getBlockPos(), text.getColor().getTextColor());
     }
 
     public static void text(
@@ -55,7 +80,7 @@ public final class VanillaSignRequests {
                                         : lines.getFirst();
                             });
             int color = text.hasGlowingText() ? text.getColor().getTextColor() : dark;
-            boolean outline = text.hasGlowingText() && outline(sign.getBlockPos(), color);
+            boolean outline = outlined(sign, text);
             int brightness = text.hasGlowingText() ? 15728880 : light;
             try (var material = material(text)) {
                 for (int i = 0; i < 4; i++) {

@@ -51,10 +51,9 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_radiance_client_option_Options_nat
 #include "core/render/textures.hpp"
 #include "core/render/world.hpp"
 
-JNIEXPORT void
-    JNICALL Java_com_radiance_client_option_Options_nativeSetMaxFps(JNIEnv *env, jclass, jint maxFps, jboolean write) {
-    jni::invokeVoid(env, "JNI com.radiance.client.option.Options.nativeSetMaxFps",
-                    [&] { Renderer::options.maxFps = maxFps; });
+JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetMaxFps(JNIEnv *e, jclass, jint fps, jboolean) {
+    jni::invokeVoid(e, "JNI com.radiance.client.option.Options.nativeSetMaxFps",
+                    [&] { Renderer::options.maxFps = fps; });
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_option_Options_nativeSetInactivityFpsLimit(JNIEnv *env,

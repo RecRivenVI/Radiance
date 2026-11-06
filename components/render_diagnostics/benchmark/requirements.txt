@@ -1,2 +1,3 @@
 -r ../inventory/requirements.txt
+nbtlib==2.0.4
 Pillow==12.3.0

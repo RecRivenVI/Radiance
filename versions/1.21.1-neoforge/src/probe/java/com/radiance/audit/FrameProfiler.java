@@ -22,6 +22,7 @@ public final class FrameProfiler {
     private static volatile int pendingSeconds;
     private static volatile boolean stop;
     private static volatile boolean active;
+    private static double worldProjectionY = Double.NaN;
     private static boolean nativeReady, autoStarted;
     private static long worldSince, deadline, frame, previousStart, captureFrames;
     private static int captureFrameLimit;
@@ -35,11 +36,20 @@ public final class FrameProfiler {
     private static jdk.jfr.Recording recording;
     private static Path recordingOutput;
     private static long beginCost;
+    private static FrameAttributionEvent frameEvent;
 
     private FrameProfiler() {}
 
     public static boolean requested() {
         return pendingSeconds > 0 || active;
+    }
+
+    public static boolean flowAuditEnabled() {
+        return active && mode == ProfileMode.FLOW_AUDIT;
+    }
+
+    public static void worldProjection(float scaleY) {
+        if (active) worldProjectionY = scaleY;
     }
 
     static long frameToken() {
@@ -48,6 +58,31 @@ public final class FrameProfiler {
 
     public static boolean collecting() {
         return active && current != null && Thread.currentThread() == owner;
+    }
+
+    public static void blockEntityVisits(int count) {
+        if (mode == ProfileMode.TIMED && collecting()) current.blockEntityVisits += count;
+    }
+
+    public static void blockEntityRest(long[] counters) {
+        if (mode == ProfileMode.TIMED && collecting()) current.blockEntityRest = counters;
+    }
+
+    public static void blockEntitySelection(boolean reused) {
+        if (mode != ProfileMode.TIMED || !collecting()) return;
+        if (reused) current.blockEntityStable++;
+        else current.blockEntityCapture++;
+    }
+
+    public static void entities(int count) {
+        if (mode == ProfileMode.TIMED && collecting()) current.entities += count;
+    }
+
+    public static void persistentEntityMatch(Object source, boolean matches) {
+        if (mode == ProfileMode.TIMED
+                && collecting()
+                && source instanceof net.minecraft.world.entity.Entity entity)
+            current.persistentEntityMatches.merge(entity, matches, (a, b) -> a && b);
     }
 
     static boolean sourceWorkEnabled() {
@@ -139,6 +174,8 @@ public final class FrameProfiler {
                 throw new IllegalArgumentException(
                         "Profile raw frame limit must be within 1..100000");
             mode = pendingMode;
+            FlowProfileCounters.reset();
+            worldProjectionY = Double.NaN;
             nativeReady = NativeDiagnostics.attachProfiler();
             if (!nativeReady && mode.nativeFlags != 0)
                 throw new IllegalStateException("Matching native profile ABI 2 is required");
@@ -172,6 +209,9 @@ public final class FrameProfiler {
                                     + (mode == ProfileMode.CONTENT_AUDIT)
                                     + "\ncontent-audit="
                                     + (mode == ProfileMode.CONTENT_AUDIT)
+                                    + "\nflow-audit="
+                                    + (mode == ProfileMode.FLOW_AUDIT)
+                                    + "\nFLOW_AUDIT compares actual per-context table records; diagnostic.table-delta is its CPU cost. No residency census. Domain 6 is lifecycle latency, not CPU execution time. Chunk counts are interval observations; exclude the first frame when comparing rates.\n"
                                     + "\nproducer-census="
                                     + (mode.producers
                                             || Boolean.getBoolean("radiance.audit.producerCensus"))
@@ -206,10 +246,24 @@ public final class FrameProfiler {
                     recording.setMaxSize(32L * 1024 * 1024);
                     recording
                             .enable("jdk.ExecutionSample")
-                            .withPeriod(java.time.Duration.ofMillis(10));
+                            .withPeriod(java.time.Duration.ofMillis(5));
                     recording
                             .enable("jdk.NativeMethodSample")
-                            .withPeriod(java.time.Duration.ofMillis(10));
+                            .withPeriod(java.time.Duration.ofMillis(5));
+                    recording
+                            .enable(FrameAttributionEvent.class)
+                            .withThreshold(java.time.Duration.ZERO);
+                    for (var name :
+                            java.util.List.of(
+                                    "jdk.ClassLoad",
+                                    "jdk.ClassDefine",
+                                    "jdk.Compilation",
+                                    "jdk.SafepointBegin",
+                                    "jdk.SafepointStateSynchronization",
+                                    "jdk.ExecuteVMOperation",
+                                    "jdk.JavaMonitorEnter",
+                                    "jdk.ThreadPark"))
+                        recording.enable(name).withThreshold(java.time.Duration.ofMillis(2));
                     recording
                             .enable("jdk.ThreadCPULoad")
                             .withPeriod(java.time.Duration.ofSeconds(1));
@@ -238,6 +292,13 @@ public final class FrameProfiler {
             return false;
         }
         ++frame;
+        if (recording != null) {
+            frameEvent = new FrameAttributionEvent();
+            frameEvent.frameToken = frame;
+            frameEvent.mode = mode.name();
+            frameEvent.begin();
+        }
+        worldProjectionY = Double.NaN;
         ++captureFrames;
         ProducerCensus.frame();
         if (nativeReady) NativeDiagnostics.profileFrame(frame, mode.nativeFlags);
@@ -272,7 +333,8 @@ public final class FrameProfiler {
                 mc.level.getGameTime(),
                 mc.level.getDayTime(),
                 mc.level.getRainLevel(partial),
-                mc.level.getThunderLevel(partial));
+                mc.level.getThunderLevel(partial),
+                Math.toDegrees(2 * Math.atan(1 / Math.abs(worldProjectionY))));
     }
 
     private static void pollControl(Minecraft mc) {
@@ -356,8 +418,33 @@ public final class FrameProfiler {
                 : -1;
     }
 
+    public static void lightQueue(int before, int after) {
+        if (!collecting() || !mode.stages) return;
+        current.lightQueueBefore = Math.max(current.lightQueueBefore, before);
+        current.lightQueueAfter = after;
+        current.lightQueueDrained += Math.max(0, before - after);
+    }
+
+    public static void lightWork(FrameTimings.Stage stage, long count) {
+        if (!collecting() || !mode.stages) return;
+        switch (stage) {
+            case LIGHT_PACKET_APPLY -> current.lightPackets += count;
+            case LIGHT_CHUNK_ENABLE -> current.lightChunks += count;
+            case LIGHT_SECTION_NOTIFY -> current.lightNotifies += count;
+            case LIGHT_PROPAGATION -> current.lightPropagationNodes += count;
+            default -> throw new IllegalArgumentException("Not a light work stage");
+        }
+    }
+
     public static void endFrame(long start, long cpuStart, boolean failed) {
         long end = System.nanoTime(), cpuEnd = cpuTime();
+        if (frameEvent != null) {
+            frameEvent.end();
+            frameEvent.measuredWallNs = end - start;
+            frameEvent.renderThreadCpuNs = cpuStart < 0 || cpuEnd < 0 ? -1 : cpuEnd - cpuStart;
+            frameEvent.commit();
+            frameEvent = null;
+        }
         long startEpochMillis = System.currentTimeMillis() - (end - start) / 1_000_000L;
         var timings = current;
         current = null;
@@ -379,6 +466,34 @@ public final class FrameProfiler {
             String values = NativeDiagnostics.drainProfile();
             if (values != null) rows.append(values);
         }
+        if (flowAuditEnabled()) FlowProfileCounters.drain(rows, frame);
+        if (mode.stages) {
+            String[] labels = {
+                "queue-before",
+                "queue-after",
+                "queue-drained",
+                "packets",
+                "chunks-enabled",
+                "section-notifications",
+                "propagation-nodes"
+            };
+            long[] counts = {
+                timings.lightQueueBefore,
+                timings.lightQueueAfter,
+                timings.lightQueueDrained,
+                timings.lightPackets,
+                timings.lightChunks,
+                timings.lightNotifies,
+                timings.lightPropagationNodes
+            };
+            for (int i = 0; i < labels.length; i++)
+                rows.append(frame)
+                        .append(",5,java.light.")
+                        .append(labels[i])
+                        .append(',')
+                        .append(counts[i])
+                        .append(",0\n");
+        }
         if (mode == ProfileMode.TIMED)
             rows.append(frame)
                     .append(",5,java.pbr.generated,")
@@ -391,6 +506,53 @@ public final class FrameProfiler {
                     .append(",5,java.optional-source.class-lookups,")
                     .append(timings.optionalSourceLookups)
                     .append(",0\n");
+        if (mode == ProfileMode.TIMED) {
+            rows.append(frame)
+                    .append(",5,java.block-entity.visits,")
+                    .append(timings.blockEntityVisits)
+                    .append(",0\n");
+            if (timings.blockEntityRest != null) {
+                String[] rest = {
+                    "sections",
+                    "resting-sections",
+                    "resting-instances",
+                    "skipped-members",
+                    "polls-passed-total",
+                    "polls-failed-total",
+                    "event-wakes-total",
+                    "retains-total",
+                    "releases-total"
+                };
+                for (int i = 0; i < rest.length; i++)
+                    rows.append(frame)
+                            .append(",5,java.block-entity.rest.")
+                            .append(rest[i])
+                            .append(',')
+                            .append(timings.blockEntityRest[i])
+                            .append(",0\n");
+            }
+            rows.append(frame)
+                    .append(",5,java.block-entity.stable,")
+                    .append(timings.blockEntityStable)
+                    .append(",0\n");
+            rows.append(frame)
+                    .append(",5,java.block-entity.capture,")
+                    .append(timings.blockEntityCapture)
+                    .append(",0\n");
+            rows.append(frame)
+                    .append(",5,java.entity.visits,")
+                    .append(timings.entities)
+                    .append(",0\n");
+            int unchanged = 0;
+            for (boolean matches : timings.persistentEntityMatches.values())
+                if (matches) unchanged++;
+            rows.append(frame)
+                    .append(",5,java.entity.persistent-matches,")
+                    .append(unchanged)
+                    .append(',')
+                    .append(timings.persistentEntityMatches.size())
+                    .append('\n');
+        }
         var mc = Minecraft.getInstance();
         long rates = failed ? 0 : RendererProxy.presentationRates();
         String frameRow =

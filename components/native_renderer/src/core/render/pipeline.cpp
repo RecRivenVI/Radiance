@@ -2,6 +2,18 @@
 #include "core/failure_state.hpp"
 #include "core/render/scene_scope.hpp"
 #include "core/render/pipeline.hpp"
+#include "core/diagnostics/scene_replay.hpp"
+#ifdef MCVR_BUILD_SCENE_REPLAY
+#    include <nlohmann/json.hpp>
+std::string WorldPipelineBlueprint::replayDescription() const {
+    return nlohmann::json{{"modules", moduleNames_},
+                          {"inputs", modulesInputIndices_},
+                          {"outputs", modulesOutputIndices_},
+                          {"formats", imageFormats_},
+                          {"attributes", attributeKVs_}}
+        .dump();
+}
+#endif
 
 #include "core/render/render_framework.hpp"
 #include "core/render/renderer.hpp"
@@ -18,6 +30,7 @@
 #include "core/render/modules/world/tone_mapping/tone_mapping_module.hpp"
 #include "core/render/modules/world/xess_upscaler/xess_sr_module.hpp"
 
+#include <algorithm>
 #include <set>
 
 WorldPipelineBlueprint::WorldPipelineBlueprint(WorldPipelineBuildParams *params) {
@@ -102,6 +115,9 @@ void WorldPipeline::init(std::shared_ptr<Framework> framework,
     viewCount_ = SceneRecordingScope::active() ? SceneRecordingScope::active()->viewCount : 1;
 
     worldModules_.resize(blueprint->moduleNames_.size());
+    // Multiple PT modules share the view UBO; keep their export mask identical.
+    const bool singleRayTracing =
+        std::count(blueprint->moduleNames_.begin(), blueprint->moduleNames_.end(), RayTracingModule::NAME) == 1;
     sharedImages_.resize(frameNum,
                          std::vector<std::shared_ptr<vk::DeviceLocalImage>>(blueprint->imageFormats_.size(), nullptr));
     contexts_.resize(frameNum);
@@ -149,6 +165,18 @@ void WorldPipeline::init(std::shared_ptr<Framework> framework,
         auto &moduleOutputIndices = blueprint->modulesOutputIndices_[i];
 
         worldModules_[i]->setAttributes(blueprint->attributeCounts_[i], blueprint->attributeKVs_[i]);
+        if (auto rayTracing = std::dynamic_pointer_cast<RayTracingModule>(worldModules_[i])) {
+            uint32_t unused = 0;
+            for (size_t output = 0; output < moduleOutputIndices.size(); ++output) {
+                const auto image = moduleOutputIndices[output];
+                bool consumed = image == 0;
+                for (const auto &inputs : blueprint->modulesInputIndices_)
+                    consumed |= std::find(inputs.begin(), inputs.end(), image) != inputs.end();
+                if (!consumed) unused |= 1u << output;
+            }
+            rayTracing->setUnusedOutputMask(singleRayTracing ? unused : 0);
+        }
+
         if (static_cast<size_t>(i) < rebuildStates.size() && rebuildStates[i] != nullptr) {
             worldModules_[i]->restoreRebuildState(rebuildStates[i]);
         }
@@ -181,7 +209,7 @@ void WorldPipeline::init(std::shared_ptr<Framework> framework,
                     inputFormats.push_back(imageFormats[moduleInputIndices[j]]);
                 }
                 bool result = worldModules_[i]->setOrCreateInputImages(inputImages, inputFormats, frameIndex);
-                if (!result) throw std::runtime_error("Input image not set properly");
+                if (!result) throw std::runtime_error(blueprint->moduleNames_[i] + ": input image contract mismatch");
                 for (int j = 0; j < moduleInputIndices.size(); j++) {
                     sharedImages_[frameIndex][moduleInputIndices[j]] = inputImages[j];
                 }
@@ -288,6 +316,7 @@ void WorldPipelineContext::render() {
         mcvr::failure::runCheckedStage([&] { worldModuleContexts[i]->render(); });
         context->auditGpu.end(worldCommandBuffer->vkCommandBuffer(), stamp);
     }
+    mcvr::replay::captureOutput(worldCommandBuffer, outputImage);
 
     worldCommandBuffer->barriersBufferImage(
         {}, {{
@@ -431,7 +460,7 @@ void Pipeline::collectWorldModules() {
                                                 return DLSSModule::create(f, p, false);
                                             });
             worldModuleInOutImageNums.emplace(DLSSModule::SR_NAME,
-                                              std::make_pair(DLSSModule::inputImageNum, DLSSModule::outputImageNum));
+                                              std::make_pair(DLSSModule::srInputImageNum, DLSSModule::outputImageNum));
         }
     } else {
         mcvr::log::error("Pipeline")
@@ -474,7 +503,7 @@ void Pipeline::init(std::shared_ptr<Framework> framework) {
     uiModule_ = UIModule::create(framework);
     contexts_ = std::make_shared<std::vector<std::shared_ptr<PipelineContext>>>();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     contexts_->resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -503,7 +532,7 @@ void Pipeline::recreate(std::shared_ptr<Framework> framework, bool resizeTargets
                                       worldPipeline_->shaderPack() :
                                       nullptr;
         std::vector<std::shared_ptr<WorldModuleRebuildState>> rebuildStates;
-        if (worldPipeline_ != nullptr) {
+        if (worldPipeline_ != nullptr && !mcvr::replay::active()) {
             rebuildStates.reserve(worldPipeline_->worldModules().size());
             for (const auto &module : worldPipeline_->worldModules()) {
                 rebuildStates.push_back(module == nullptr ? nullptr : module->captureRebuildState());
@@ -521,7 +550,7 @@ void Pipeline::recreate(std::shared_ptr<Framework> framework, bool resizeTargets
 
     contexts_ = std::make_shared<std::vector<std::shared_ptr<PipelineContext>>>();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     contexts_->resize(size);
 
     for (int i = 0; i < size; i++) {

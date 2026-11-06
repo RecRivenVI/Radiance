@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <variant>
 
+class BlueNoise;
 class Framework;
 class FrameworkContext;
 class WorldPipeline;
@@ -38,7 +39,11 @@ class RayTracingModule : public WorldModule, public SharedObject<RayTracingModul
   public:
     constexpr static std::string_view NAME = "render_pipeline.module.ray_tracing.name";
     constexpr static uint32_t inputImageNum = 0;
-    constexpr static uint32_t outputImageNum = 15;
+    constexpr static uint32_t outputImageNum = 21;
+    void setUnusedOutputMask(uint32_t mask) {
+        unusedOutputMask_ = mask;
+    }
+
 
     constexpr static std::string_view TARGET_RADIANCE = "out:radiance";
     constexpr static std::string_view TARGET_DIFFUSE_ALBEDO_METALLIC = "out:diffuse_albedo_metallic";
@@ -115,6 +120,7 @@ class RayTracingModule : public WorldModule, public SharedObject<RayTracingModul
         std::variant<std::shared_ptr<FullScreenPass>, std::shared_ptr<RayTracingPass>, std::shared_ptr<ComputePass>>;
 
   private:
+    uint32_t unusedOutputMask_ = 0;
     static std::filesystem::path builtInShaderPackPath();
     static std::shared_ptr<vk::Shader> createShader(std::shared_ptr<vk::Device> device,
                                                     const std::filesystem::path &path,
@@ -251,6 +257,9 @@ class RayTracingModule : public WorldModule, public SharedObject<RayTracingModul
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> firstHitBaseEmissionImages_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> fogImages_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> firstHitRefractionImages_;
+    std::array<std::vector<std::shared_ptr<vk::DeviceLocalImage>>, 6> reconstructionGuideImages_;
+    std::shared_ptr<BlueNoise> coverageNoise_;
+    bool coverageNoisePending_ = true;
 
     std::shared_ptr<WorldPrepare> worldPrepare_;
 
@@ -277,6 +286,7 @@ struct RayTracingModuleContext : public WorldModuleContext, SharedObject<RayTrac
     std::shared_ptr<vk::DeviceLocalImage> firstHitBaseEmissionImage;
     std::shared_ptr<vk::DeviceLocalImage> fogImage;
     std::shared_ptr<vk::DeviceLocalImage> firstHitRefractionImage;
+    std::array<std::shared_ptr<vk::DeviceLocalImage>, 6> reconstructionGuideImages;
 
     std::shared_ptr<WorldPrepareContext> worldPrepareContext;
 

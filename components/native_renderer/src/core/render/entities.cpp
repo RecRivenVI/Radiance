@@ -14,6 +14,7 @@
 #include "common/final_position.hpp"
 #include "core/diagnostics/geometry_audit.hpp"
 #include "core/render/entities.hpp"
+#include "core/render/medium_contact_mesh.hpp"
 #include "core/render/line_geometry.hpp"
 
 #include "core/logging.hpp"
@@ -390,6 +391,7 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
     for (auto &data : datas) {
         if (data->topologyPrepared) continue;
         data->topologyVertexFlags.resize(data->geometryCount);
+        std::vector<std::vector<uint32_t>> mediumSheetPairs(data->geometryCount);
         for (size_t g = 0; g < data->geometryCount; ++g) {
             if (!data->rawGeometry.empty() && data->rawGeometry[g].present()) continue;
             auto result = [&] {
@@ -401,6 +403,7 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
             preparedVertices += data->vertices[g].size();
             preparedTriangles += data->indices[g].size() / 3;
             data->topologyVertexFlags[g] = std::move(result.vertexFlags);
+            mediumSheetPairs[g] = std::move(result.sheetPairs);
             if (result.report.pairedQuads || result.report.pairedTriangles)
                 data->geometryMaterialFlags[g] |= mcvr::geometry::pairedGeometryBit;
             {
@@ -425,7 +428,7 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
                 data->geometryEyeColours, data->geometryTypes, data->geometryGroupNames, data->geometryContentNames,
                 data->authoredQuads, data->rawGeometry, data->shaderKeys, data->materialKeys,
                 data->emissiveOverlayTextureIDs, data->surfaceLayerQualification, data->topologyVertexFlags,
-                layers.primitives);
+                layers.primitives, mediumSheetPairs);
             data->geometryCount = static_cast<uint32_t>(data->vertices.size());
             data->surfaceLayoutKey = layers.topologyKey;
             data->surfaceLayers = std::move(layers.primitives);
@@ -475,6 +478,15 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
                 Renderer::instance().buffers()->queueImportantWorldUpload(data->surfaceLayerBuffer);
             }
         }
+        auto mediumMesh = mcvr::medium::makeMesh(data->vertices, data->indices, data->topologyVertexFlags,
+                                                 data->geometryMaterialFlags, mediumSheetPairs);
+        // Deferred/computed inputs have no authoritative CPU triangle snapshot yet.
+        // Keep them unknown rather than publishing an empty no-contact proof.
+        for (size_t g = 0; g < data->rawGeometry.size(); ++g)
+            if (data->rawGeometry[g].present() && (data->geometryMaterialFlags[g] & mcvr::faces::mediumBoundary) &&
+                mediumMesh)
+                mediumMesh->complete = false;
+        data->mediumMesh = std::move(mediumMesh);
         data->topologyPrepared = true;
     }
     if (mcvr::profile::enabled()) {
@@ -618,6 +630,7 @@ void EntityPostBuildDataBatch::addData(std::shared_ptr<EntityBuildData> data) {
 
 Entity::Entity(std::shared_ptr<EntityBuildData> chunkBuildData) {
     geometryMaterialFlags = chunkBuildData->geometryMaterialFlags;
+    mediumMesh = chunkBuildData->mediumMesh;
     geometryDrawColours = chunkBuildData->geometryDrawColours;
     geometryEyeColours = chunkBuildData->geometryEyeColours;
     surfaceLayoutKey = chunkBuildData->surfaceLayoutKey;
@@ -948,8 +961,44 @@ void Entities::queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
 
 std::optional<Entities::ResidentInstance> Entities::removePersistentInstance(uint64_t id) {
     auto record = persistentInstances_.remove(id);
-    if (record) persistentModelPins_.unpin(record->resource.get());
+    if (record) {
+        persistentModelPins_.unpin(record->resource.get());
+        retainedSelections_.stale(id);
+    }
     return record;
+}
+
+void Entities::retainRigidSelection(uint64_t group, std::span<const uint64_t> ids) {
+    retainedSelections_.set(group, ids);
+}
+
+void Entities::clearRetainedRigidSelections() {
+    retainedSelections_.clear();
+}
+
+size_t Entities::selectRetainedRigidInstances() {
+    if (!worldMeshFrameOpen_ || !activeWorldToken_)
+        throw std::invalid_argument("Retained instance selection outside scene frame");
+    rigidInstances_.reserve(rigidInstances_.size() + retainedSelections_.members());
+    size_t selected = 0;
+    retainedSelections_.each(persistentInstances_, [&](const ResidentInstance &record) {
+        const auto &resource = record.resource;
+        // A version from another world or resource generation is no longer accepted.
+        if (resource->world != activeWorldToken_ || resource->generation != activeResourceGeneration_) return;
+        if (resource->used != activeFrameToken_) {
+            rigidUsed_.push_back(resource);
+            resource->used = activeFrameToken_;
+        }
+        rigidInstances_.push_back(record.placement);
+        ++selected;
+    });
+    if (mcvr::profile::enabled()) {
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.retained", selected,
+                            retainedSelections_.groups());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.retained-dropped",
+                            retainedSelections_.members() - selected, 0);
+    }
+    return selected;
 }
 std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid::SubmissionRecord> records,
                                                      const char *const *groups,
@@ -961,6 +1010,44 @@ std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid
         throw std::invalid_argument("Persistent instance submission outside scene frame");
     for (size_t g = 0; g < groupCount; g++)
         if (!groups[g]) throw std::invalid_argument("Missing model group");
+    const auto checkVersion = [&](const ResidentInstance &record) {
+        const auto &resource = record.resource;
+        if (resource->world != activeWorldToken_ || resource->generation != activeResourceGeneration_)
+            throw std::invalid_argument("Stale persistent scene version");
+    };
+    const auto append = [&](const ResidentInstance &record) {
+        const auto &resource = record.resource;
+        if (resource->used != activeFrameToken_) {
+            rigidUsed_.push_back(resource);
+            resource->used = activeFrameToken_;
+        }
+        rigidInstances_.push_back(record.placement);
+    };
+    const auto report = [&](size_t refused) {
+        if (!mcvr::profile::enabled()) return;
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.changed", records.size(), records.size_bytes());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.selected", selected.size(),
+                            selected.size_bytes());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.resident", persistentInstances_.size(),
+                            persistentModelPins_.bytes());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.transient-budget", refused, 0);
+    };
+    if (records.empty() && removed.empty()) {
+        auto &placements = rigidSelectionScratch_;
+        placements.clear();
+        placements.reserve(selected.size());
+        for (uint64_t id : selected) {
+            if (!id) throw std::invalid_argument("Missing transient instance input");
+            const auto *record = persistentInstances_.find(id);
+            if (!record) throw std::invalid_argument("Selected instance has no accepted version");
+            checkVersion(*record);
+            placements.push_back(record);
+        }
+        for (const auto *record : placements) append(*record);
+        placements.clear();
+        report(0);
+        return {};
+    }
     std::unordered_set<uint64_t> live;
     for (uint64_t id : selected)
         if (id) live.insert(id);
@@ -1000,6 +1087,7 @@ std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid
             if (persistentInstances_.size() < 65536 &&
                 persistentModelPins_.pin(resource.get(), resource->residentBytes)) {
                 persistentInstances_.put(record.history, std::move(next));
+                retainedSelections_.stale(record.history);
                 temporary.erase(record.history);
                 refused.erase(record.history);
             } else {
@@ -1014,24 +1102,11 @@ std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid
         if (!id && nextTransient >= transient.size()) throw std::invalid_argument("Missing transient instance input");
         const auto &record =
             id ? (temporary.contains(id) ? temporary.at(id) : persistentInstances_.at(id)) : transient[nextTransient++];
-        auto &resource = record.resource;
-        if (resource->world != activeWorldToken_ || resource->generation != activeResourceGeneration_)
-            throw std::invalid_argument("Stale persistent scene version");
-        if (resource->used != activeFrameToken_) {
-            rigidUsed_.push_back(resource);
-            resource->used = activeFrameToken_;
-        }
-        rigidInstances_.push_back(record.placement);
+        checkVersion(record);
+        append(record);
     }
     if (nextTransient != transient.size()) throw std::invalid_argument("Unselected transient instance input");
-    if (mcvr::profile::enabled()) {
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.changed", records.size(), records.size_bytes());
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.selected", selected.size(),
-                            selected.size_bytes());
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.resident", persistentInstances_.size(),
-                            persistentModelPins_.bytes());
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.transient-budget", refused.size(), 0);
-    }
+    report(refused.size());
     return {refused.begin(), refused.end()};
 }
 
@@ -1408,6 +1483,7 @@ void Entities::invalidateWorldMeshGeneration(uint64_t resourceGeneration) {
     auto &retainer = Renderer::instance().framework()->frameResourceRetainer();
     for (const auto &[key, model] : rigidModels_) retainer.retain(model);
     persistentInstances_.clear();
+    retainedSelections_.clear();
     persistentModelPins_.clear();
     rigidModels_.clear();
     rigidGeometries_.clear();
@@ -1629,7 +1705,7 @@ void Entities::queueBuild(EntitiesBuildTask task) {
                         (small ? smallPairVertices : largePairVertices) += count;
                         pairMatches += matched;
                     }
-                    return matched;
+                    return matched || mediumBoundary;
                 }()) {
                 mcvr::profile::Scope capture(formatPhase);
                 const uint32_t count = task.vertexCounts[geometryIndex + i];
@@ -2452,6 +2528,8 @@ void Entities::releaseScene() {
     surfaceFields_.clear();
     surfaceGeneration_ = 0;
     persistentInstances_.clear();
+    retainedSelections_.clear();
+    rigidSelectionScratch_.clear();
     persistentModelPins_.clear();
     rigidModels_.clear();
     rigidGeometries_.clear();
@@ -2474,6 +2552,8 @@ void Entities::releaseScene() {
 void Entities::close() {
     cpuPreparation_.reset();
     persistentInstances_.clear();
+    retainedSelections_.clear();
+    rigidSelectionScratch_.clear();
     persistentModelPins_.clear();
     rigidModels_.clear();
     rigidGeometries_.clear();

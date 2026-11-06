@@ -200,7 +200,7 @@ class UIModule : public SharedObject<UIModule> {
     std::vector<std::shared_ptr<vk::Sampler>> overlayPostColorImageSamplers_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> spiderSmallBlurImages_;
     std::vector<std::shared_ptr<vk::Sampler>> spiderSmallBlurSamplers_;
-    std::shared_ptr<vk::RenderPass> overlayPostRenderPass_;
+    std::shared_ptr<vk::RenderPass> overlayPostRenderPass_, overlayPostUnormRenderPass_;
     std::vector<std::shared_ptr<vk::Framebuffer>> overlayPostFramebuffers_;
     std::vector<std::shared_ptr<vk::Framebuffer>> spiderLargeBlurFramebuffers_;
     std::vector<std::shared_ptr<vk::Framebuffer>> spiderSmallBlurFramebuffers_;
@@ -208,7 +208,8 @@ class UIModule : public SharedObject<UIModule> {
     std::map<OverlayPostPipelineType, GraphicsPipelineShaders> overlayPostPipelineShaders_;
     std::map<OverlayPostPipelineType, std::shared_ptr<vk::GraphicsPipeline>> overlayPostPipelines_;
     std::map<uint32_t, std::shared_ptr<EffectProgramRecord>> effectPrograms_;
-    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, std::shared_ptr<vk::GraphicsPipeline>> effectPipelines_;
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t, VkFormat>, std::shared_ptr<vk::GraphicsPipeline>>
+        effectPipelines_;
     uint32_t nextEffectProgram_ = MAX_OVERLAY_POST_PIPELINE_TYPE;
     std::shared_ptr<vk::Sampler> effectNearestSampler_;
 

@@ -53,6 +53,7 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
     final java.util.List<RigidModelCapture.Draw> rigidDraws = new java.util.ArrayList<>();
     long rigidInstance;
     public Object sourceOwner;
+    public Object blockEntityStableInputs;
     private boolean declaredLocalModels;
 
     enum Domain {

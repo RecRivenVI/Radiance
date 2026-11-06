@@ -29,6 +29,9 @@ def check_fg_inputs(archive):
         if not names:
             return {'exercised': False}
         base = names[0].rsplit('/', 1)[0]
+        contract = z.read(base+'/contract.txt').decode().splitlines()
+        if 'fgRequested=0' in contract:
+            return {'exercised': False, 'reason': 'FG-off reference capture'}
         formats = {row.split('\t')[0]: int(row.split('\t')[3]) for row in z.read(names[0]).decode().splitlines()}
         if formats != {'final-color': 37, 'hudless': 37, 'ui-alpha': 100}:
             raise RuntimeError('Readback formats changed; do not interpret R32 floats as RGBA bytes')
@@ -44,7 +47,8 @@ def check_fg_inputs(archive):
         error = max(abs(v-final[i*4+3]/255) for i, v in enumerate(values))
         rgb_error = max(max(abs(final[i*4+c]-hudless[i*4+c]) for c in range(3))
                         for i, v in enumerate(values) if v == 0)
-        if error > 3e-7 or rgb_error > 2:
+        # Coverage is R32 from the linear canvas. Final SDR alpha is rounded to RGBA8.
+        if error > 0.5 / 255 + 3e-7 or rgb_error > 2:
             raise RuntimeError('Real-frame alpha/uncovered RGB contract failed')
         return {'pixels': len(values), 'zero': sum(v == 0 for v in values),
                 'fractional': sum(0 < v < 1 for v in values), 'one': sum(v == 1 for v in values),

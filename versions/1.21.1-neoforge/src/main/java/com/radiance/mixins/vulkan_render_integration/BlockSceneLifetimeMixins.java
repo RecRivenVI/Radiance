@@ -19,9 +19,10 @@ public abstract class BlockSceneLifetimeMixins
 
     @Inject(method = "setRemoved", at = @At("HEAD"))
     private void radiance$removeSceneOwner(CallbackInfo ci) {
-        com.radiance.api.render.SourceHooks.blockEntityChanged((BlockEntity) (Object) this);
-        if (com.radiance.api.render.BlockEntityPublications.removed((BlockEntity) (Object) this))
-            return;
+        var source = (BlockEntity) (Object) this;
+        if (!(source.getLevel() instanceof net.minecraft.client.multiplayer.ClientLevel)) return;
+        com.radiance.api.render.SourceHooks.blockEntityChanged(source);
+        if (com.radiance.api.render.BlockEntityPublications.removed(source)) return;
         com.radiance.api.render.PersistentInstances.removeOwner(this);
         if (radiance$bindings != null) radiance$bindings.retire();
     }
@@ -34,5 +35,33 @@ public abstract class BlockSceneLifetimeMixins
     @Inject(method = "clearRemoved", at = @At("RETURN"))
     private void radiance$sourceResumed(CallbackInfo ci) {
         if (radiance$bindings != null) radiance$bindings.resume();
+    }
+
+    @org.spongepowered.asm.mixin.Unique
+    private void radiance$wake() {
+        if (!com.radiance.api.render.BlockEntityPublications.resting()) return;
+        var source = (BlockEntity) (Object) this;
+        var level = source.getLevel();
+        if (level != null && level.isClientSide)
+            com.radiance.api.render.BlockEntityPublications.wake(source.getBlockPos());
+    }
+
+    @Inject(method = "setBlockState", at = @At("RETURN"))
+    private void radiance$stateChanged(
+            net.minecraft.world.level.block.state.BlockState state, CallbackInfo ci) {
+        radiance$wake();
+    }
+
+    @Inject(method = "loadWithComponents", at = @At("RETURN"))
+    private void radiance$dataLoaded(
+            net.minecraft.nbt.CompoundTag tag,
+            net.minecraft.core.HolderLookup.Provider registries,
+            CallbackInfo ci) {
+        radiance$wake();
+    }
+
+    @Inject(method = "setChanged()V", at = @At("RETURN"))
+    private void radiance$contentChanged(CallbackInfo ci) {
+        radiance$wake();
     }
 }

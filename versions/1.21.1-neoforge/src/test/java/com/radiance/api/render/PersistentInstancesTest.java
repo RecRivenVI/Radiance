@@ -7,6 +7,26 @@ import org.junit.jupiter.api.*;
 
 class PersistentInstancesTest {
     @Test
+    void wordComparisonKeepsEveryContentByteAndIgnoresOnlyTransportFields() {
+        int stride = com.radiance.render.contract.RenderAbi.RIGID_RECORD_BYTES;
+        var data = ByteBuffer.allocateDirect(stride + 8).order(ByteOrder.nativeOrder());
+        for (int i = 0; i < stride; ++i) data.put(8 + i, (byte) i);
+        PersistentInstances.accepted(97, new Object(), data, 8, "base");
+        for (int i = 0; i < stride; ++i) {
+            byte original = data.get(8 + i);
+            data.put(8 + i, (byte) (original ^ 0x80));
+            boolean content = i < 16 || i >= 24 && i < 128 || i >= 132;
+            assertEquals(content, PersistentInstances.changed(97, data, 8, "base"), "byte " + i);
+            data.put(8 + i, original);
+        }
+        data.order(
+                ByteOrder.nativeOrder() == ByteOrder.LITTLE_ENDIAN
+                        ? ByteOrder.BIG_ENDIAN
+                        : ByteOrder.LITTLE_ENDIAN);
+        assertFalse(PersistentInstances.changed(97, data, 8, "base"));
+    }
+
+    @Test
     void acceptedSnapshotDoesNotAliasReusedStagingAndOwnerReplacementRetiresIndependently() {
         var data =
                 ByteBuffer.allocateDirect(com.radiance.render.contract.RenderAbi.RIGID_RECORD_BYTES)
@@ -34,6 +54,22 @@ class PersistentInstancesTest {
     void clear() {
         PersistentInstances.invalidate();
         RenderRoutes.stop();
+    }
+
+    @Test
+    void retiringAnAtlasDrawLeavesTheSameOwnersBodyAccepted() {
+        Object owner = new Object();
+        var packet = ByteBuffer.allocate(com.radiance.render.contract.RenderAbi.RIGID_RECORD_BYTES);
+        long body = 61, glyph = 62;
+        PersistentInstances.accepted(body, owner, packet, 0, "board");
+        PersistentInstances.accepted(glyph, owner, packet, 0, "text");
+
+        PersistentInstances.remove(glyph, new Object());
+        assertTrue(PersistentInstances.known(glyph));
+        PersistentInstances.remove(glyph, owner);
+        assertArrayEquals(new long[] {glyph}, PersistentInstances.removals());
+        assertFalse(PersistentInstances.known(glyph));
+        assertFalse(PersistentInstances.changed(body, packet, 0, "board"));
     }
 
     @Test

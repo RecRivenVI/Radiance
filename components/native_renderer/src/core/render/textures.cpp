@@ -227,7 +227,7 @@ uint64_t Textures::worldMaterialRevision() const {
     std::lock_guard lock(mtx_);
     return worldMaterialRevision_;
 }
-uint64_t Textures::copyWorldMaterials(vk::Data::TextureMapping &mapping) const {
+uint64_t Textures::copyWorldMaterials(vk::Data::TextureMapping &mapping, bool includeEmitters) const {
     std::lock_guard lock(mtx_);
     std::memset(mapping.programs, 0, sizeof(mapping.programs));
     mapping.programInfo = {};
@@ -254,7 +254,8 @@ uint64_t Textures::copyWorldMaterials(vk::Data::TextureMapping &mapping) const {
             if (images[slot] >= 0 && isFramebufferTexture(static_cast<uint32_t>(images[slot])))
                 mapping.programs[id].settings.w |= bit;
         }
-        if ((material.settings.w & 2u) && material.origin.w > 0) mapping.programEmitters[mapping.programInfo.x++] = id;
+        if (includeEmitters && (material.settings.w & 2u) && material.origin.w > 0)
+            mapping.programEmitters[mapping.programInfo.x++] = id;
     }
     return worldMaterialRevision_;
 }
@@ -580,10 +581,10 @@ void Textures::queueUpload(uint8_t *srcPointer,
 
     auto cacheIter = caches_.find(dstId);
     if (cacheIter == caches_.end()) {
-        cacheIter = caches_
-                        .emplace(std::make_pair(
-                            dstId, ImageBufferCache::create(vma, device, framework->swapchain()->imageCount())))
-                        .first;
+        cacheIter =
+            caches_
+                .emplace(std::make_pair(dstId, ImageBufferCache::create(vma, device, framework->mainFrameSlotCount())))
+                .first;
     }
 
     auto cache = cacheIter->second;

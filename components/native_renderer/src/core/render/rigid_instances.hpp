@@ -4,6 +4,7 @@
 #include "core/render/draw_colour.hpp"
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -144,8 +145,8 @@ struct HistoryEntry {
     uint32_t vertexCount = 0, indexCount = 0;
 };
 
-// Sorted once per frame instead of allocating one tree node per instance. Duplicate identities
-// resolve to the last submission, matching the previous map assignment semantics.
+// An immutable frame indexes the contiguous placements without sorting or moving them.
+// Duplicate identities resolve to the last submission.
 class HistoryFrame {
   public:
     void reserve(size_t count) {
@@ -153,33 +154,40 @@ class HistoryFrame {
     }
     void add(const HistoryEntry &entry) {
         entries_.push_back(entry);
-        sorted_ = false;
+        indexed_ = false;
     }
     void finish() {
-        std::stable_sort(entries_.begin(), entries_.end(),
-                         [](const HistoryEntry &a, const HistoryEntry &b) { return a.history < b.history; });
-        // Keep the last entry of every identity.
-        std::vector<HistoryEntry> unique;
-        unique.reserve(entries_.size());
-        for (size_t i = 0; i < entries_.size(); ++i)
-            if (i + 1 == entries_.size() || entries_[i + 1].history != entries_[i].history)
-                unique.push_back(entries_[i]);
-        entries_.swap(unique);
-        sorted_ = true;
+        slots_.assign(std::bit_ceil(entries_.size() * 2), 0);
+        size_ = 0;
+        for (size_t i = 0; i < entries_.size(); ++i) {
+            auto &index = slots_[slot(entries_[i].history)];
+            size_ += index == 0;
+            index = i + 1;
+        }
+        indexed_ = true;
     }
     const HistoryEntry *find(uint64_t history) const {
-        if (!sorted_) throw std::logic_error("Rigid history frame queried before finish");
-        auto it = std::lower_bound(entries_.begin(), entries_.end(), history,
-                                   [](const HistoryEntry &entry, uint64_t key) { return entry.history < key; });
-        return it != entries_.end() && it->history == history ? &*it : nullptr;
+        if (!indexed_) throw std::logic_error("Rigid history frame queried before finish");
+        if (entries_.empty()) return nullptr;
+        const size_t index = slots_[slot(history)];
+        return index ? &entries_[index - 1] : nullptr;
     }
     size_t size() const {
-        return entries_.size();
+        return size_;
     }
 
   private:
+    size_t slot(uint64_t history) const {
+        const uint64_t mixed = (history ^ (history >> 33u)) * 0xff51afd7ed558ccdULL;
+        const size_t mask = slots_.size() - 1;
+        size_t pos = (mixed ^ (mixed >> 33u)) & mask;
+        while (slots_[pos] && entries_[slots_[pos] - 1].history != history) pos = (pos + 1) & mask;
+        return pos;
+    }
     std::vector<HistoryEntry> entries_;
-    bool sorted_ = true;
+    std::vector<size_t> slots_;
+    size_t size_ = 0;
+    bool indexed_ = true;
 };
 
 // Motion history exactly as the per-entity path assigns it: a previous transform whenever the

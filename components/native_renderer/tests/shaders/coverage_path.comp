@@ -2,6 +2,8 @@
 #extension GL_GOOGLE_include_directive : require
 #define RADIANCE_COVERAGE_MODE 1
 #include "util/ray_payloads.glsl"
+#include "common/render_abi.hpp"
+#include "util/ray_medium.glsl"
 #include "util/coverage_blend.glsl"
 #include "util/ray_origin.glsl"
 #include "util/ui_primary_visibility.glsl"
@@ -34,7 +36,7 @@ void testTraceLayer(vec3 origin, vec3 incident) {
     mainRay.hitT = id == 1u ? INF_DISTANCE : origin.z + float(layer);
     mainRay.coneWidth += mainRay.hitT * .01;
 }
-void completeCoverageLighting(inout MainRay ray, inout MediumHistory mediumHistory, int isHand) {
+float completeCoverageLighting(inout MainRay ray, inout MediumHistory mediumHistory, int isHand) {
     // The production continuation overwrites the global payload, including purpose.
     // A straight sibling must retain its saved state rather than this result.
     ray.origin = vec3(999.0);
@@ -42,13 +44,14 @@ void completeCoverageLighting(inout MainRay ray, inout MediumHistory mediumHisto
     ray.stateBits = 0u;
     ray.pad0 = 12345u;
     mainRay = ray;
+    return 1.0;
 }
 #define COVERAGE_TRACE_LAYER(origin, incident) testTraceLayer(origin, incident)
 #include "util/coverage_raygen.glsl"
 void main() {
     id = gl_GlobalInvocationID.x;
     MainRay source;
-    MediumHistory mediumHistory;
+    MediumHistory mediumHistory = MediumHistory(0u, 0u);
     source.origin = vec3(0, 0, 1);
     source.direction = vec3(0, 0, -1);
     source.radiance = vec3(999.0);
@@ -57,8 +60,10 @@ void main() {
     source.coneSpread = .01;
     source.seed = 17u;
     source.stateBits = id == 8u ? 0u : 1u;
+    source.mediumState = 0u;
     source.pad0 = 77u;
-    vec3 color = traceCoverageBackground(source, mediumHistory, vec3(0, 0, 1), vec3(0, 0, -1), 0);
+    float backgroundDistance;
+    vec3 color = traceCoverageBackground(source, mediumHistory, vec3(0, 0, 1), vec3(0, 0, -1), 0, backgroundDistance);
     result.rows[id * 8u] = vec4(color, 0);
     result.rows[id * 8u + 1u] = vec4(float(visits), float(bad), float(tail), float(source.pad0));
 }

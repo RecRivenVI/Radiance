@@ -87,10 +87,14 @@ Aftermath 的私有输入 `nsight_aftermath_sdk` 在 [inputs.toml](../../inputs.
 
 - 选择正式发布；NRD 的预发布不进入常规升级。
 - stb 没有正式标签或 Release；不把默认分支提交冒称最新正式版，保留已验证的固定提交。
-- FidelityFX 使用现有 Vulkan 分支。官方新版 SDK 的 DirectX 后端不能直接替换此依赖；升级需要先有等价 Vulkan 接口，不能通过停用 FSR 或移除既有功能满足版本数字。
+- Windows 使用官方 FidelityFX SDK 的 Vulkan 加载器和超分辨率提供程序；运行时查询实际设备可用版本，不将 SDK 版本等同于 FSR 算法版本。Linux 保留固定提交的便携 Vulkan 后端，官方 Windows 二进制不能替代它。具体构建选择见 `components/native_renderer/cmake/FidelityFX.cmake`。
 - GPU SDK 更新不授予运行库再分发权。公开二进制许可门禁继续有效。
 
-效果程序接口反射复用上述 FidelityFX 固定子模块中的 SPIRV-Reflect 源码，单独构建其 C 库，不新增下载或追踪分支。Apache-2.0 许可原文为 `licenses/spirv_reflect-apache_2.0.txt`，随既有许可收集机制分发；反射限制见[平台接口](api-render_platform.md)。
+效果程序接口反射使用 Khronos SPIRV-Reflect 的固定提交，构建其 C 库；确切身份定义在 `components/native_renderer/src/core/CMakeLists.txt`。Apache-2.0 许可原文为 `licenses/spirv_reflect-apache_2.0.txt`，随既有许可收集机制分发；反射限制见[平台接口](api-render_platform.md)。
+
+SVGF 的 Sobol／蓝噪声采样表独立取自官方固定版本并验证内容哈希，不随超分辨率提供程序变化；定义仍在同一 CMake 文件中，MIT 许可原文为 `licenses/fidelityfx_sssr-mit.txt`。
+
+降噪与重建的当前升级、运行验证和视觉验收状态见[降噪、超分辨率与补帧完善计划](../project/plan-reconstruction_quality.md)。NRD 仅嵌入本项目使用的 SPIR-V 着色器，编码与主程序匹配；未启用需要额外 Vulkan 设备特性的 quad intrinsics。
 
 ## 构建解析
 

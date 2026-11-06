@@ -2,6 +2,7 @@
 
 #include "core/logging.hpp"
 #include "core/failure_state.hpp"
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/vulkan/vma.hpp"
 
 #include "core/vulkan/device.hpp"
@@ -85,7 +86,11 @@ VmaPool vk::VMA::smallResourcePool(uint32_t memoryType, const VkMemoryRequiremen
     const auto flags = properties->memoryTypes[memoryType].propertyFlags;
     if (!(flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) || (flags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT))
         return VK_NULL_HANDLE;
-    std::lock_guard lock(poolMutex_);
+    std::unique_lock lock(poolMutex_, std::defer_lock);
+    {
+        mcvr::profile::AllocationScope wait("allocation.pool.lock-wait");
+        lock.lock();
+    }
     if (auto found = smallPools_.find(memoryType); found != smallPools_.end()) return found->second;
     VmaPoolCreateInfo info{};
     info.memoryTypeIndex = memoryType;
@@ -125,6 +130,7 @@ VmaPool vk::VMA::smallResourcePool(const VkImageCreateInfo &image, const VmaAllo
 VmaPool vk::VMA::smallResourcePool(const VkBufferCreateInfo &buffer,
                                    const VmaAllocationCreateInfo &allocation,
                                    VkDeviceSize alignment) {
+    mcvr::profile::AllocationScope total("allocation.pool.select", buffer.size);
     // Preserve the large-block AS layout for build/traversal locality. These
     // allocations are not the small persistent resources pinning world blocks.
     if (!poolEligible(allocation) || buffer.size > smallResourceLimit || alignment > smallResourceLimit ||
@@ -134,9 +140,16 @@ VmaPool vk::VMA::smallResourcePool(const VkBufferCreateInfo &buffer,
     VkMemoryRequirements2 requirements{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &dedicated};
     VkDeviceBufferMemoryRequirements info{VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS};
     info.pCreateInfo = &buffer;
-    vkGetDeviceBufferMemoryRequirements(device_, &info, &requirements);
+    {
+        mcvr::profile::AllocationScope query("allocation.pool.requirements", buffer.size);
+        vkGetDeviceBufferMemoryRequirements(device_, &info, &requirements);
+    }
     uint32_t memoryType;
-    const auto result = vmaFindMemoryTypeIndexForBufferInfo(allocator_, &buffer, &allocation, &memoryType);
+    VkResult result;
+    {
+        mcvr::profile::AllocationScope query("allocation.pool.memory-type", buffer.size);
+        result = vmaFindMemoryTypeIndexForBufferInfo(allocator_, &buffer, &allocation, &memoryType);
+    }
     if (result != VK_SUCCESS) mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "small buffer memory type");
     return smallResourcePool(memoryType, requirements);
 }

@@ -50,7 +50,7 @@ void UIModule::init(std::shared_ptr<Framework> framework) {
     initOverlayPostPipelineTypes();
     initOverlayPostPipelines();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     contexts_.resize(size);
     for (int i = 0; i < size; i++) {
         contexts_[i] = UIModuleContext::create(framework->contexts()[i], shared_from_this());
@@ -128,7 +128,7 @@ void UIModule::resize(std::shared_ptr<Framework> framework) {
     initSpiderBlurFrameBuffers();
     initOverlayPostPipelines();
 
-    const uint32_t size = framework->swapchain()->imageCount();
+    const uint32_t size = framework->mainFrameSlotCount();
     contexts_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
         contexts_[i] = UIModuleContext::create(framework->contexts()[i], shared_from_this());
@@ -549,7 +549,7 @@ void UIModule::refreshOverlayDescriptorTable(uint32_t frameIndex) {
 void UIModule::initOverlayDescriptorTablesAndFrameSamplers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayDescriptorTables_.resize(size);
     overlayDescriptorTableDirty_.assign(size, true);
     overlayDrawColorImageSamplers_.resize(size);
@@ -582,7 +582,7 @@ void UIModule::initOverlayDescriptorTablesAndFrameSamplers() {
 void UIModule::initDiagramDrawImages() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     diagramDrawColorImages_.resize(size);
     diagramDrawDepthImages_.resize(size);
 
@@ -606,7 +606,7 @@ void UIModule::initDiagramDrawImages() {
 void UIModule::initOverlayDrawImages() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayDrawColorImages_.resize(size);
     overlayDrawDepthStencilImages_.resize(size);
     overlayDrawDepthStencilViewIndices_.assign(size, 0);
@@ -659,7 +659,7 @@ void UIModule::initOverlayDrawImages() {
 
 void UIModule::initMainAliasImages() {
     auto framework = framework_.lock();
-    const uint32_t size = framework->swapchain()->imageCount();
+    const uint32_t size = framework->mainFrameSlotCount();
     const VkExtent2D extent = framework->swapchain()->vkExtent();
     const VkFormat depthFormat = overlayDrawDepthStencilImages_.front()->vkFormat();
     mainColorAliasImages_.resize(size);
@@ -677,7 +677,7 @@ void UIModule::initMainAliasImages() {
 void UIModule::initMainDepthPass() {
     auto framework = framework_.lock();
     constexpr uint32_t pushConstantSize = 32;
-    const uint32_t size = framework->swapchain()->imageCount();
+    const uint32_t size = framework->mainFrameSlotCount();
     mainDepthDescriptorTables_.resize(size);
     mainDepthSourceSamplers_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
@@ -805,7 +805,7 @@ void UIModule::initOverlayDrawRenderPass() {
 void UIModule::initOverlayDrawFrameBuffers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayDrawFramebuffers_.resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -868,7 +868,7 @@ void UIModule::initDiagramDrawRenderPass() {
 void UIModule::initDiagramDrawFrameBuffers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     diagramDrawFramebuffers_.resize(size);
 
     for (uint32_t i = 0; i < size; ++i) {
@@ -884,7 +884,7 @@ void UIModule::initDiagramDrawFrameBuffers() {
 void UIModule::initOverlayPostImages() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayPostColorImages_.resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -900,7 +900,7 @@ void UIModule::initOverlayPostImages() {
 
 void UIModule::initSpiderBlurImages() {
     auto framework = framework_.lock();
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     spiderSmallBlurImages_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
         spiderSmallBlurImages_[i] = vk::DeviceLocalImage::create(
@@ -915,39 +915,44 @@ void UIModule::initSpiderBlurImages() {
 void UIModule::initOverlayPostRenderPass() {
     auto framework = framework_.lock();
 
-    overlayPostRenderPass_ = vk::RenderPassBuilder{}
-                                 .beginAttachmentDescription()
-                                 .defineAttachmentDescription({
-                                     // color
-                                     .format = overlayPostColorImages_[0]->vkFormat(),
-                                     .samples = VK_SAMPLE_COUNT_1_BIT,
-                                     .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                     .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                     .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                     .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                     .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                 })
-                                 .endAttachmentDescription()
-                                 .beginAttachmentReference()
-                                 .defineAttachmentReference({
-                                     .attachment = 0,
-                                     .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                 })
-                                 .endAttachmentReference()
-                                 .beginSubpassDescription()
-                                 .defineSubpassDescription({
-                                     .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     .colorAttachmentIndices = {0},
-                                 })
-                                 .endSubpassDescription()
-                                 .build(framework->device());
+    auto makePass = [&](VkFormat format) {
+        return vk::RenderPassBuilder{}
+            .beginAttachmentDescription()
+            .defineAttachmentDescription({
+                // color
+                .format = format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            })
+            .endAttachmentDescription()
+            .beginAttachmentReference()
+            .defineAttachmentReference({
+                .attachment = 0,
+                .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            })
+            .endAttachmentReference()
+            .beginSubpassDescription()
+            .defineSubpassDescription({
+                .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                .colorAttachmentIndices = {0},
+            })
+            .endSubpassDescription()
+            .build(framework->device());
+    };
+    overlayPostRenderPass_ = makePass(overlayPostColorImages_.front()->vkFormat());
+    // The spider effect can reuse the eight-bit diagram target.
+    overlayPostUnormRenderPass_ = makePass(diagramDrawColorImages_.front()->vkFormat());
 }
 
 void UIModule::initOverlayPostFrameBuffers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayPostFramebuffers_.resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -961,7 +966,7 @@ void UIModule::initOverlayPostFrameBuffers() {
 
 void UIModule::initSpiderBlurFrameBuffers() {
     auto framework = framework_.lock();
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     spiderLargeBlurFramebuffers_.resize(size);
     spiderSmallBlurFramebuffers_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
@@ -969,7 +974,7 @@ void UIModule::initSpiderBlurFrameBuffers() {
                                               .beginAttachment()
                                               .defineAttachment(diagramDrawColorImages_[i])
                                               .endAttachment()
-                                              .build(framework->device(), overlayPostRenderPass_);
+                                              .build(framework->device(), overlayPostUnormRenderPass_);
         spiderSmallBlurFramebuffers_[i] = vk::FramebufferBuilder{}
                                               .beginAttachment()
                                               .defineAttachment(spiderSmallBlurImages_[i])
@@ -1308,11 +1313,10 @@ void UIModuleContext::copyPersistentStateFrom(const UIModuleContext &other) {
 
     // OpenGL keeps custom viewport/scissor state across a resize, but the default full-window
     // values follow the drawable extent. Distinguish those cases using the old target size.
-    auto context = frameworkContext.lock();
     const uint32_t oldWidth = other.overlayDrawColorImage->width();
     const uint32_t oldHeight = other.overlayDrawColorImage->height();
-    const uint32_t newWidth = context->swapchainImage->width();
-    const uint32_t newHeight = context->swapchainImage->height();
+    const uint32_t newWidth = overlayDrawColorImage->width();
+    const uint32_t newHeight = overlayDrawColorImage->height();
     if (overlayViewport.x == 0.0f && overlayViewport.y == 0.0f &&
         overlayViewport.width == static_cast<float>(oldWidth) &&
         overlayViewport.height == static_cast<float>(oldHeight)) {

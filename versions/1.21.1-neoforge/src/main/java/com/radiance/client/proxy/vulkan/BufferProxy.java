@@ -469,8 +469,8 @@ public class BufferProxy {
             int sunTextureID,
             int moonTextureID) {
         try (MemoryStack stack = stackPush()) {
-            int size = 96;
-            ByteBuffer bb = stack.malloc(size);
+            int size = 112;
+            ByteBuffer bb = stack.calloc(size);
             long addr = memAddress(bb);
             int baseAddr = 0;
 
@@ -503,7 +503,13 @@ public class BufferProxy {
 
             bb.putFloat(baseAddr, thunderGradient);
             baseAddr += Integer.BYTES;
-            bb.putInt(baseAddr, 0); // Reserved; view-status fog is not part of PT.
+            var minecraft = net.minecraft.client.Minecraft.getInstance();
+            var camera = minecraft.gameRenderer.getMainCamera();
+            boolean cameraInTransmission =
+                    submersionType != 1
+                            && com.radiance.adapter.vanilla.CameraMediumHint.needed(
+                                    minecraft, camera.getPosition());
+            bb.putInt(baseAddr, cameraInTransmission ? 1 : 0);
             baseAddr += Integer.BYTES;
             bb.putInt(baseAddr, submersionType);
             baseAddr += Integer.BYTES;
@@ -518,6 +524,30 @@ public class BufferProxy {
             bb.putFloat(baseAddr, starBrightness);
             com.radiance.adapter.vanilla.CelestialTextureProfiles.write(bb, 80, moonPhase);
 
+            bb.putFloat(104, -1.0F);
+            if (submersionType == 1 && minecraft.level != null) {
+                var position = net.minecraft.core.BlockPos.containing(camera.getPosition());
+                var fluid = minecraft.level.getFluidState(position);
+                if (!fluid.isEmpty()) {
+                    var sprites =
+                            net.neoforged.neoforge.client.textures.FluidSpriteCache.getFluidSprites(
+                                    minecraft.level, position, fluid);
+                    var sprite = sprites[0];
+                    bb.putFloat(96, (sprite.getU0() + sprite.getU1()) * 0.5F);
+                    bb.putFloat(100, (sprite.getV0() + sprite.getV1()) * 0.5F);
+                    bb.putFloat(
+                            104,
+                            minecraft
+                                    .getTextureManager()
+                                    .getTexture(sprite.atlasLocation())
+                                    .getId());
+                    int colour =
+                            net.neoforged.neoforge.client.extensions.common
+                                    .IClientFluidTypeExtensions.of(fluid)
+                                    .getTintColor(fluid, minecraft.level, position);
+                    bb.putFloat(108, (colour >>> 24) / 255.0F);
+                }
+            }
             updateSkyUniform(addr);
         }
     }

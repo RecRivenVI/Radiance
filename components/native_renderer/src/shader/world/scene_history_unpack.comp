@@ -1,0 +1,40 @@
+#version 460
+
+layout(local_size_x = 64) in;
+layout(set = 0, binding = 0, std430) readonly buffer Input { uvec4 words[]; } inputData;
+layout(set = 0, binding = 1, std430) writeonly buffer History { uvec4 words[]; } history;
+layout(set = 0, binding = 2, std430) readonly buffer Instances { uvec4 words[]; } instances;
+layout(push_constant) uniform Range {
+    uint first;
+    uint count;
+    uint staticFirst;
+    uint staticCount;
+} range;
+
+void main() {
+    uint i = range.first + gl_GlobalInvocationID.x;
+    if (i >= range.count) return;
+    uint outputOffset = i * 4u;
+    uint staticEnd = range.staticFirst + range.staticCount;
+    bool reuseInstance = i >= range.staticFirst && i < staticEnd;
+    uvec4 record;
+    if (reuseInstance) {
+        record = uvec4(instances.words[outputOffset].w,
+                       instances.words[outputOffset + 1u].w,
+                       instances.words[outputOffset + 2u].w,
+                       0xffffffffu);
+    } else {
+        record = inputData.words[i < range.staticFirst ? i : i - range.staticCount];
+    }
+    if (record.w == 0xffffffffu) {
+        uint one = floatBitsToUint(1.0);
+        history.words[outputOffset] = uvec4(one, 0u, 0u, 0u);
+        history.words[outputOffset + 1u] = uvec4(0u, one, 0u, 0u);
+        history.words[outputOffset + 2u] = uvec4(0u, 0u, one, 0u);
+        history.words[outputOffset + 3u] = uvec4(record.xyz, one);
+    } else {
+        for (uint column = 0u; column < 3u; ++column)
+            history.words[outputOffset + column] = inputData.words[record.w + column];
+        history.words[outputOffset + 3u] = uvec4(record.xyz, inputData.words[record.w + 3u].w);
+    }
+}

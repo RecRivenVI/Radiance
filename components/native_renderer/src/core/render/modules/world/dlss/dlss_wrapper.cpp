@@ -43,6 +43,7 @@
 
 #include "dlss_wrapper.hpp"
 #include "core/render/renderer.hpp"
+#include "core/render/view_frame.hpp"
 #include "core/vulkan/all_core_vulkan.hpp"
 #include <iostream>
 #include <cstring>
@@ -252,6 +253,7 @@ NVSDK_NGX_Result DlssRR::denoise(std::shared_ptr<vk::CommandBuffer> cmd,
                                  glm::vec2 jitter,
                                  const glm::mat4 &view,
                                  const glm::mat4 &projection,
+                                 const glm::dvec3 &cameraPosition,
                                  bool reset) {
     auto &sl = runtime();
     auto token = sl.frame();
@@ -262,17 +264,25 @@ NVSDK_NGX_Result DlssRR::denoise(std::shared_ptr<vk::CommandBuffer> cmd,
     // A cached Ponder scene may be drawn twice within one real frame. Its first
     // reconstruction already produced the output; never advance that history twice.
     if (m_lastFrame == uint32_t(*token)) return result(true);
+    const bool restart = reset || m_resetPending ||
+                         glm::length(cameraPosition - m_reconstructionOrigin) > mcvr::view::reconstructionOriginRange;
+    if (restart) m_reconstructionOrigin = cameraPosition;
+    const auto stableView = mcvr::view::reconstructionView(view, cameraPosition, m_reconstructionOrigin);
+    if (restart) {
+        m_previousView = stableView;
+        m_previousProjection = projection;
+    }
     const sl::ViewportHandle viewport(m_viewport);
     if (m_rayReconstruction) {
-        m_rrOptions.worldToCameraView = mcvr::slMatrix(view);
-        m_rrOptions.cameraViewToWorld = mcvr::slMatrix(glm::inverse(view));
+        m_rrOptions.worldToCameraView = mcvr::slMatrix(stableView);
+        m_rrOptions.cameraViewToWorld = mcvr::slMatrix(glm::inverse(stableView));
         const auto setResult = sl.slDLSSDSetOptions(viewport, m_rrOptions);
         if (setResult != sl::Result::eOk) return recordFailure("RR camera options", setResult, uint32_t(*token));
     }
-    const auto previous = m_previousProjection * m_previousView * glm::inverse(view) * glm::inverse(projection);
-    auto constants = mcvr::slConstants(size, jitter, view, projection, previous, reset || m_resetPending);
+    const auto previous = m_previousProjection * m_previousView * glm::inverse(stableView) * glm::inverse(projection);
+    auto constants = mcvr::slConstants(size, jitter, stableView, projection, previous, restart);
     if (mcvr::profile::enabled()) {
-        mcvr::profile::emit(mcvr::profile::frame, 5, "dlss.history-reset", reset || m_resetPending, 0);
+        mcvr::profile::emit(mcvr::profile::frame, 5, "dlss.history-reset", restart, 0);
         mcvr::profile::emit(mcvr::profile::frame, 5, "dlss.viewport", m_viewport, 0);
     }
     const auto constantsResult = sl.slSetConstants(constants, *token, viewport);
@@ -285,7 +295,8 @@ NVSDK_NGX_Result DlssRR::denoise(std::shared_ptr<vk::CommandBuffer> cmd,
                                  sl::kBufferTypeNormalRoughness,
                                  sl::kBufferTypeMotionVectors,
                                  m_rayReconstruction ? sl::kBufferTypeLinearDepth : sl::kBufferTypeDepth,
-                                 sl::kBufferTypeSpecularHitDistance};
+                                 sl::kBufferTypeSpecularHitDistance,
+                                 sl::kBufferTypeColorBeforeTransparency};
     std::array<sl::Resource, RESOURCE_NUM> resources{};
     std::vector<sl::ResourceTag> tags;
     tags.reserve(RESOURCE_NUM);
@@ -324,7 +335,7 @@ NVSDK_NGX_Result DlssRR::denoise(std::shared_ptr<vk::CommandBuffer> cmd,
     m_lastFailureCode = sl::Result::eOk;
     m_resetPending = false;
     m_lastFrame = uint32_t(*token);
-    m_previousView = view;
+    m_previousView = stableView;
     m_previousProjection = projection;
     return result(true);
 }

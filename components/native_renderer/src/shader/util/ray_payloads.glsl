@@ -3,15 +3,16 @@
 
 #include "common/mapping.hpp"
 
-// A path cannot enter more media than it has surface bounces. Size the stack
-// with the algorithm instead of imposing a smaller, silent nesting limit.
-#if defined(VPT_NUM_RAY_BOUNCES)
-#define RADIANCE_MEDIUM_CAPACITY (VPT_NUM_RAY_BOUNCES + 1)
-#elif defined(ADV_NUM_RAY_BOUNCES)
-#define RADIANCE_MEDIUM_CAPACITY (ADV_NUM_RAY_BOUNCES + 1)
-#else
-#define RADIANCE_MEDIUM_CAPACITY 8
+#ifndef RADIANCE_REFLECTION_LIMIT
+#define RADIANCE_REFLECTION_LIMIT 4
 #endif
+#ifndef RADIANCE_REFRACTION_LIMIT
+#define RADIANCE_REFRACTION_LIMIT 8
+#endif
+
+#define RADIANCE_MEDIUM_CAPACITY (RADIANCE_REFRACTION_LIMIT + 1)
+#define RADIANCE_PATH_EVENTS (RADIANCE_REFLECTION_LIMIT + 2 * RADIANCE_REFRACTION_LIMIT + RADIANCE_MEDIUM_CAPACITY)
+#define RADIANCE_FREE_CONTINUATIONS 256
 
 struct MainRay {
     T_VEC3 origin;
@@ -32,6 +33,8 @@ struct MainRay {
     T_VEC3 normal;
     T_UINT stateBits;
 
+    T_VEC3 geometricNormal;
+
     T_VEC3 directLightRadiance;
     T_UINT pad0;
 
@@ -40,17 +43,17 @@ struct MainRay {
     T_VEC4 boundaryMedium;
     T_VEC3 surfaceThroughput;
     T_FLOAT boundaryEta;
-    T_UINT mediumDepth;
+    T_UINT mediumState;
     T_UINT boundaryFlags;
     T_FLOAT previousBsdfPdf;
     T_VEC3 lastScatterOrigin;
     T_FLOAT scatterRoughness;
 };
 
-// Private path history stays in the ray generator. Hit shaders exchange only the
-// current/enclosing medium and selected boundary event through MainRay.
+// The current medium lives in MainRay. Ancestors are private to the invocation.
 struct MediumHistory {
-    T_VEC4 layers[RADIANCE_MEDIUM_CAPACITY];
+    T_UINT bank;
+    T_UINT topRepetitions;
 };
 
 struct MaterialInfo {

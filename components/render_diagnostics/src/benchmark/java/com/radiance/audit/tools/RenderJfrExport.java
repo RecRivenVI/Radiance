@@ -18,10 +18,25 @@ public final class RenderJfrExport {
                     "jdk.NativeMethodSample",
                     "jdk.JavaMonitorEnter",
                     "jdk.ThreadPark",
-                    "jdk.GCPhasePause");
+                    "jdk.GCPhasePause",
+                    "radiance.RenderFrame",
+                    "jdk.ClassLoad",
+                    "jdk.ClassDefine",
+                    "jdk.Compilation",
+                    "jdk.SafepointBegin",
+                    "jdk.SafepointStateSynchronization",
+                    "jdk.ExecuteVMOperation");
+    private static final Set<String> GLOBAL =
+            Set.of(
+                    "jdk.GCPhasePause",
+                    "jdk.Compilation",
+                    "jdk.SafepointBegin",
+                    "jdk.SafepointStateSynchronization",
+                    "jdk.ExecuteVMOperation");
 
     public static void main(String[] args) throws Exception {
         Path input = Path.of(args[0]);
+        var extraThreads = java.util.regex.Pattern.compile(args.length > 1 ? args[1] : "(?!)");
         long renderId = renderThread(input);
         try (var recording = new RecordingFile(Path.of(args[0]));
                 var out = new PrintWriter(System.out, false, StandardCharsets.UTF_8)) {
@@ -35,8 +50,12 @@ public final class RenderJfrExport {
                         event.hasField("sampledThread")
                                 ? event.getThread("sampledThread")
                                 : event.getThread();
-                if (!name.equals("jdk.GCPhasePause")
-                        && (thread == null || renderId != thread.getJavaThreadId())) continue;
+                if (!GLOBAL.contains(name)
+                        && (thread == null
+                                || (renderId != thread.getJavaThreadId()
+                                        && !extraThreads
+                                                .matcher(String.valueOf(thread.getJavaName()))
+                                                .find()))) continue;
                 if (!first) out.print(',');
                 first = false;
                 out.print(
@@ -48,11 +67,43 @@ public final class RenderJfrExport {
                                 + event.getDuration().toNanos() / 1e9);
                 if (thread != null)
                     out.print(
-                            ",\"eventThread\":{\"javaName\":"
+                            ",\""
+                                    + (event.hasField("sampledThread")
+                                            ? "sampledThread"
+                                            : "eventThread")
+                                    + "\":{\"javaName\":"
                                     + quote(thread.getJavaName())
                                     + ",\"javaThreadId\":"
                                     + thread.getJavaThreadId()
+                                    + ",\"osThreadId\":"
+                                    + thread.getOSThreadId()
                                     + "}");
+                if (name.equals("radiance.RenderFrame"))
+                    out.print(
+                            ",\"frameToken\":"
+                                    + event.getLong("frameToken")
+                                    + ",\"measuredWallNs\":"
+                                    + event.getLong("measuredWallNs")
+                                    + ",\"renderThreadCpuNs\":"
+                                    + event.getLong("renderThreadCpuNs"));
+                for (String field : Set.of("loadedClass", "definedClass"))
+                    if (event.hasField(field))
+                        out.print(
+                                ",\""
+                                        + field
+                                        + "\":{\"name\":"
+                                        + quote(event.getClass(field).getName())
+                                        + "}");
+                if (name.equals("jdk.Compilation")) {
+                    jdk.jfr.consumer.RecordedMethod method = event.getValue("method");
+                    if (method != null)
+                        out.print(
+                                ",\"method\":{\"name\":"
+                                        + quote(method.getType().getName() + "." + method.getName())
+                                        + "}");
+                }
+                if (event.hasField("operation"))
+                    out.print(",\"operation\":" + quote(event.getString("operation")));
                 var stack = event.getStackTrace();
                 if (stack != null) {
                     out.print(
@@ -85,6 +136,8 @@ public final class RenderJfrExport {
         try (var recording = new RecordingFile(input)) {
             while (recording.hasMoreEvents()) {
                 var event = recording.readEvent();
+                if (event.getEventType().getName().equals("radiance.RenderFrame")
+                        && event.getThread() != null) return event.getThread().getJavaThreadId();
                 if (!event.getEventType().getName().endsWith("Sample")
                         || !event.hasField("sampledThread")
                         || event.getStackTrace() == null) continue;

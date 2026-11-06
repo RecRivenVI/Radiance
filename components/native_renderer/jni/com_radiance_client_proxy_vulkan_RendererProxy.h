@@ -103,6 +103,14 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_prese
 
 /*
  * Class:     com_radiance_client_proxy_vulkan_RendererProxy
+ * Method:    executeFrameNative
+ * Signature: (Z)I
+ */
+JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_executeFrameNative
+  (JNIEnv *, jclass, jboolean);
+
+/*
+ * Class:     com_radiance_client_proxy_vulkan_RendererProxy
  * Method:    warmupCurrentPipelineNative
  * Signature: (Lcom/radiance/client/proxy/vulkan/RendererProxy/PreparationProgress;)I
  */

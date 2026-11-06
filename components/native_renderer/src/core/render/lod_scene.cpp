@@ -70,7 +70,9 @@ std::shared_ptr<LodFrameTables> LodScene::tables(Chunks &chunks, const std::shar
             profile::emit(profile::frame, 5, "lod.coverage.reuse", 1, 0);
             profile::emit(profile::frame, 5, "lod.coverage.far-version-diff", tables_->farRevision != farRevision_, 0);
         }
-        if (tables_->farRevision == farRevision_ && tables_->models == models_) return tables_;
+        if (tables_->farRevision == farRevision_ && tables_->models == models_ &&
+            tables_->activeLights == Renderer::options.collectChunkEmission)
+            return tables_;
         auto result = std::make_shared<LodFrameTables>(*tables_);
         result->models = models_;
         result->farRevision = farRevision_;
@@ -199,8 +201,14 @@ void LodScene::finishTables(const std::shared_ptr<LodFrameTables> &result,
         profile::emit(profile::frame, 5, "lod.cut.active", result->sections.size(), 0);
         profile::emit(profile::frame, 5, "lod.cut.covered", result->coveredSections, 0);
     }
-    if (tables_ && tables_->models == result->models && tables_->farRevision == result->farRevision &&
-        tables_->cpuCoverage == result->cpuCoverage) {
+    result->activeLights = Renderer::options.collectChunkEmission;
+    if (!result->activeLights) {
+        result->lightGroups.reset();
+        result->lightIndices.reset();
+        result->lightOwners.clear();
+        result->lightGroupCount = result->lightCount = 0;
+    } else if (tables_ && tables_->activeLights && tables_->models == result->models &&
+               tables_->farRevision == result->farRevision && tables_->cpuCoverage == result->cpuCoverage) {
         result->lightGroups = tables_->lightGroups;
         result->lightIndices = tables_->lightIndices;
         result->lightOwners = tables_->lightOwners;
@@ -247,8 +255,8 @@ void LodScene::finishTables(const std::shared_ptr<LodFrameTables> &result,
                         models_->colourCount,
                         result->coverageMask,
                         0,
-                        result->lightGroups->bufferAddress(),
-                        result->lightIndices->bufferAddress(),
+                        result->lightGroups ? result->lightGroups->bufferAddress() : 0,
+                        result->lightIndices ? result->lightIndices->bufferAddress() : 0,
                         result->lightGroupCount,
                         result->lightCount};
     result->header = upload(framework_, &header, sizeof(header));

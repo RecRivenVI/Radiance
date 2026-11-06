@@ -17,6 +17,7 @@ public final class WorldMaterialsProbe {
     private static int frames, step;
     private static int menuFrames;
     private static boolean done;
+    private static boolean snapshotPending;
     private static boolean effectiveSettingsChecked;
     private static java.util.concurrent.CompletableFuture<Void> setup;
     private static int scene;
@@ -52,6 +53,40 @@ public final class WorldMaterialsProbe {
         {"metal-grazing-left", "tp @a 10 65.14 -2 facing 20 65 -2"},
         {"continuous-media", "tp @a 0 66 7 facing 0 66 0"}
     };
+    private static final String[][] LIGHTS = {
+        {
+            "light-origin",
+            "time set midnight",
+            "fill -4 63 -7 4 70 -7 white_concrete",
+            "setblock 5 66 -4 air",
+            "setblock 0 67 -6 sea_lantern",
+            "tp @a 0 67 0 facing 0.5 67.5 -5.5"
+        },
+        {"light-moved", "setblock 0 67 -6 air", "setblock 2 67 -6 sea_lantern"}
+    };
+
+    private static final String[][] MEDIA = {
+        {"water-entry", "time set noon", "tp @a 0 71 2 facing 0 64 0"},
+        {"water-exit-normal", "tp @a 0 65.2 0 0 -90"},
+        {"water-exit-tir", "tp @a 0 65.2 0 0 -25"},
+        {"water-camera-bottom", "tp @a 0 65.2 0 0 85"},
+        {"water-camera-entity", "tp @a -3 65.2 -3 facing 0 66 0"},
+        {"water-glass", "tp @a 5 65.2 0 facing 12 67 0"},
+        {"water-glass-grazing", "tp @a 5 65.2 -4 facing 7 66.82 5"},
+        {"glass-camera-opaque", "tp @a 13.5 65 11.5 facing 13.5 66.62 13"},
+        {"pane-camera-air", "tp @a 20.1375 65.0625 0.3 facing 24 66.6825 0.3"},
+        {"pane-camera-inside", "tp @a 20.5 65.0625 0.5 facing 24 66.6825 0.5"},
+        {"red-blue-contact", "tp @a 10 65 -2 facing 18 66.62 -2"},
+        {"blue-red-contact", "tp @a 15.5 65 -2 facing 9 66.62 -2"},
+        {"grazing-glass", "tp @a 8.2 65 -5 facing 7 66.62 4"},
+        {"dynamic-isolated", "tp @a 25 66 10.5 facing 29 67.62 10.5"},
+        {"dynamic-internal-contact", "tp @a 25 64 10.5 facing 30 65.62 10.5"},
+        {"dynamic-approach", "tp @a 27 64 10.5 facing 33 65.62 10.5"},
+        {"dynamic-separate", "tp @a 27 64 10.5 facing 33 65.62 10.5"},
+        {"dynamic-real-gap", "tp @a 27 64 10.5 facing 33 65.62 10.5"},
+        {"cross-section-contact", "tp @a 28 65.1 18 facing 35 66.72 18"},
+        {"partial-pane-water", "tp @a 37 64.9 18.5 facing 42 66.52 18.5"}
+    };
 
     private WorldMaterialsProbe() {}
 
@@ -61,6 +96,10 @@ public final class WorldMaterialsProbe {
         if (previous != 0) maximumGap = Math.max(maximumGap, now - previous);
         previous = now;
         try {
+            if (snapshotPending) {
+                finish(mc);
+                return;
+            }
             if (MODE.equals("startup")) {
                 if (!(mc.screen instanceof TitleScreen) || mc.getOverlay() != null) return;
                 if (!CityFrameComparisonProbe.viewportReady(mc, now)) return;
@@ -94,6 +133,20 @@ public final class WorldMaterialsProbe {
             }
             if (mc.level == null || mc.player == null || mc.getOverlay() != null) return;
             if (!CityFrameComparisonProbe.viewportReady(mc, now)) return;
+            if (MODE.equals("scene-store") || MODE.equals("scene-store-auxiliary")) {
+                if (SceneStoreProbe.poll(mc, RESULT)) finish(mc);
+                return;
+            }
+            if (MODE.equals("loopback")) {
+                if (mc.getSingleplayerServer() != null)
+                    throw new IllegalStateException("Loopback check entered an integrated server");
+                if (++frames >= 30) finish(mc);
+                return;
+            }
+            if (MODE.startsWith("deep-")) {
+                depthFixture(mc, now);
+                return;
+            }
             if (MODE.equals("levitite-stress") && !effectiveSettingsChecked) {
                 EffectiveRenderSettings.checkpoint(mc, "levitite-stress");
                 effectiveSettingsChecked = true;
@@ -102,7 +155,10 @@ public final class WorldMaterialsProbe {
                     || MODE.equals("levitite")
                     || MODE.equals("levitite-ponder")
                     || MODE.equals("levitite-stress")) return;
-            if (MODE.equals("surfaces") || MODE.equals("normals")) {
+            if (MODE.equals("surfaces")
+                    || MODE.equals("normals")
+                    || MODE.equals("media")
+                    || MODE.equals("lights")) {
                 surfaces(mc, now);
                 return;
             }
@@ -273,7 +329,13 @@ public final class WorldMaterialsProbe {
     }
 
     private static void surfaces(Minecraft mc, long now) throws Exception {
-        String[][] scenes = MODE.equals("normals") ? NORMALS : SURFACES;
+        String[][] scenes =
+                switch (MODE) {
+                    case "media" -> MEDIA;
+                    case "normals" -> NORMALS;
+                    case "lights" -> LIGHTS;
+                    default -> SURFACES;
+                };
         if (setup == null) {
             if (MODE.equals("normals")) {
                 for (String material : java.util.List.of("yellow", "orange")) {
@@ -321,6 +383,35 @@ public final class WorldMaterialsProbe {
                                                             .withSuppressedOutput()
                                                             .withPermission(4),
                                                     c);
+                                if (MODE.equals("media"))
+                                    for (String c :
+                                            java.util.List.of(
+                                                    "kill @e[type=!minecraft:player]",
+                                                    "fill -7 63 -7 18 72 14 air",
+                                                    "fill -6 63 -6 6 63 6 white_concrete",
+                                                    "fill -6 64 -6 6 68 6 water",
+                                                    "fill 7 64 -6 7 69 6 cyan_stained_glass",
+                                                    "fill 8 63 -6 18 63 14 white_concrete",
+                                                    "fill 12 64 10 14 68 12 red_stained_glass",
+                                                    "setblock 13 66 12 white_concrete",
+                                                    "setblock 20 66 0 lime_stained_glass_pane[east=true,north=true,south=true,west=false]",
+                                                    "fill 12 64 -5 12 69 5 red_stained_glass",
+                                                    "fill 13 64 -5 13 69 5 blue_stained_glass",
+                                                    "fill 16 64 -5 16 69 5 yellow_concrete",
+                                                    "setblock 11 68 0 sea_lantern",
+                                                    "fill 25 64 8 42 64 20 white_concrete",
+                                                    "fill 32 65 10 32 65 10 blue_stained_glass",
+                                                    "fill 30 65 17 31 68 19 glass",
+                                                    "fill 32 65 17 33 68 19 blue_stained_glass",
+                                                    "setblock 39 66 18 glass_pane[east=true,west=true,north=false,south=false]",
+                                                    "fill 40 65 18 41 66 18 water",
+                                                    "summon spider 0 65.5 0 {NoAI:1b,NoGravity:1b,PersistenceRequired:1b}"))
+                                        server.getCommands()
+                                                .performPrefixedCommand(
+                                                        server.createCommandSourceStack()
+                                                                .withSuppressedOutput()
+                                                                .withPermission(4),
+                                                        c);
                                 if (MODE.equals("normals"))
                                     for (String c :
                                             java.util.List.of(
@@ -339,6 +430,40 @@ public final class WorldMaterialsProbe {
         }
         if (!setup.isDone()) return;
         setup.join();
+        if (MODE.equals("media")) MediumContactFixture.select(scenes[scene][0]);
+        if (MODE.equals("media") && !RESULT.containsKey("productionFluid")) {
+            if (!mc.level.getFluidState(new net.minecraft.core.BlockPos(2, 68, 2)).isSource())
+                return;
+            var plain = mc.level.getBlockState(new net.minecraft.core.BlockPos(31, 66, 18));
+            var coloured = mc.level.getBlockState(new net.minecraft.core.BlockPos(32, 66, 18));
+            if (!plain.is(net.minecraft.world.level.block.Blocks.GLASS)
+                    || !coloured.is(net.minecraft.world.level.block.Blocks.BLUE_STAINED_GLASS))
+                return;
+            RESULT.put(
+                    "productionFluid",
+                    FluidBoundaryProbe.capture(mc, new net.minecraft.core.BlockPos(2, 68, 2)));
+            RESULT.put(
+                    "productionFluidContact",
+                    FluidBoundaryProbe.captureContact(
+                            mc, new net.minecraft.core.BlockPos(6, 67, 0)));
+            var plainLayer =
+                    net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(plain);
+            var colouredLayer =
+                    net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(coloured);
+            if (plainLayer == colouredLayer)
+                throw new AssertionError("Contact fixture must cross actual source render layers");
+            RESULT.put(
+                    "productionCrossLayer",
+                    Map.of(
+                            "plain",
+                            plain.toString(),
+                            "coloured",
+                            coloured.toString(),
+                            "plainLayer",
+                            plainLayer.toString(),
+                            "colouredLayer",
+                            colouredLayer.toString()));
+        }
         if (step == 0) {
             String name = scenes[scene][0];
             if (name.startsWith("fixed-")) tone(name.equals("fixed-aces") ? "aces" : "pbr_neutral");
@@ -368,12 +493,105 @@ public final class WorldMaterialsProbe {
                         0);
         }
         if (now - transition < 4_000_000_000L || ++frames < 45) return;
+        if (MODE.equals("media")) {
+            var camera = mc.gameRenderer.getMainCamera();
+            var position = camera.getPosition();
+            var cameraState =
+                    mc.level.getBlockState(net.minecraft.core.BlockPos.containing(position));
+            String name = scenes[scene][0];
+            if ((name.startsWith("water-exit")
+                            || name.startsWith("water-camera")
+                            || name.startsWith("water-glass"))
+                    && camera.getFluidInCamera()
+                            != net.minecraft.world.level.material.FogType.WATER)
+                throw new AssertionError("Medium camera not actually submerged: " + name);
+            if (name.equals("glass-camera-opaque")
+                    && !cameraState.is(net.minecraft.world.level.block.Blocks.RED_STAINED_GLASS))
+                throw new AssertionError("Medium camera not actually inside coloured glass");
+            boolean hint = com.radiance.adapter.vanilla.CameraMediumHint.needed(mc, position);
+            if ((name.equals("pane-camera-air") && hint)
+                    || ((name.equals("pane-camera-inside") || name.equals("glass-camera-opaque"))
+                            && !hint))
+                throw new AssertionError(
+                        "Camera medium admission disagrees with baked geometry: " + name);
+            RESULT.put(
+                    name + "-camera",
+                    Map.of(
+                            "position",
+                            java.util.List.of(position.x, position.y, position.z),
+                            "block",
+                            net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                                    .getKey(cameraState.getBlock())
+                                    .toString(),
+                            "fluid",
+                            camera.getFluidInCamera().name(),
+                            "mediumProbe",
+                            hint));
+        }
         EntityTakeoverProbe.screenshot(mc, scenes[scene][0] + ".png");
         RESULT.put(
                 scenes[scene][0],
                 Map.of("frames", frames, "dimension", mc.level.dimension().location().toString()));
         if (++scene == scenes.length) finish(mc);
         else step = 0;
+    }
+
+    private static void depthFixture(Minecraft mc, long now) throws Exception {
+        boolean refract = MODE.equals("deep-refraction");
+        if (setup == null) {
+            var server = java.util.Objects.requireNonNull(mc.getSingleplayerServer());
+            setup =
+                    java.util.concurrent.CompletableFuture.runAsync(
+                            () -> {
+                                var source =
+                                        server.createCommandSourceStack()
+                                                .withSuppressedOutput()
+                                                .withPermission(4);
+                                var commands = server.getCommands();
+                                commands.performPrefixedCommand(source, "gamemode spectator @a");
+                                commands.performPrefixedCommand(
+                                        source, "gamerule doDaylightCycle false");
+                                commands.performPrefixedCommand(source, "time set noon");
+                                commands.performPrefixedCommand(source, "weather clear");
+                                commands.performPrefixedCommand(source, "fill 0 -63 0 8 205 8 air");
+                                if (refract) {
+                                    for (int y = -60; y < 196; y++) {
+                                        String block =
+                                                (y & 1) == 0
+                                                        ? "yellow_stained_glass"
+                                                        : "lime_stained_glass";
+                                        commands.performPrefixedCommand(
+                                                source,
+                                                "fill 2 " + y + " 2 5 " + y + " 5 " + block);
+                                    }
+                                    commands.performPrefixedCommand(
+                                            source, "fill 2 196 2 5 196 5 sea_lantern");
+                                    commands.performPrefixedCommand(
+                                            source, "tp @a 4 -62.5 4 0 -90");
+                                } else {
+                                    commands.performPrefixedCommand(
+                                            source, "fill 2 -60 2 2 160 5 iron_block");
+                                    commands.performPrefixedCommand(
+                                            source, "fill 4 -60 2 4 160 5 iron_block");
+                                    commands.performPrefixedCommand(
+                                            source, "fill 3 161 2 3 161 5 sea_lantern");
+                                    commands.performPrefixedCommand(
+                                            source, "tp @a 3.5 -61 4 -90 -45");
+                                }
+                            },
+                            server);
+            transition = now;
+            return;
+        }
+        if (!setup.isDone()) return;
+        setup.join();
+        var terminal = new net.minecraft.core.BlockPos(refract ? 4 : 3, refract ? 196 : 161, 4);
+        if (!mc.level.getBlockState(terminal).is(net.minecraft.world.level.block.Blocks.SEA_LANTERN)
+                || now - transition < 6_000_000_000L
+                || ++frames < 120) return;
+        RESULT.put("terminal", terminal.toString());
+        EntityTakeoverProbe.screenshot(mc, MODE + ".png");
+        finish(mc);
     }
 
     private static void tone(String method) {
@@ -415,6 +633,11 @@ public final class WorldMaterialsProbe {
     }
 
     private static void finish(Minecraft mc) {
+        if (!NativeSceneReplayProbe.ready()) {
+            snapshotPending = true;
+            return;
+        }
+        if (MODE.equals("media")) MediumContactFixture.close();
         done = true;
         RESULT.put("mode", MODE);
         RESULT.put(
@@ -429,6 +652,25 @@ public final class WorldMaterialsProbe {
             Files.writeString(
                     destination,
                     new GsonBuilder().setPrettyPrinting().create().toJson(RESULT) + "\n");
+            // Also written at exit; a client that never finishes stopping still leaves this one.
+            Files.writeString(
+                    destination.resolveSibling("block-entity-rest.json"),
+                    new GsonBuilder()
+                                    .create()
+                                    .toJson(
+                                            java.util.Map.of(
+                                                    "layout",
+                                                    "sections,restingMembers,restingInstances,skippedMembersLastFrame,pollsPassed,pollsFailed,eventWakes,membersRested,sectionReleases",
+                                                    "counters",
+                                                    com.radiance.api.render.BlockEntityPublications
+                                                            .restCounters(),
+                                                    "blockers",
+                                                    com.radiance.api.render.BlockEntityPublications
+                                                            .restBlockers(),
+                                                    "pollCaught",
+                                                    com.radiance.api.render.BlockEntityPublications
+                                                            .restMisses()))
+                            + "\n");
         } catch (java.io.IOException failure) {
             throw new java.io.UncheckedIOException(failure);
         }

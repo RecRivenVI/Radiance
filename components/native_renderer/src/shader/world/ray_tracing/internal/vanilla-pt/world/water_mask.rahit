@@ -12,4 +12,10 @@ layout(set=1,binding=1) readonly buffer FaceOffsets { uint offsets[]; } blasOffs
 layout(set=1,binding=10) readonly buffer FaceAppearances { InstanceAppearance values[]; } instanceAppearances;
 #include "common/shared.hpp"
 #include "util/world_material_faces.glsl"
-void main() { ignoreIntersectionEXT; }
+void main() {
+    if ((mainRay.boundaryFlags & 0x40000000u) != 0u) {
+        uint replayGeometry=blasOffsets.offsets[gl_InstanceCustomIndexEXT]+uint(gl_GeometryIndexEXT);
+        if (replayGeometry != ((mainRay.boundaryFlags >> 3u) & 0x07ffffffu) ||
+            gl_PrimitiveID != mainRay.hasPrevScenePos) ignoreIntersectionEXT;
+        return;
+    } ignoreIntersectionEXT; }

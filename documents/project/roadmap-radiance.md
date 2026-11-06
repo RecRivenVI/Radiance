@@ -202,7 +202,7 @@ NVIDIA 等第三方运行库的公开二进制分发条件仍未取得确认。�
 - 船只运动的共享 yaw 插值缺口已定向修复；171F38FC… 候选的船只、矿车、船桨与船内水面剔除获使用者通过，见[研究与后续反馈](../research/investigation-entity_motion_interpolation.md#2026-10-17-手工验收通过)。不泛化为全部实体、载具或网络行为验证。
 - 迁移到单仓库、模板 1.2.1 对齐及 Windows CI 前置条件修复已完成；当前原生代码在 `components/native_renderer`，诊断在 `src/probe` 与 `components/render_diagnostics`。
 - 原始审查的已修源码、背压与 PackType 资源隔离、纹理代际、资源退休、原生错误边界和历史 G0/G1/G2 保留，不因新任务重开或写成全系统验收。
-- Ponder PT 和一次性独立场景回放已封存；当前 Ponder 使用默认光栅语义的 Vulkan 翻译，不重新启动 PT、截图替代或回放产品。
+- Ponder PT 已封存，当前 Ponder 使用默认光栅语义的 Vulkan 翻译。148 号 Native 静态场景重放已完成小夹具与城市的捕获、独立出图及同进程固定／转头／重载验证，见[重放入口](../development/debugging-scene_replay.md)；自身计时波动仍限制小收益判断。不恢复 Ponder PT 或截图替代。
 - 发光地衣正反面 UV 的差异已接受为原版模型行为，不再列为修复任务。
 - 迁移前台账与审计原文位于 `D:/Workspaces/Artifacts/Radiance/history-archive/Radiance/docs/` 和 `D:/Workspaces/Artifacts/Radiance/history-archive/MCVR/docs/`；详细历史路线图可从本次整理前的 Git 版本读取。
 - 既有研究记录保留观察日期、失败和限制，不事后改写；构建、自动测试、运行、视觉、性能和 GPU 根因分别记录。

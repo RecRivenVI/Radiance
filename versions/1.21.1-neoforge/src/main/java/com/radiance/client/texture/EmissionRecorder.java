@@ -164,9 +164,10 @@ public final class EmissionRecorder {
 
                         float weightedEmission = emission * alphaCoverage;
                         weightedEmissionSum += weightedEmission;
-                        weightedRadianceR += linearChannel(argb & 0xFF) * weightedEmission;
-                        weightedRadianceG += linearChannel((argb >> 8) & 0xFF) * weightedEmission;
-                        weightedRadianceB += linearChannel((argb >> 16) & 0xFF) * weightedEmission;
+                        // World-hit sampling reads the UNORM atlas without sRGB decoding.
+                        weightedRadianceR += ((argb & 0xFF) / 255.0f) * weightedEmission;
+                        weightedRadianceG += (((argb >> 8) & 0xFF) / 255.0f) * weightedEmission;
+                        weightedRadianceB += (((argb >> 16) & 0xFF) / 255.0f) * weightedEmission;
                         minLocalX = Math.min(minLocalX, localX);
                         minLocalY = Math.min(minLocalY, localY);
                         maxLocalX = Math.max(maxLocalX, localX);
@@ -317,11 +318,6 @@ public final class EmissionRecorder {
     }
 
     private record MergeRect(int width, int height) {}
-
-    private static float linearChannel(int channel) {
-        float srgb = channel / 255.0f;
-        return srgb <= 0.04045f ? srgb / 12.92f : (float) Math.pow((srgb + 0.055f) / 1.055f, 2.4);
-    }
 
     private static float decodeLabPbrEmission(int argb) {
         int alpha = (argb >>> 24) & 0xFF;

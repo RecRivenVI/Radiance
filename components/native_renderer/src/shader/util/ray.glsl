@@ -16,18 +16,25 @@ layout(set = 5, binding = 7, rgba16f) uniform image2DArray rayMaterialStateImage
 #include "util/ray_origin.glsl"
 #include "util/coverage_blend.glsl"
 
+#ifndef VPT_RECONSTRUCTION_GUIDES
+#define VPT_RECONSTRUCTION_GUIDES 0
+#endif
+
 const uint rayCacheTransparentBit = 1u << 8u;
-const uint rayBounceMask = 0xFFu;
+const uint rayStepLowMask = 0x7fu;
 const uint rayStopBit = 1u << 9u;
 const uint rayContinueBit = 1u << 10u;
 const uint rayNoisyBit = 1u << 11u;
 const uint rayLobeShift = 12u;
 const uint rayLobeMask = 0x3u << rayLobeShift;
 const uint raySkipFogBit = 1u << 14u;
+const uint rayPrimaryEmissionCaptureBit = 1u << 15u;
 const uint rayCaptureSurfaceBit = 1u << 16u;
 const uint raySurfaceCacheWrittenBit = 1u << 17u;
 const uint raySurfaceCacheTargetSecondaryBit = 1u << 18u;
 const uint rayIndirectVolumetricCloudBit = 1u << 19u;
+const uint rayReconstructionQueryBit = 1u << 7u;
+bool rayReconstructionQuery(MainRay ray) { return (ray.stateBits & rayReconstructionQueryBit) != 0u; }
 const uint rayDirectImageBit = 1u << 21u;
 const uint rayPriorityCaptureBit = 1u << 22u;
 const uint rayPriorityShadeBit = 1u << 23u;
@@ -57,7 +64,7 @@ void raySetReceiveOnlyReceiver(inout MainRay ray, bool enabled) {
     ray.stateBits = enabled ? ray.stateBits | rayReceiveOnlyReceiverBit : ray.stateBits & ~rayReceiveOnlyReceiverBit;
 }
 bool rayCoverageCapture(MainRay ray) {
-    return RADIANCE_COVERAGE_MODE == 1u && (ray.stateBits & (rayCoverageCaptureBit | rayDirectImageBit)) ==
+    return RADIANCE_COVERAGE_MODE != 0u && (ray.stateBits & (rayCoverageCaptureBit | rayDirectImageBit)) ==
         (rayCoverageCaptureBit | rayDirectImageBit);
 }
 void raySetCoverageCapture(inout MainRay ray, bool enabled) {
@@ -85,11 +92,17 @@ uint rayQueryPurpose(MainRay ray) { return rayDirectImage(ray) ? queryDirect : q
 bool rayShouldContinue(MainRay ray);
 uint rayLobeType(MainRay ray);
 #include "util/ray_medium.glsl"
-void rayAdvanceQuery(inout MainRay ray, inout MediumHistory history) {
-    if (!rayShouldContinue(ray)) {
-        if (rayLobeType(ray) == 2u) rayCommitMedium(ray, history);
-        raySetDirectImage(ray, advanceQuery(rayQueryPurpose(ray), rayLobeType(ray)) == queryDirect);
+bool rayAdvanceQuery(inout MainRay ray, inout MediumHistory history) {
+    if (rayShouldContinue(ray)) return true;
+    uint lobe = rayLobeType(ray);
+    if (lobe == 2u) {
+        if (!rayCommitMedium(ray, history)) return false;
+    } else {
+        if (rayReflectionCount(ray) >= uint(RADIANCE_REFLECTION_LIMIT)) return false;
+        ray.mediumState += 1u << reflectionShift;
     }
+    raySetDirectImage(ray, advanceQuery(rayQueryPurpose(ray), lobe) == queryDirect);
+    return true;
 }
 uint queryTraversalFlags(uint purpose, uint flags) {
     return purpose == queryTransport ?
@@ -101,11 +114,13 @@ ivec3 rayMaterialStateCoord(int layer) {
 }
 
 void raySetBounce(inout MainRay ray, uint bounce) {
-    ray.stateBits = (ray.stateBits & ~rayBounceMask) | (bounce & rayBounceMask);
+    ray.stateBits = (ray.stateBits & ~rayStepLowMask) | (bounce & rayStepLowMask);
+    ray.mediumState = (ray.mediumState & ((1u << pathStepHighShift) - 1u)) |
+        ((bounce >> 7u) << pathStepHighShift);
 }
 
 uint rayBounce(MainRay ray) {
-    return ray.stateBits & rayBounceMask;
+    return (ray.stateBits & rayStepLowMask) | ((ray.mediumState >> pathStepHighShift) << 7u);
 }
 
 void raySetStop(inout MainRay ray, bool enabled) {
@@ -205,7 +220,7 @@ void rayStoreMaterial(inout MainRay ray,
                        float emission) {
     ray.stateBits &= ~rayCacheTransparentBit;
     if (transmission > 1e-6) ray.stateBits |= rayCacheTransparentBit;
-    if (rayBounce(ray) != 0u) return;
+    if (rayBounce(ray) != 0u && !rayReconstructionQuery(ray)) return;
     imageStore(rayMaterialStateImage, rayMaterialStateCoord(0), albedoValue);
     imageStore(rayMaterialStateImage, rayMaterialStateCoord(1), vec4(f0, roughness));
     imageStore(rayMaterialStateImage, rayMaterialStateCoord(2), vec4(metallic, transmission, ior, emission));

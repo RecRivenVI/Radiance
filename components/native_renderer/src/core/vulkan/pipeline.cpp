@@ -8,6 +8,7 @@
 #include "core/vulkan/render_pass.hpp"
 #include "core/vulkan/shader.hpp"
 
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -344,12 +345,19 @@ vk::RayTracingPipelineBuilder::definePipelineLayout(std::shared_ptr<DescriptorTa
 std::shared_ptr<vk::RayTracingPipeline> vk::RayTracingPipelineBuilder::build(std::shared_ptr<Device> device) {
     VkRayTracingPipelineCreateInfoKHR pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+    if (device->opacityMicromapEnabled()) pipelineInfo.flags = VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_EXT;
     pipelineInfo.stageCount = shaderStageBuilder_.shaderStageCreateInfos.size();
     pipelineInfo.pStages = shaderStageBuilder_.shaderStageCreateInfos.data();
     pipelineInfo.groupCount = shaderGroupBuilder_.shaderGroupCreateInfos.size();
     pipelineInfo.pGroups = shaderGroupBuilder_.shaderGroupCreateInfos.data();
     pipelineInfo.layout = pipelineLayout_;
     pipelineInfo.maxPipelineRayRecursionDepth = 3;
+    // Experiment only: the stack reserved per path grows with the declared depth. A pack whose
+    // deepest chain is ray generation, hit, shadow can state 2 here to measure that reserve.
+    if (const char *depth = std::getenv("RADIANCE_RT_RECURSION_DEPTH");
+        depth != nullptr && depth[0] >= '1' && depth[0] <= '3' && depth[1] == '\0') {
+        pipelineInfo.maxPipelineRayRecursionDepth = static_cast<uint32_t>(depth[0] - '0');
+    }
 
     VkPipeline rayTracingPipeline;
     if (const auto result =

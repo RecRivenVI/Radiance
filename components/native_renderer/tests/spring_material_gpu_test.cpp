@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
         if (argc != 2 && argc != 3) return 1;
         const bool display = argc == 3 && std::string(argv[2]) == "--display-colour";
         const bool colourField = argc == 3 && std::string(argv[2]) == "--colour-field";
+        const bool reconstruction = argc == 3 && std::string(argv[2]) == "--reconstruction-material";
         const bool palette = argc == 3 && std::string(argv[2]) == "--material-palette";
         const bool coordinates = argc == 3 && std::string(argv[2]) == "--layered-coordinates";
         const bool coveragePath = argc == 3 && std::string(argv[2]) == "--coverage-path";
@@ -252,6 +253,12 @@ int main(int argc, char **argv) {
                               << " expectedClamp=" << float((x + .25) * double(scale)) << '\n';
                     throw std::runtime_error("Far/negative plane mask, UV, sampler mode or local origin failed");
                 }
+                continue;
+            }
+            if (reconstruction) {
+                if (r[0].x != 1)
+                    throw std::runtime_error(
+                        "Reconstruction reflectance, material energy or hit-distance sentinel failed");
                 continue;
             }
             if (palette) {

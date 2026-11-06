@@ -647,11 +647,8 @@ public class Pipeline {
         return changed;
     }
 
-    public static void ensureSelectedShaderPackAvailable() {
-        if (!fallbackUnavailableShaderPacks()) {
-            return;
-        }
-        savePipeline();
+    public static void emissionSamplingChanged() {
+        if (fallbackUnavailableShaderPacks()) savePipeline();
         build();
     }
 
@@ -742,6 +739,8 @@ public class Pipeline {
     private static void buildInternal() {
         fallbackUnavailableShaderPacks();
         getModuleAttributes();
+
+        connectMissingReconstructionInputs();
 
         Map<ImageConfig, ImageConfig> dstTosrcMap = new HashMap<>();
         for (Map.Entry<ImageConfig, List<ImageConfig>> entry :
@@ -1100,6 +1099,9 @@ public class Pipeline {
         connect(
                 rayTracingModule.getOutputImageConfig("first_hit_depth"),
                 dlssModule.getInputImageConfig("first_hit_depth"));
+        connect(
+                rayTracingModule.getOutputImageConfig("first_hit_refraction"),
+                dlssModule.getInputImageConfig("first_hit_refraction"));
 
         connect(
                 dlssModule.getOutputImageConfig("processed"),
@@ -1139,6 +1141,45 @@ public class Pipeline {
             return;
         }
         assembleNRDXESSInternal();
+    }
+
+    private static final List<String> RECONSTRUCTION_GUIDE_PORTS =
+            List.of(
+                    "reflection_guide",
+                    "reflection_motion_depth",
+                    "transmission_guide",
+                    "transmission_motion_depth",
+                    "reflection_material_factor",
+                    "transmission_material_factor");
+
+    private static void connectMissingReconstructionInputs() {
+        var producers =
+                INSTANCE.modules.stream()
+                        .filter(module -> module.name.equals(RAY_TRACING_MODULE_NAME))
+                        .toList();
+        if (producers.size() != 1) return;
+        var connected = new HashSet<ImageConfig>();
+        INSTANCE.moduleConnections.values().forEach(connected::addAll);
+        // An added optional signal must not discard a user's existing node graph.
+        for (Module module : INSTANCE.modules) {
+            List<String> ports =
+                    module.name.equals(NRD_MODULE_NAME)
+                            ? RECONSTRUCTION_GUIDE_PORTS
+                            : module.name.equals(DLSS_MODULE_NAME)
+                                    ? List.of("first_hit_refraction")
+                                    : List.of();
+            for (String name : ports) {
+                ImageConfig input = module.getInputImageConfig(name);
+                if (!connected.contains(input))
+                    connect(producers.getFirst().getOutputImageConfig(name), input);
+            }
+        }
+    }
+
+    private static void connectReconstructionGuides(Module source, Module destination) {
+        for (String name : RECONSTRUCTION_GUIDE_PORTS) {
+            connect(source.getOutputImageConfig(name), destination.getInputImageConfig(name));
+        }
     }
 
     private static void assembleNRDFSRInternal() {
@@ -1200,10 +1241,6 @@ public class Pipeline {
                 denoiserModule.getInputImageConfig("linear_depth"));
 
         connect(
-                rayTracingModule.getOutputImageConfig("first_hit_depth"),
-                denoiserModule.getInputImageConfig("diffuseHitDepthImage"));
-
-        connect(
                 rayTracingModule.getOutputImageConfig("specular_hit_depth"),
                 denoiserModule.getInputImageConfig("specularHitDepthImage"));
 
@@ -1222,6 +1259,7 @@ public class Pipeline {
         connect(
                 rayTracingModule.getOutputImageConfig("first_hit_refraction"),
                 denoiserModule.getInputImageConfig("first_hit_refraction"));
+        connectReconstructionGuides(rayTracingModule, denoiserModule);
 
         connect(
                 denoiserModule.getOutputImageConfig("denoised_radiance"),
@@ -1324,10 +1362,6 @@ public class Pipeline {
                 denoiserModule.getInputImageConfig("linear_depth"));
 
         connect(
-                rayTracingModule.getOutputImageConfig("first_hit_depth"),
-                denoiserModule.getInputImageConfig("diffuseHitDepthImage"));
-
-        connect(
                 rayTracingModule.getOutputImageConfig("specular_hit_depth"),
                 denoiserModule.getInputImageConfig("specularHitDepthImage"));
 
@@ -1346,6 +1380,7 @@ public class Pipeline {
         connect(
                 rayTracingModule.getOutputImageConfig("first_hit_refraction"),
                 denoiserModule.getInputImageConfig("first_hit_refraction"));
+        connectReconstructionGuides(rayTracingModule, denoiserModule);
 
         for (String guide :
                 java.util.List.of(
@@ -1456,10 +1491,6 @@ public class Pipeline {
                 denoiserModule.getInputImageConfig("linear_depth"));
 
         connect(
-                rayTracingModule.getOutputImageConfig("first_hit_depth"),
-                denoiserModule.getInputImageConfig("diffuseHitDepthImage"));
-
-        connect(
                 rayTracingModule.getOutputImageConfig("specular_hit_depth"),
                 denoiserModule.getInputImageConfig("specularHitDepthImage"));
 
@@ -1478,6 +1509,7 @@ public class Pipeline {
         connect(
                 rayTracingModule.getOutputImageConfig("first_hit_refraction"),
                 denoiserModule.getInputImageConfig("first_hit_refraction"));
+        connectReconstructionGuides(rayTracingModule, denoiserModule);
 
         connect(
                 denoiserModule.getOutputImageConfig("denoised_radiance"),
@@ -1588,10 +1620,6 @@ public class Pipeline {
                 denoiserModule.getInputImageConfig("linear_depth"));
 
         connect(
-                rayTracingModule.getOutputImageConfig("first_hit_depth"),
-                denoiserModule.getInputImageConfig("diffuseHitDepthImage"));
-
-        connect(
                 rayTracingModule.getOutputImageConfig("specular_hit_depth"),
                 denoiserModule.getInputImageConfig("specularHitDepthImage"));
 
@@ -1610,6 +1638,7 @@ public class Pipeline {
         connect(
                 rayTracingModule.getOutputImageConfig("first_hit_refraction"),
                 denoiserModule.getInputImageConfig("first_hit_refraction"));
+        connectReconstructionGuides(rayTracingModule, denoiserModule);
 
         connect(
                 denoiserModule.getOutputImageConfig("denoised_radiance"),

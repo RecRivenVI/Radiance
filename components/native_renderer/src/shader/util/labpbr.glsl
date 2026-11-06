@@ -23,6 +23,11 @@ vec3 CalculateF0(vec3 n, vec3 k) {
     return r;
 }
 
+float labPbrEmission(float specularAlpha) {
+    int emission = int(round(specularAlpha * 255.0));
+    return emission == 255 ? 0.0 : emission / 254.0;
+}
+
 LabPBRMat convertLabPBRMaterial(vec4 texAlbedo,
                                 vec4 texSpecular,
                                 vec4 texNormal,
@@ -43,12 +48,7 @@ LabPBRMat convertLabPBRMaterial(vec4 texAlbedo,
     mat.ior = 1.5;
     mat.f0 = vec3(0.04);
 
-    int intEmission = int(round(texSpecular.a * 255.0));
-    if (intEmission == 255) {
-        mat.emission = 0;
-    } else {
-        mat.emission = intEmission / 254.0;
-    }
+    mat.emission = labPbrEmission(texSpecular.a);
 
     if (metalIdx < 230) {
         mat.metallic = 0.0;

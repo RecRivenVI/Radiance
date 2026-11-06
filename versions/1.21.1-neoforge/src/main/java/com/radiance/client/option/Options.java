@@ -2,14 +2,13 @@ package com.radiance.client.option;
 
 import com.radiance.client.RadianceClient;
 import com.radiance.client.pipeline.Pipeline;
-import com.radiance.client.proxy.vulkan.TextureProxy;
-import com.radiance.client.proxy.world.ChunkProxy;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Properties;
+import net.minecraft.client.Minecraft;
 
 public class Options {
 
@@ -396,13 +395,10 @@ public class Options {
         Options.collectChunkEmission = collectChunkEmission;
         nativeSetCollectChunkEmission(collectChunkEmission, write);
 
-        if (changed) {
-            if (collectChunkEmission) {
-                TextureProxy.flushEmissionTiles();
-                ChunkProxy.rebuildAll();
-            } else if (write) {
-                Pipeline.ensureSelectedShaderPackAvailable();
-            }
+        if (changed && write) {
+            Pipeline.emissionSamplingChanged();
+            // Rebuild texture-derived emitters when sampling is enabled, not while it is off.
+            if (collectChunkEmission) Minecraft.getInstance().reloadResourcePacks();
         }
 
         if (write) {

@@ -15,6 +15,8 @@ public final class CityFrameComparisonProbe {
     private static boolean viewportConfigured;
     private static int step;
     private static CompletableFuture<Void> reload;
+    private static int requestedReloads;
+    private static int completedReloads;
     private static int captureIndex;
     private static ProfileMode[] modes;
     private static long betweenUntil;
@@ -37,6 +39,10 @@ public final class CityFrameComparisonProbe {
             case "standard" -> new ProfileMode[] {ProfileMode.TIMED};
             case "throughput" -> new ProfileMode[] {ProfileMode.FRAME_ONLY};
             case "takeover" -> new ProfileMode[] {ProfileMode.FRAME_ONLY, ProfileMode.TIMED};
+            case "scene-store" ->
+                    new ProfileMode[] {
+                        ProfileMode.FRAME_ONLY, ProfileMode.TIMED, ProfileMode.FLOW_AUDIT
+                    };
             case "vanilla" ->
                     new ProfileMode[] {
                         ProfileMode.FRAME_ONLY, ProfileMode.TIMED, ProfileMode.JFR_ONLY
@@ -106,6 +112,7 @@ public final class CityFrameComparisonProbe {
                 modes =
                         captureModes(
                                 System.getProperty("radiance.audit.cityProfilePlan", "standard"));
+                requestedReloads = Integer.getInteger("radiance.audit.cityResourceReloads", 1);
                 deadline = now + 600_000_000_000L;
             }
             if (now > deadline)
@@ -154,6 +161,7 @@ public final class CityFrameComparisonProbe {
                         && now - quietSince >= 10_000_000_000L) {
                     if (modes.length == 0) {
                         PaintingModelProbe.checkpoint("before-reload");
+                        if (requestedReloads > 1) captureReloadView(mc);
                         step = 4;
                         entered = now;
                         LOG.info(
@@ -183,6 +191,15 @@ public final class CityFrameComparisonProbe {
                     if (seconds < 1 || seconds > 120)
                         throw new IllegalArgumentException("City profile seconds must be 1..120");
                     partWindows.add(partCounters());
+                    var eye = mc.gameRenderer.getMainCamera().getPosition();
+                    var cameraState =
+                            mc.level.getBlockState(net.minecraft.core.BlockPos.containing(eye));
+                    LOG.info(
+                            "CITY_MEDIUM_ADMISSION position={} block={} model={} needed={}",
+                            eye,
+                            cameraState,
+                            mc.getBlockRenderer().getBlockModel(cameraState).getClass().getName(),
+                            cameraMediumAdmission(mc, eye));
                     SourceEfficiencyObservation.start(mc, label + "-" + captureIndex);
                     if (FrameProfiler.request(
                                     seconds,
@@ -205,6 +222,16 @@ public final class CityFrameComparisonProbe {
                     return;
                 }
                 if (Boolean.getBoolean("radiance.audit.vanillaPerformance")) {
+                    String replayCapture = System.getenv("RADIANCE_SCENE_CAPTURE");
+                    if (replayCapture != null && !replayCapture.isBlank()) {
+                        step = 7;
+                        entered = now;
+                        java.nio.file.Files.writeString(
+                                java.nio.file.Path.of(replayCapture, "capture.request"),
+                                "city-after-timing\n");
+                        LOG.info("CITY_COMPARISON native-snapshot requested after timed windows");
+                        return;
+                    }
                     step = 4;
                     entered = now;
                     reload = mc.reloadResourcePacks();
@@ -222,11 +249,32 @@ public final class CityFrameComparisonProbe {
                 LOG.info("CITY_COMPARISON capture-finished; requesting resource reload");
                 reload = mc.reloadResourcePacks();
                 entered = now;
+            } else if (step == 7) {
+                var root = java.nio.file.Path.of(System.getenv("RADIANCE_SCENE_CAPTURE"));
+                if (java.nio.file.Files.exists(root.resolve("capture-error.txt")))
+                    throw new IllegalStateException(
+                            java.nio.file.Files.readString(root.resolve("capture-error.txt")));
+                if (java.nio.file.Files.exists(root.resolve("scene.json"))) {
+                    LOG.info(
+                            "CITY_COMPARISON native-snapshot complete; requesting resource reload");
+                    step = 4;
+                    entered = now;
+                    reload = mc.reloadResourcePacks();
+                } else if (now - entered > 150_000_000_000L)
+                    throw new IllegalStateException(
+                            "Native snapshot did not complete; use the matching development build");
             } else if (step == 4 && reload.isDone()) {
                 reload.join();
                 if (now - entered >= 15_000_000_000L) {
                     MaterialStateBatchProbe.verify("reload-complete");
                     PaintingModelProbe.checkpoint("reload-complete");
+                    ++completedReloads;
+                    if (requestedReloads > 1) captureReloadView(mc);
+                    if (completedReloads < requestedReloads) {
+                        entered = now;
+                        reload = mc.reloadResourcePacks();
+                        return;
+                    }
                     step = 5;
                     LOG.info(
                             "CITY_COMPARISON reload-complete normal-stop font-violations={}",
@@ -242,6 +290,15 @@ public final class CityFrameComparisonProbe {
             LOG.error("CITY_COMPARISON FAIL; stop without retry", failure);
             mc.stop();
         }
+    }
+
+    private static void captureReloadView(Minecraft mc) {
+        var evidence = new java.io.File(System.getProperty("validation.result"));
+        net.minecraft.client.Screenshot.grab(
+                evidence,
+                "reload-" + completedReloads + ".png",
+                mc.getMainRenderTarget(),
+                message -> {});
     }
 
     private static Object partCounters() {
@@ -281,6 +338,18 @@ public final class CityFrameComparisonProbe {
                                                         "registrations,builds,draws,sources,versions,sourceBytes,meshBytes",
                                                 "coverage", coverage))
                         + "\n");
+    }
+
+    private static Object cameraMediumAdmission(Minecraft mc, net.minecraft.world.phys.Vec3 eye)
+            throws ReflectiveOperationException {
+        Class<?> hint;
+        try {
+            hint = Class.forName("com.radiance.adapter.vanilla.CameraMediumHint");
+        } catch (ClassNotFoundException earlierFrozenProduct) {
+            return "unavailable-in-frozen-product";
+        }
+        return hint.getMethod("needed", Minecraft.class, net.minecraft.world.phys.Vec3.class)
+                .invoke(null, mc, eye);
     }
 
     public static boolean viewportReady(Minecraft mc, long now) {

@@ -30,7 +30,8 @@ class CpuPreparationBatch {
     std::atomic<size_t> threadCount_{0};
     unsigned concurrency_;
     ThreadFactory threadFactory_;
-    size_t count_ = 0, remaining_ = 0, failedIndex_ = 0;
+    static constexpr size_t jobsPerClaim = 4;
+    size_t count_ = 0, remaining_ = 0, participatingWorkers_ = 0, failedIndex_ = 0;
     uint64_t generation_ = 0;
     bool stopping_ = false;
     std::exception_ptr failure_;
@@ -38,12 +39,12 @@ class CpuPreparationBatch {
     void execute(bool background = false) noexcept {
         size_t completed = 0;
         for (;;) {
-            const size_t first = next_.fetch_add(4, std::memory_order_relaxed);
+            const size_t first = next_.fetch_add(jobsPerClaim, std::memory_order_relaxed);
             if (first >= count_) {
                 if (background) backgroundJobs_.fetch_add(completed, std::memory_order_relaxed);
                 return;
             }
-            for (size_t i = first; i < std::min(first + 4, count_); ++i) {
+            for (size_t i = first; i < std::min(first + jobsPerClaim, count_); ++i) {
                 ++completed;
                 try {
                     operation_(i);
@@ -58,13 +59,13 @@ class CpuPreparationBatch {
         }
     }
 
-    void work() noexcept {
-        uint64_t observed = 0;
+    void work(size_t worker, uint64_t observed) noexcept {
         std::unique_lock lock(mutex_);
         for (;;) {
             ready_.wait(lock, [&] { return stopping_ || generation_ != observed; });
             if (stopping_) return;
             observed = generation_;
+            if (worker >= participatingWorkers_) continue;
             lock.unlock();
             execute(true);
             lock.lock();
@@ -84,11 +85,12 @@ class CpuPreparationBatch {
         threadCount_.store(0, std::memory_order_relaxed);
     }
 
-    void start() {
-        if (!workers_.empty()) return;
+    void ensureWorkers(size_t count) {
+        if (workers_.size() >= count) return;
         try {
             workers_.reserve(concurrency_ - 1);
-            for (unsigned i = 1; i < concurrency_; ++i) workers_.emplace_back(threadFactory_([this] { work(); }));
+            for (size_t i = workers_.size(); i < count; ++i)
+                workers_.emplace_back(threadFactory_([this, i, observed = generation_] { work(i, observed); }));
             threadCount_.store(workers_.size(), std::memory_order_relaxed);
         } catch (...) {
             stop();
@@ -124,15 +126,17 @@ class CpuPreparationBatch {
     }
 
     void run(size_t count, const std::function<void(size_t)> &operation) {
-        if (count > std::numeric_limits<size_t>::max() - 4)
+        if (count > std::numeric_limits<size_t>::max() - jobsPerClaim)
             throw std::length_error("CPU preparation batch size overflow");
         std::lock_guard dispatch(dispatch_);
-        if (concurrency_ == 1 || count < 2) {
+        const auto claims = (count + jobsPerClaim - 1) / jobsPerClaim;
+        const size_t participants = std::min<size_t>(concurrency_, claims);
+        if (participants <= 1) {
             backgroundJobs_.store(0, std::memory_order_relaxed);
             for (size_t i = 0; i < count; ++i) operation(i);
             return;
         }
-        start();
+        ensureWorkers(participants - 1);
         {
             std::lock_guard lock(mutex_);
             operation_ = operation;
@@ -141,7 +145,8 @@ class CpuPreparationBatch {
             backgroundJobs_.store(0, std::memory_order_relaxed);
             failedIndex_ = std::numeric_limits<size_t>::max();
             failure_ = nullptr;
-            remaining_ = workers_.size();
+            participatingWorkers_ = participants - 1;
+            remaining_ = participatingWorkers_;
             ++generation_;
         }
         ready_.notify_all();

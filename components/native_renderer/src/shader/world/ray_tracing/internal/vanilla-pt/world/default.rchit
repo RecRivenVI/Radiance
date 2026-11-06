@@ -32,6 +32,7 @@
 #include "util/text_mode.glsl"
 
 layout(set = 0, binding = 0) uniform sampler2D textures[];
+layout(set = 3, binding = 12, rgba16f) uniform image2D primaryEmissionImage;
 
 #include "util/emissive_overlay.glsl"
 
@@ -99,6 +100,7 @@ indexBuffer;
 layout(location = 0) rayPayloadInEXT MainRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
 hitAttributeEXT vec2 attribs;
+#include "util/medium_boundary_state.glsl"
 
 struct SampledSurface {
     float coverageAlpha;
@@ -119,7 +121,38 @@ struct SampledSurface {
 #include "util/surface_geometry.glsl"
 
 #include "util/colour_field.glsl"
-void sampleSurfaceState(MaterialVertex source, bool useTexture,
+void resolveSurfaceNormals(vec3 mappedNormal, int normalTextureID, vec2 uv,
+    vec2 atlasUvMin, vec2 atlasUvMax, vec3 dPduWorld, vec3 dPdvWorld,
+    vec3 baseGeoNormal, vec3 sourceShadingNormal, bool useSourceShadingNormal,
+    bool hasHeightMap, float maxDepthWorld, HeightMapHit localHit, vec3 viewDir,
+    bool usePbr, bool useFlatEdgeBand, out vec3 geometricNormal, out vec3 shadingNormal) {
+    geometricNormal = localHit.sideWall ? localHit.geometricNormal : baseGeoNormal;
+    shadingNormal = localHit.sideWall ? geometricNormal : sourceShadingNormal;
+    if (VPT_PBR_SAMPLING_MODE != 0u && hasHeightMap && !localHit.sideWall && normalTextureID >= 0 &&
+        usePbr &&
+        !useFlatEdgeBand) {
+        geometricNormal = sampleNormal(textures[nonuniformEXT(normalTextureID)], uv, atlasUvMin, atlasUvMax,
+                                       dPduWorld, dPdvWorld, baseGeoNormal, 0, VPT_PBR_SAMPLING_MODE,
+                                       maxDepthWorld, viewDir);
+    }
+
+    if (!localHit.sideWall && usePbr) {
+        if (!useSourceShadingNormal) shadingNormal = geometricNormal;
+        else {
+            if (dot(shadingNormal, geometricNormal) < 0.0) shadingNormal = -shadingNormal;
+            if (dot(shadingNormal, geometricNormal) <= 1e-5) shadingNormal = geometricNormal;
+        }
+        vec3 tangent, bitangent;
+        tangent = normalizeF(dPduWorld - shadingNormal * dot(shadingNormal, dPduWorld),
+                             abs(shadingNormal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
+        bitangent = normalizeF(cross(shadingNormal, tangent), dPdvWorld);
+        tangent = normalizeF(cross(bitangent, shadingNormal), tangent);
+        shadingNormal = applyNormalMapToBasis(mappedNormal, tangent, bitangent, shadingNormal, geometricNormal, viewDir);
+    }
+
+}
+
+bool sampleSurfaceState(MaterialVertex source, bool useTexture,
                         uint textureID,
                         TextureMapEntry textureMap,
                         vec2 atlasUvMin,
@@ -147,6 +180,8 @@ void sampleSurfaceState(MaterialVertex source, bool useTexture,
                         vec3 viewDir,
                         bool isWaterMaterial,
                         bool isFftWaterSurface,
+                        bool mapsResolved,
+                        bool tryOpaqueCache,
                         out SampledSurface surface) {
     surface.coverageAlpha = isCoverageAlphaMode(alphaMode) ?
         resolveSourceAlpha(1.0, colorLayerMix ? 1.0 : colorLayerValue.a, drawColour.a, alphaMode, sourceAlphaRule) : 1.0;
@@ -157,7 +192,43 @@ void sampleSurfaceState(MaterialVertex source, bool useTexture,
     bool textSurface = isTextMode(alphaMode);
     bool usePbr = !textSurface && !isLodMaterial(source);
     if (useTexture) {
-        textureMap = sourceMaterialMaps(textureMap, uv, lod);
+        if (!mapsResolved) textureMap = sourceMaterialMaps(textureMap, uv, lod);
+        if (textureMap.normal >= 0 && usePbr) {
+            normalValue = samplePBRTexture(textures[nonuniformEXT(textureMap.normal)], uv, atlasUvMin, atlasUvMax, lod,
+                VPT_PBR_SAMPLING_MODE);
+            if (hasHeightMap) {
+                ivec2 heightMapSize = textureSize(textures[nonuniformEXT(textureMap.normal)], 0);
+                useFlatEdgeBand = isEdgeUV(uv, atlasUvMin, atlasUvMax, heightMapSize);
+            }
+        }
+    }
+    vec3 geometricNormal = localHit.sideWall ? localHit.geometricNormal : baseGeoNormal;
+    vec3 shadingNormal = localHit.sideWall ? geometricNormal : sourceShadingNormal;
+    if (!isFftWaterSurface) {
+        vec3 mappedNormal;
+        mappedNormal.xy = normalValue.xy * 2.0 - 1.0;
+        mappedNormal.z = sqrt(max(0.0, 1.0 - dot(mappedNormal.xy, mappedNormal.xy)));
+        resolveSurfaceNormals(mappedNormal, textureMap.normal, uv, atlasUvMin, atlasUvMax,
+            dPduWorld, dPdvWorld, baseGeoNormal, sourceShadingNormal, useSourceShadingNormal,
+            hasHeightMap, maxDepthWorld, localHit, viewDir, usePbr, useFlatEdgeBand,
+            geometricNormal, shadingNormal);
+    }
+    if (tryOpaqueCache) {
+        // Acceptance, exact shading normal and arriving-medium attenuation precede the
+        // same cache query. A miss restores the incoming weight for ordinary shading.
+        vec3 incoming = mainRay.throughput, surfaceWeight = mainRay.surfaceThroughput;
+        uint boundary = mainRay.boundaryFlags;
+        mainRay.normal = shadingNormal;
+        rayPrepareOpaque(mainRay, mainRay.hitT);
+        if (finishCachedSurface(mainRay, worldPos, worldUBO.cameraPos.xyz, 0.0)) {
+            mainRay.stateBits &= ~(rayCacheTransparentBit | rayCoverageHitBit);
+            return true;
+        }
+        mainRay.throughput = incoming;
+        mainRay.surfaceThroughput = surfaceWeight;
+        mainRay.boundaryFlags = boundary;
+    }
+    if (useTexture) {
         albedoValue = sampleMaterialTexture(source, textures[nonuniformEXT(textureID)], uv, lod, false);
         if (textSurface) {
             albedoValue = resolveTextTextureColor(albedoValue, true, alphaMode);
@@ -173,14 +244,7 @@ void sampleSurfaceState(MaterialVertex source, bool useTexture,
         specularValue = textureMap.specular >= 0 && usePbr ?
                             sampleTexture(textures[nonuniformEXT(textureMap.specular)], uv, lod, false) :
                             vec4(0.0);
-        normalValue = textureMap.normal >= 0 && usePbr ?
-                          samplePBRTexture(textures[nonuniformEXT(textureMap.normal)], uv, atlasUvMin, atlasUvMax, lod,
-                                           VPT_PBR_SAMPLING_MODE) :
-                          vec4(0.5, 0.5, 1.0, 0.0);
-        if (hasHeightMap && textureMap.normal >= 0 && usePbr) {
-            ivec2 heightMapSize = textureSize(textures[nonuniformEXT(textureMap.normal)], 0);
-            useFlatEdgeBand = isEdgeUV(uv, atlasUvMin, atlasUvMax, heightMapSize);
-        }
+
     }
     if (textSurface) {
         normalValue = vec4(0.5, 0.5, 1.0, 0.0);
@@ -203,8 +267,6 @@ void sampleSurfaceState(MaterialVertex source, bool useTexture,
     }
     vec3 glintRadiance = applyGlintMaterialLayer(mat, glint);
 
-    vec3 geometricNormal = localHit.sideWall ? localHit.geometricNormal : baseGeoNormal;
-    vec3 shadingNormal = localHit.sideWall ? geometricNormal : sourceShadingNormal;
     bool useWaterMaterial = isWaterMaterial && !localHit.sideWall;
     if (useWaterMaterial) {
         applyWaterMaterial(albedoValue, tint, mat);
@@ -222,27 +284,6 @@ void sampleSurfaceState(MaterialVertex source, bool useTexture,
         }
     }
 
-    if (!isFftWaterSurface && VPT_PBR_SAMPLING_MODE != 0u && hasHeightMap && !localHit.sideWall && textureMap.normal >= 0 &&
-        usePbr &&
-        !useFlatEdgeBand) {
-        geometricNormal = sampleNormal(textures[nonuniformEXT(textureMap.normal)], uv, atlasUvMin, atlasUvMax,
-                                       dPduWorld, dPdvWorld, baseGeoNormal, 0, VPT_PBR_SAMPLING_MODE,
-                                       maxDepthWorld, viewDir);
-    }
-
-    if (!isFftWaterSurface && !localHit.sideWall && usePbr) {
-        if (!useSourceShadingNormal) shadingNormal = geometricNormal;
-        else {
-            if (dot(shadingNormal, geometricNormal) < 0.0) shadingNormal = -shadingNormal;
-            if (dot(shadingNormal, geometricNormal) <= 1e-5) shadingNormal = geometricNormal;
-        }
-        vec3 tangent, bitangent;
-        tangent = normalizeF(dPduWorld - shadingNormal * dot(shadingNormal, dPduWorld),
-                             abs(shadingNormal.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0));
-        bitangent = normalizeF(cross(shadingNormal, tangent), dPdvWorld);
-        tangent = normalizeF(cross(bitangent, shadingNormal), tangent);
-        shadingNormal = applyNormalMapToBasis(mat.normal, tangent, bitangent, shadingNormal, geometricNormal, viewDir);
-    }
 
     surface.uv = uv;
     surface.depth = localHit.depth;
@@ -256,6 +297,7 @@ void sampleSurfaceState(MaterialVertex source, bool useTexture,
     surface.tint = tint;
     surface.glintRadiance = glintRadiance;
     surface.mat = mat;
+    return false;
 }
 
 
@@ -723,7 +765,16 @@ bool traceLocalHeightIntersectionAndExit(int normalTextureID,
 #include "util/layered_light.glsl"
 #include "util/lod_light.glsl"
 
-vec3 sampleSurfaceDirectLight(SampledSurface surface,
+// The shadow ray is traced by main() after everything else, so that no surface state
+// has to survive the nested trace on the invocation stack.
+struct PendingSunLight {
+    vec3 weight;
+    vec3 origin;
+    vec3 direction;
+    uint mask;
+};
+
+bool prepareSurfaceDirectLight(out PendingSunLight pending, SampledSurface surface,
                               vec3 viewDir,
                               vec2 referenceUv,
                               vec3 referenceWorldPos,
@@ -736,21 +787,22 @@ vec3 sampleSurfaceDirectLight(SampledSurface surface,
                               int normalTextureID,
                               float maxDepthWorld,
                               bool isFftWaterSurface) {
-    if (worldUBO.skyType != 1 || weatherDirectStrength(skyUBO.rainGradient, skyUBO.thunderGradient) <= 0.0) { return vec3(0.0); }
+    pending = PendingSunLight(vec3(0.0), vec3(0.0), vec3(0.0), 0u);
+    if (worldUBO.skyType != 1 || weatherDirectStrength(skyUBO.rainGradient, skyUBO.thunderGradient) <= 0.0) { return false; }
 
     bool isOpaqueSurface = surface.mat.transmission <= EPS;
-    if (!isOpaqueSurface) return vec3(0.0);
+    if (!isOpaqueSurface) return false;
     vec3 lightDir = celestialSunDirection();
     if (lightDir.y < 0.0) { lightDir = -lightDir; }
 
     float celestialPdf;
     vec3 sampledLightDir = sampleCelestialDirection(mainRay.seed, celestialPdf);
     float sampledLightNoL = dot(sampledLightDir, surface.geometricNormal);
-    if (isOpaqueSurface && sampledLightNoL <= 0.0) { return vec3(0.0); }
+    if (isOpaqueSurface && sampledLightNoL <= 0.0) { return false; }
 
     float lightPdf;
     vec3 lightBRDF = DisneyEval(surface.mat, viewDir, surface.shadingNormal, sampledLightDir, lightPdf);
-    if (lightPdf <= 1e-6) { return vec3(0.0); }
+    if (lightPdf <= 1e-6) { return false; }
 
     vec3 shadowOriginPos = surface.worldPos;
     vec3 shadowOriginGeomNormal = surface.geometricNormal;
@@ -763,7 +815,7 @@ vec3 sampleSurfaceDirectLight(SampledSurface surface,
                                                 baseGeoNormal, maxDepthWorld, surface, sampledLightDir,
                                                 VPT_PARALLAX_SECONDARY_MAX_STEPS, shadowSelfHit, exitUv, exitDepth,
                                                 exitDistance)) {
-            return vec3(0.0);
+            return false;
         }
         if (!surface.edgeWall) {
             shadowOriginPos =
@@ -772,11 +824,6 @@ vec3 sampleSurfaceDirectLight(SampledSurface surface,
             shadowOriginGeomNormal = baseGeoNormal;
         }
     }
-
-    shadowRay.radiance = vec3(0.0);
-    shadowRay.throughput = vec3(1.0);
-    shadowRay.queryPadding = 0u;
-    shadowRay.pad0 = 2u;
 
     vec3 baseWorldPos = shadowOriginPos;
     vec3 exitGeoNormal = shadowOriginGeomNormal;
@@ -787,18 +834,15 @@ vec3 sampleSurfaceDirectLight(SampledSurface surface,
     }
     uint shadowMask = receiverQueryMask(queryTransport, true, rayReceiveOnlyReceiver(mainRay)) & ~queryCloud;
     if (VPT_CLOUD_MODE != 2u) { shadowMask |= CLOUD_MASK; }
-    traceRayEXT(topLevelAS, 0u, shadowMask, 0, 0, 0,
-                shadowOrigin, 0.0001, sampledLightDir, 1000.0, 1);
-
-    float progress = skyUBO.rainGradient;
-    vec3 lightRadiance = shadowRay.radiance * mainRay.throughput * lightBRDF * celestialMis(celestialPdf, lightPdf) / celestialPdf;
+    vec3 lightRadiance = mainRay.throughput * lightBRDF * celestialMis(celestialPdf, lightPdf) / celestialPdf;
     if (VPT_CLOUD_MODE == 2u) {
         vec3 absoluteShadowOriginPos = baseWorldPos + vec3(worldUBO.cameraPos.xyz);
         float cloudVisibility = volumetricCloudLightVisibility(absoluteShadowOriginPos, lightDir,
                                                                max(VPT_VOLUMETRIC_CLOUD_LIGHT_STEPS, 1), 0.175);
         lightRadiance *= cloudVisibility;
     }
-    return lightRadiance;
+    pending = PendingSunLight(lightRadiance, shadowOrigin, sampledLightDir, shadowMask);
+    return true;
 }
 
 #include "util/previous_scene_position.glsl"
@@ -894,10 +938,16 @@ void main() {
 
         float coneRadiusWorld = mainRay.coneWidth + gl_HitTEXT * mainRay.coneSpread;
         computedposduDv(p0.pos, p1.pos, p2.pos, m0.textureUV, m1.textureUV, m2.textureUV, dposdu, dposdv);
-        lod = lodWithObjectCone(textures[nonuniformEXT(textureID)], coneRadiusWorld, mat3(gl_ObjectToWorldEXT),
-            p0.pos, p1.pos, p2.pos, m0.textureUV, m1.textureUV, m2.textureUV);
         dPduWorld = objectToWorld * dposdu;
         dPdvWorld = objectToWorld * dposdv;
+        vec2 uv1 = m1.textureUV - m0.textureUV, uv2 = m2.textureUV - m0.textureUV;
+        if (abs(uv1.x * uv2.y - uv1.y * uv2.x) < 1e-12) {
+            // Degenerate UVs normalize after the object transform; keep that fallback.
+            lod = lodWithObjectCone(textures[nonuniformEXT(textureID)], coneRadiusWorld, objectToWorld,
+                p0.pos, p1.pos, p2.pos, m0.textureUV, m1.textureUV, m2.textureUV);
+        } else {
+            lod = rayConeLod(vec2(textureSize(textures[nonuniformEXT(textureID)], 0)), coneRadiusWorld, dPduWorld, dPdvWorld);
+        }
         planeGeoNormal = normalizeF(cross(dPduWorld, dPdvWorld), baseGeoNormal);
         baseGeoNormal = planeGeoNormal;
         if (dot(baseGeoNormal, baseViewDir) < 0.0) { baseGeoNormal = -baseGeoNormal; }
@@ -905,10 +955,10 @@ void main() {
         if (textureMap.flag >= 0) {
             ivec4 flags = ivec4(round(sampleTexture(textures[nonuniformEXT(textureMap.flag)], textureUV, ceil(lod), false) * 255.0));
             isWaterMaterial = isWaterMaterial || (flags.r & 0x1) > 0;
+            textureMap = sourceMaterialMapsWithPresence(textureMap, uint(flags.g));
         }
         hasFftWaterSurface = (useRealisticWaterSurface && isWaterMaterial && abs(planeGeoNormal.y) > 0.75);
 
-        textureMap = sourceMaterialMaps(textureMap, textureUV, lod);
 
         if (!isWaterMaterial && parallaxEnabled && bounce == 0u && textureMap.normal >= 0 && coordinate != 1u &&
             !textSurface) {
@@ -952,10 +1002,13 @@ void main() {
     mainRay.coneWidth += actualHitT * mainRay.coneSpread;
     mainRay.directLightRadiance = vec3(0.0);
     mainRay.hasPrevScenePos = 0u;
-    if (bounce == 0u) {
-        vec3 prevScenePos;
-        if (loadPreviousScenePos(geometryBufferIndex, gl_PrimitiveID, baryCoords, prevScenePos)) {
-            mainRay.prevScenePos = prevScenePos;
+    vec3 previousLocal0, previousLocal1, previousLocal2;
+    mat4 previousTransform;
+    if (bounce == 0u || rayReconstructionQuery(mainRay)) {
+        if (loadPreviousSceneTriangle(geometryBufferIndex, gl_PrimitiveID, uvec3(i0, i1, i2), p0.pad0,
+            previousLocal0, previousLocal1, previousLocal2, previousTransform)) {
+            vec3 local = baryCoords.x * previousLocal0 + baryCoords.y * previousLocal1 + baryCoords.z * previousLocal2;
+            mainRay.prevScenePos = mat3(previousTransform) * local + previousTransform[3].xyz;
             mainRay.hasPrevScenePos = 1u;
         }
     }
@@ -970,12 +1023,17 @@ void main() {
 
     vec3 viewDir = -gl_WorldRayDirectionEXT;
 
+    bool opaqueCacheChecked = false;
+#if RADIANCE_SHARC_HIT_QUERY
+    opaqueCacheChecked = (mainRay.stateBits & rayCacheQueryBit) != 0u && !rayReceiveOnlyReceiver(mainRay)
+        && !rayReconstructionQuery(mainRay) && !isWaterMaterial && !isTransmissionAlphaMode(alphaMode);
+#endif
     SampledSurface surface;
-    sampleSurfaceState(m0, useTexture, textureID, textureMap, atlasUvMin, atlasUvMax, initialHit.uv, lod, alphaMode, sourceDrawColour(geometryBufferIndex), getSourceAlphaRule(packedData),
+    if (sampleSurfaceState(m0, useTexture, textureID, textureMap, atlasUvMin, atlasUvMax, initialHit.uv, lod, alphaMode, sourceDrawColour(geometryBufferIndex), getSourceAlphaRule(packedData),
                        colorLayerMix, colorLayerValue, colorLayer, glint, useOverlay, m0.overlayUV, dPduWorld, dPdvWorld,
                        baseGeoNormal, sourceShadingNormal, hasVertexShadingNormal(packedData),
                        hasHeightMapSurface, maxDepthWorld, initialHit, hitWorldPos, viewDir,
-                       isWaterMaterial, hasFftWaterSurface, surface);
+                       isWaterMaterial, hasFftWaterSurface, all(equal(initialHit.uv, textureUV)), opaqueCacheChecked, surface)) return;
 
     mainRay.normal = surface.shadingNormal;
     rayStoreMaterial(mainRay, surface.albedoValue, surface.mat.f0, surface.mat.roughness, surface.mat.metallic,
@@ -983,37 +1041,72 @@ void main() {
     rayStoreCoverage(mainRay, surface.coverageAlpha, isCoverageAlphaMode(alphaMode) && surface.mat.transmission <= EPS);
     rayStoreAux(mainRay, isWaterMaterial ? vec2(VPT_FFT_WATER_ORIGIN_BIAS, 1.0) : vec2(0.0));
 
-    rayPrepareSurfaceMedium(mainRay, surface.mat.transmission, surface.mat.ior, surface.albedoValue,
+    if (prepareImagingMedium(mainRay, surface.mat.transmission, surface.mat.ior, surface.albedoValue,
         instanceAppearances.values[geometryBufferIndex].materialFlags,
         gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT,
-        (isWaterMaterial || isLodMaterial(m0)) ? normalMatrix * (baryCoords.x * m0.norm + baryCoords.y * m1.norm + baryCoords.z * m2.norm) : vec3(0.0), actualHitT);
+        (isWaterMaterial || isLodMaterial(m0)) ? normalMatrix * (baryCoords.x * m0.norm + baryCoords.y * m1.norm + baryCoords.z * m2.norm) : vec3(0.0), planeHitWorldPos, surface.geometricNormal, actualHitT, geometryBufferIndex, gl_PrimitiveID,
+        baryCoords.x*p0.pos+baryCoords.y*p1.pos+baryCoords.z*p2.pos,
+        max(vec3(0.000001),0.000000476837158203125 *
+            (abs(p0.pos)*baryCoords.x+abs(p1.pos)*baryCoords.y+abs(p2.pos)*baryCoords.z)),
+        baseGeoNormal, gl_HitTEXT)) return;
 
-    if (finishCachedSurface(mainRay, surface.worldPos, worldUBO.cameraPos.xyz, surface.mat.transmission)) return;
+    if (rayReconstructionQuery(mainRay)
+#if VPT_RECONSTRUCTION_GUIDES
+        || (bounce == 0u && surface.mat.roughness <= 0.08 &&
+        (surface.mat.transmission > EPS || surface.mat.metallic > 0.99 || max(surface.mat.f0.r, max(surface.mat.f0.g, surface.mat.f0.b)) > 0.95))
+#endif
+    ) {
+        vec3 previousNormal = surface.shadingNormal;
+        if (mainRay.hasPrevScenePos != 0u) {
+            vec3 a = mat3(previousTransform) * previousLocal0 + previousTransform[3].xyz;
+            vec3 b = mat3(previousTransform) * previousLocal1 + previousTransform[3].xyz;
+            vec3 c = mat3(previousTransform) * previousLocal2 + previousTransform[3].xyz;
+            vec3 currentEdge = mat3(gl_ObjectToWorldEXT) * (p1.pos - p0.pos);
+            vec3 currentCross = cross(currentEdge, mat3(gl_ObjectToWorldEXT) * (p2.pos - p0.pos));
+            vec3 previousCross = cross(b - a, c - a);
+            if (dot(currentCross, currentCross) > 1e-16 && dot(previousCross, previousCross) > 1e-16) {
+                vec3 cn = normalize(currentCross), pn = normalize(previousCross);
+                mat3 currentBasis = mat3(normalize(currentEdge), normalize(cross(cn, currentEdge)), cn);
+                mat3 previousBasis = mat3(normalize(b - a), normalize(cross(pn, b - a)), pn);
+                previousNormal = normalize(previousBasis * transpose(currentBasis) * surface.shadingNormal);
+            }
+        }
+        imageStore(rayMaterialStateImage, rayMaterialStateCoord(3), vec4(previousNormal, 1.0));
+    }
+    // Guide-only paths sample actual material/geometry and medium boundaries,
+    // but do not evaluate lights, populate SHARC, or overwrite emission AOVs.
+    if (rayReconstructionQuery(mainRay)) { raySetStop(mainRay, true); return; }
+
+    if (!opaqueCacheChecked && finishCachedSurface(mainRay, surface.worldPos, worldUBO.cameraPos.xyz, surface.mat.transmission)) return;
     mainRay.scatterRoughness = surface.mat.roughness;
 
     SampledSurface currentSurface = surface;
     vec3 emissiveOverlay = sampleEmissiveOverlay(eyeOverlayTextureForQuery(m0.emissiveOverlayTextureID, instanceAppearances.values[geometryBufferIndex].materialFlags, gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT, rayDirectImage(mainRay)), initialHit.uv, lod, sourceEyeColour(geometryBufferIndex));
     vec3 currentViewDir = viewDir;
     bool storedLobeType = false;
+    PendingSunLight pendingSun;
+    bool hasPendingSun = false, continuePath = false;
     for (int localBounce = 0; localBounce < 1; ++localBounce) {
         vec3 emissionRadiance = materialEmissionRadiance(currentSurface.tint, currentSurface.mat.emission) * mainRay.throughput;
         emissionRadiance += currentSurface.tint * albedoEmission * mainRay.throughput * lodEmissionWeight(geometryBufferIndex,gl_PrimitiveID,currentSurface.worldPos);
         emissionRadiance += emissiveOverlay * mainRay.throughput;
         emissionRadiance += currentSurface.glintRadiance * mainRay.throughput;
+        // The reconstruction AOV must contain exactly the emission used by PT,
+        // including gain, source layers and path weight. Only camera queries write it.
+        if ((mainRay.stateBits & rayPrimaryEmissionCaptureBit) != 0u)
+            imageStore(primaryEmissionImage, ivec2(gl_LaunchIDEXT.xy), vec4(emissionRadiance, 1.0));
         mainRay.radiance += emissionRadiance;
 
-        vec3 directLight =
-            sampleSurfaceDirectLight(currentSurface, currentViewDir, textureUV, planeHitWorldPos, atlasUvMin, atlasUvMax,
+        hasPendingSun =
+            prepareSurfaceDirectLight(pendingSun, currentSurface, currentViewDir, textureUV, planeHitWorldPos, atlasUvMin, atlasUvMax,
                                      dPduWorld, dPdvWorld, baseGeoNormal, traceLocalHeight,
                                      textureMap.normal, maxDepthWorld, hasFftWaterSurface);
-        if (localBounce == 0) { mainRay.directLightRadiance = directLight; }
-        mainRay.radiance += directLight;
         mainRay.radiance += sampleLayeredWorldLight(currentSurface.mat,currentSurface.worldPos,currentSurface.shadingNormal,currentViewDir);
         mainRay.radiance += sampleLodLight(currentSurface.mat,currentSurface.worldPos,currentSurface.shadingNormal,currentViewDir);
 
         // The caller has no remaining segment. Keep this surface's lighting but
         // avoid an unused BSDF draw, direction and medium-boundary continuation.
-        if (rayTerminal(mainRay)) { raySetStop(mainRay, true); return; }
+        if (rayTerminal(mainRay)) break;
 
         bool isOpaqueSurface = currentSurface.mat.transmission <= EPS;
         vec3 sampleDir;
@@ -1024,8 +1117,8 @@ void main() {
             float branchFloor = VPT_TRANSPARENT_SPLIT_MODE == VPT_TRANSPARENT_SPLIT_MODE_BALANCED &&
                 rayDirectImage(mainRay) && rayBounce(mainRay) == 0u ? VPT_TRANSPARENT_BRANCH_FLOOR : 0.0;
             float selection = branchFloor > 0.0 ?
-                dielectricBalancedSelection(gl_LaunchIDEXT.xy, worldUBO.seed) : -1.0;
-            bsdf = sampleDielectricWithSelection(currentSurface.mat, -currentViewDir, currentSurface.shadingNormal,
+                dielectricBalancedSelection(gl_LaunchIDEXT.xy, worldUBO.samplingFrameIndex, worldUBO.samplingSeed) : -1.0;
+            bsdf = sampleDielectricWithSelection(currentSurface.mat, -currentViewDir, currentSurface.shadingNormal, currentSurface.geometricNormal,
                 mainRay.boundaryEta, branchFloor, selection, mainRay.seed, sampleDir, pdf, lobeType);
         } else {
             bsdf = DisneySample(currentSurface.mat, currentViewDir, currentSurface.shadingNormal, sampleDir, pdf,
@@ -1041,13 +1134,11 @@ void main() {
         raySetNoisy(mainRay, true);
 
         if (pdf <= 1e-6 || max(bsdf.r, max(bsdf.g, bsdf.b)) <= 1e-6) {
-            raySetStop(mainRay, true);
-            return;
+            break;
         }
 
         if (isOpaqueSurface && dot(sampleDir, currentSurface.geometricNormal) <= 0.0) {
-            raySetStop(mainRay, true);
-            return;
+            break;
         }
 
         mainRay.lastScatterOrigin = currentSurface.worldPos;
@@ -1070,8 +1161,8 @@ void main() {
                 mainRay.origin = currentSurface.worldPos + exitNormal * 0.0002;
             }
             mainRay.direction = sampleDir;
-            raySetStop(mainRay, false);
-            return;
+            continuePath = true;
+            break;
         }
 
         HeightMapHit localBounceHit;
@@ -1091,8 +1182,8 @@ void main() {
             vec3 exitNormal = dot(sampleDir, exitGeoNormal) >= 0.0 ? exitGeoNormal : -exitGeoNormal;
             mainRay.origin = exitBasePos + exitNormal * 0.0002;
             mainRay.direction = sampleDir;
-            raySetStop(mainRay, false);
-            return;
+            continuePath = true;
+            break;
         }
 
         vec3 nextWorldPos = currentSurface.worldPos + sampleDir * localBounceHit.t;
@@ -1101,9 +1192,20 @@ void main() {
                            dPdvWorld,
                            baseGeoNormal, sourceShadingNormal, hasVertexShadingNormal(packedData),
                            hasHeightMapSurface, maxDepthWorld, localBounceHit, nextWorldPos, -sampleDir,
-                           isWaterMaterial, hasFftWaterSurface, currentSurface);
+                           isWaterMaterial, hasFftWaterSurface, false, false, currentSurface);
         currentViewDir = -sampleDir;
     }
 
-    raySetStop(mainRay, true);
+    raySetStop(mainRay, !continuePath);
+    if (hasPendingSun) {
+        shadowRay.radiance = vec3(0.0);
+        shadowRay.throughput = vec3(1.0);
+        shadowRay.queryPadding = 0u;
+        shadowRay.pad0 = 2u;
+        traceRayEXT(topLevelAS, gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT, pendingSun.mask, 0, 0, 0,
+                    pendingSun.origin, 0.0001, pendingSun.direction, 1000.0, 1);
+        vec3 directLight = shadowRay.radiance * pendingSun.weight;
+        mainRay.directLightRadiance = directLight;
+        mainRay.radiance += directLight;
+    }
 }

@@ -99,7 +99,7 @@ class ResolvedLayout {
     ResolvedIndices resolve(const Layout &source, Palette &&palette) {
         if (!source || source->empty()) throw std::invalid_argument("Empty hit-group layout");
         if (source_ == source) return indices_;
-        const auto table = palette();
+        auto table = palette();
         std::vector<uint32_t> indices;
         indices.reserve(source->size());
         for (auto group : *source) {
@@ -111,17 +111,23 @@ class ResolvedLayout {
                             std::make_shared<const std::vector<uint32_t>>(std::move(indices));
         source_ = source;
         indices_ = std::move(accepted);
+        palette_ = std::move(table);
         return indices_;
+    }
+    const std::vector<uint32_t> &palette() const {
+        return palette_;
     }
 
     void reset() noexcept {
         source_.reset();
         indices_.reset();
+        palette_.clear();
     }
 
   private:
     Layout source_;
     ResolvedIndices indices_;
+    std::vector<uint32_t> palette_;
 };
 
 } // namespace mcvr::hitgroups

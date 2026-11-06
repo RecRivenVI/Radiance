@@ -10,7 +10,7 @@
 
 只读核对指定工作区、普通构建及相关 Iris 路径。当前版本从 `inputs.toml` 取值；401 个项目类与已有编译输出对应，工作区仍有未提交内容，不将 HEAD 当作全部源码身份。Voxy 本身未修改或重建。
 
-实现位于 Extra 的 Voxy 来源解释和本体公共 LoD 执行。使用统一格式、已有纹理和 GPU 解码、BLAS、场景及退休能力，不另建完整远景渲染器。源码、产品与符号身份见 [candidate.json](../../validations/regression-voxy_integration/result/rework-20261028/candidate.json)；测试探针后续的依赖保护修正单独保留于该目录的 `source-validation.zip`。
+实现位于 Extra 的 Voxy 来源解释和本体公共 LoD 执行。使用统一格式、已有纹理和 GPU 解码、BLAS、场景及退休能力，不另建完整远景渲染器。源码、产品与符号身份见 candidate.json（`validations/regression-voxy_integration/result/rework-20261028/candidate.json`）；测试探针后续的依赖保护修正单独保留于该目录的 `source-validation.zip`。
 
 本体执行 `spotlessApply check verifyRelease verifyCompliance --strict`，Extra 同样执行并构建探针；Native 另执行 `gpuTest`，再打包实际候选。着色器编译直接读取冻结发行 JAR 的配置与内容。项目内客户端为 1920×1080、静音，仅加载 NeoForge、本体、Extra、Voxy 和对应探针；没有性能采样或桌面输入注入。
 
@@ -41,7 +41,7 @@
 
 保留了约 6.1 MiB 的 Aftermath GPU 转储、两份 shader debug、设备故障地址、AS 生命周期记录、原始日志、崩溃报告和实际运行着色器。设备故障记录包含两个指令地址和零地址读取，但尚未完成地址／着色器归因，不能直接认定某个表或资源寿命是根因。
 
-证据入口为 [delivery.json](../../validations/regression-voxy_integration/result/rework-20261028/delivery.json)，故障身份与转储清单为 [fault-preservation.json](../../validations/regression-voxy_integration/result/rework-20261028/functional-20261028-185911/fault-preservation.json)。该运行已有停止标志，失败实例保留，不自动重试。
+证据入口为 delivery.json（`validations/regression-voxy_integration/result/rework-20261028/delivery.json`），故障身份与转储清单为 fault-preservation.json（`validations/regression-voxy_integration/result/rework-20261028/functional-20261028-185911/fault-preservation.json`）。该运行已有停止标志，失败实例保留，不自动重试。
 
 ## 结论
 

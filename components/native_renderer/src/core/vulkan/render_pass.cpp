@@ -15,8 +15,8 @@ auto renderPassCerr() {
     return mcvr::log::error("RenderPass");
 }
 
-vk::RenderPass::RenderPass(std::shared_ptr<Device> device, VkRenderPass renderpass)
-    : device_(device), renderPass_(renderpass) {}
+vk::RenderPass::RenderPass(std::shared_ptr<Device> device, VkRenderPass renderpass, std::vector<Attachment> attachments)
+    : device_(device), renderPass_(renderpass), attachments_(std::move(attachments)) {}
 
 VkRenderPass &vk::RenderPass::vkRenderPass() {
     return renderPass_;
@@ -188,6 +188,28 @@ std::shared_ptr<vk::RenderPass> vk::RenderPassBuilder::RenderPassBuilder::build(
     createInfo.dependencyCount = subpassDependencyBuilder_.subpassDependencies.size();
     createInfo.pDependencies = subpassDependencyBuilder_.subpassDependencies.data();
 
+    std::vector<RenderPass::Attachment> attachments;
+    attachments.reserve(createInfo.attachmentCount);
+    for (const auto &description : attachmentDescriptionBuilder_.attachmentDescriptions)
+        attachments.push_back({description.format, 0});
+    auto requireUsage = [&](const VkAttachmentReference &reference, VkImageUsageFlags usage) {
+        if (reference.attachment == VK_ATTACHMENT_UNUSED) return;
+        if (reference.attachment >= attachments.size())
+            mcvr::failure::invariant("RenderPassBuilder::build", "attachment reference out of range");
+        attachments[reference.attachment].usage |= usage;
+    };
+    for (const auto &subpass : subpassDescriptionBuilder_.subpassDescriptions) {
+        for (uint32_t i = 0; i < subpass.inputAttachmentCount; ++i)
+            requireUsage(subpass.pInputAttachments[i], VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT);
+        for (uint32_t i = 0; i < subpass.colorAttachmentCount; ++i) {
+            requireUsage(subpass.pColorAttachments[i], VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+            if (subpass.pResolveAttachments)
+                requireUsage(subpass.pResolveAttachments[i], VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
+        }
+        if (subpass.pDepthStencilAttachment)
+            requireUsage(*subpass.pDepthStencilAttachment, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT);
+    }
+
     VkRenderPass renderPass;
     if (const auto result = vkCreateRenderPass(device->vkDevice(), &createInfo, nullptr, &renderPass);
         result != VK_SUCCESS) {
@@ -199,5 +221,5 @@ std::shared_ptr<vk::RenderPass> vk::RenderPassBuilder::RenderPassBuilder::build(
 #endif
     }
 
-    return std::make_shared<vk::RenderPass>(device, renderPass);
+    return std::make_shared<vk::RenderPass>(device, renderPass, std::move(attachments));
 }

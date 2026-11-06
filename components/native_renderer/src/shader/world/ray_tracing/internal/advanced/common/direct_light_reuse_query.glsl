@@ -195,7 +195,8 @@ float evaluateReservoirTargetAtQuery(AreaLightReservoir reservoir,
     evaluateAreaLightSampleContribution(surface, query.viewDir, cache.textureUV, cache.planeHitWorldPos,
                                         cache.atlasUvMin, cache.atlasUvMax, cache.dPduWorld, cache.dPdvWorld,
                                         cache.baseGeoNormal, query.traceLocalHeight, query.normalTextureID,
-                                        query.maxDepthWorld, reservoir.emission, reservoir.point, reservoir.normal, true,
+                                        query.maxDepthWorld, reservoir.emission,
+                                        areaLightScenePoint(reservoir.sourceChunkIndex, reservoir.point), reservoir.normal, true,
                                         targetFunction);
     return targetFunction;
 }

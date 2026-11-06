@@ -12,10 +12,15 @@ import net.minecraft.network.chat.Component;
 public final class TranslucencySettingsScreen extends Screen {
     private static final String ATTRIBUTE =
             "render_pipeline.module.ray_tracing.attribute.coverage_mode";
+    private static final String OPTICAL_GUIDES =
+            "render_pipeline.module.ray_tracing.attribute.optical_guides";
     private final Screen parent;
     private final AttributeConfig attribute;
     private final String original;
     private String selected;
+    private final AttributeConfig opticalAttribute;
+    private final String originalGuides;
+    private String selectedGuides;
     private CompletableFuture<Void> rebuild;
     private boolean failed;
 
@@ -29,6 +34,13 @@ public final class TranslucencySettingsScreen extends Screen {
                         .orElse(null);
         original = attribute == null ? null : attribute.value;
         selected = original == null ? ATTRIBUTE + ".stochastic" : original;
+        opticalAttribute =
+                Pipeline.getRayTracingShaderPackAttributes().stream()
+                        .filter(value -> OPTICAL_GUIDES.equals(value.name))
+                        .findFirst()
+                        .orElse(null);
+        originalGuides = opticalAttribute == null ? null : opticalAttribute.value;
+        selectedGuides = originalGuides == null ? "render_pipeline.false" : originalGuides;
     }
 
     @Override
@@ -36,38 +48,69 @@ public final class TranslucencySettingsScreen extends Screen {
         clearWidgets();
         if (rebuild != null) return;
         int x = width / 2 - 150;
-        int y = height / 2 - 25;
+        int y = Math.max(55, height / 2 - 45);
         Button toggle =
                 addRenderableWidget(
                         Button.builder(
                                         modeLabel(),
                                         button -> {
-                                            selected =
-                                                    ATTRIBUTE
-                                                            + (selected.endsWith(".blend")
-                                                                    ? ".stochastic"
-                                                                    : ".blend");
+                                            String[] choices =
+                                                    attribute
+                                                            .type
+                                                            .substring("enum:".length())
+                                                            .split("-");
+                                            int index =
+                                                    java.util.Arrays.asList(choices)
+                                                            .indexOf(selected);
+                                            selected = choices[(index + 1) % choices.length];
                                             init();
                                         })
                                 .bounds(x, y, 300, 20)
                                 .build());
         toggle.active = attribute != null;
+        Button guides =
+                addRenderableWidget(
+                        Button.builder(
+                                        opticalAttribute == null
+                                                ? Component.translatable(
+                                                        "options.video.translucency.guides.unsupported")
+                                                : Component.translatable(
+                                                        "options.video.translucency.guides",
+                                                        Component.translatable(
+                                                                selectedGuides.endsWith(".true")
+                                                                        ? "options.video.translucency.guides.on"
+                                                                        : "options.video.translucency.guides.off")),
+                                        button -> {
+                                            selectedGuides =
+                                                    selectedGuides.endsWith(".true")
+                                                            ? "render_pipeline.false"
+                                                            : "render_pipeline.true";
+                                            init();
+                                        })
+                                .bounds(x, y + 25, 300, 20)
+                                .build());
+        guides.active = opticalAttribute != null;
         Button apply =
                 addRenderableWidget(
                         Button.builder(
                                         Component.translatable("options.video.features.apply"),
                                         button -> {
-                                            attribute.value = selected;
+                                            if (attribute != null) attribute.value = selected;
+                                            if (opticalAttribute != null)
+                                                opticalAttribute.value = selectedGuides;
                                             failed = false;
                                             rebuild = CompletableFuture.runAsync(Pipeline::build);
                                             init();
                                         })
-                                .bounds(x, y + 30, 145, 20)
+                                .bounds(x, y + 55, 145, 20)
                                 .build());
-        apply.active = attribute != null && !java.util.Objects.equals(original, selected);
+        apply.active =
+                (attribute != null && !java.util.Objects.equals(original, selected))
+                        || (opticalAttribute != null
+                                && !java.util.Objects.equals(originalGuides, selectedGuides));
         addRenderableWidget(
                 Button.builder(Component.translatable("gui.back"), button -> onClose())
-                        .bounds(x + 155, y + 30, 145, 20)
+                        .bounds(x + 155, y + 55, 145, 20)
                         .build());
     }
 
@@ -76,7 +119,9 @@ public final class TranslucencySettingsScreen extends Screen {
             return Component.translatable("options.video.translucency.unsupported");
         return Component.translatable(
                 "options.video.translucency."
-                        + (selected.endsWith(".blend") ? "blend" : "stochastic"));
+                        + (selected.endsWith(".layered")
+                                ? "layered"
+                                : selected.endsWith(".blend") ? "blend" : "stochastic"));
     }
 
     @Override
@@ -86,7 +131,8 @@ public final class TranslucencySettingsScreen extends Screen {
             rebuild.join();
             minecraft.setScreen(parent);
         } catch (RuntimeException failure) {
-            attribute.value = original;
+            if (attribute != null) attribute.value = original;
+            if (opticalAttribute != null) opticalAttribute.value = originalGuides;
             rebuild = null;
             failed = true;
             init();
@@ -117,7 +163,7 @@ public final class TranslucencySettingsScreen extends Screen {
                 font,
                 Component.translatable(key),
                 width / 2 - 150,
-                height / 2 + 65,
+                Math.max(55, height / 2 - 45) + 85,
                 300,
                 0xffcccccc);
     }

@@ -32,6 +32,53 @@ int main() {
         batch.run(64, [&](size_t) { ++calls; });
         require(calls == 64 && batch.backgroundThreadCount() == 3);
     }
+    {
+        mcvr::CpuPreparationBatch batch(4);
+        batch.run(4, [](size_t) {});
+        require(batch.backgroundThreadCount() == 0);
+        batch.run(8, [](size_t) {});
+        require(batch.backgroundThreadCount() == 1);
+        batch.run(16, [](size_t) {});
+        require(batch.backgroundThreadCount() == 3);
+        std::barrier entered(2);
+        batch.run(8, [&](size_t i) {
+            if (i % 4 == 0) entered.arrive_and_wait();
+        });
+        require(batch.backgroundJobs() == 4);
+    }
+    // Equal sampled texels do not establish a shared material. Compare authored
+    // atlas regions before packing, including reverse/rotated UVs and triangles.
+    for (bool quads : {false, true}) {
+        using V = vk::VertexFormat::PBRVertex;
+        std::vector<V> source(8);
+        for (int i = 0; i < 4; ++i) {
+            source[i].pos = {float(i == 1 || i == 2), float(i >= 2), 0};
+            source[i].useTexture = 1;
+            source[i].textureID = 9;
+            source[i].useColorLayer = 1;
+            source[i].colorLayer = glm::vec4(1);
+            source[i].textureUV = {float(i == 1 || i == 2) * .0625f, float(i >= 2) * .0625f};
+            source[7 - i] = source[i];
+        }
+        auto indices = quads ? mcvr::topology::sequentialQuads(8) : std::vector<uint32_t>{0, 1, 2, 5, 6, 7};
+        auto check = [&](bool same) {
+            auto vertices = source;
+            auto output = indices;
+            auto prepared = mcvr::geometry::prepare(vertices, output, quads);
+            require(prepared.report.pairedQuads || prepared.report.pairedTriangles);
+            for (size_t i = 0; i < output.size(); i += 3)
+                require(((prepared.vertexFlags.at(output[i]) & mcvr::topology::sameMaterialSheet) != 0u) == same);
+            require(prepared.sheetPairs.empty() != same);
+            if (same)
+                for (auto pair : prepared.sheetPairs) require(pair != 0 && pair == prepared.sheetPairs.front());
+        };
+        check(true);
+        for (int i = 4; i < 8; ++i) source[i].textureUV.x += .125f;
+        check(false);
+        for (int i = 4; i < 8; ++i) source[i].textureUV.x -= .125f;
+        source[5].colorLayer.r = .8f;
+        check(false);
+    }
     require(liveThreads == 0);
     using namespace mcvr::topology;
     for (unsigned concurrency : {1u, 2u, 4u}) {

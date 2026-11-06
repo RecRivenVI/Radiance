@@ -15,7 +15,7 @@ class NrdModule : public WorldModule, public SharedObject<NrdModule> {
 
   public:
     static constexpr auto NAME = "render_pipeline.module.nrd.name";
-    static constexpr uint32_t inputImageNum = 14;
+    static constexpr uint32_t inputImageNum = 19;
     static constexpr uint32_t outputImageNum = 1;
 
     NrdModule();
@@ -69,9 +69,17 @@ class NrdModule : public WorldModule, public SharedObject<NrdModule> {
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> clearRadianceImages_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> baseEmissionImages_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> fogImages_;
-    std::vector<std::shared_ptr<vk::DeviceLocalImage>> diffuseHitDepthImages_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> specularHitDepthImages_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> refractionRadianceImages_;
+
+    std::array<std::vector<std::shared_ptr<vk::DeviceLocalImage>>, 6> opticalGuideImages_;
+    struct TransmissionSlot {
+        std::array<std::shared_ptr<vk::DeviceLocalImage>, 5> inputs;
+        std::shared_ptr<vk::DeviceLocalImage> output;
+        std::shared_ptr<vk::DescriptorTable> prepare;
+        std::shared_ptr<std::array<std::shared_ptr<vk::DeviceLocalImage>, size_t(nrd::ResourceType::MAX_NUM)>> pool;
+    };
+    std::vector<TransmissionSlot> transmission_;
 
     // NRD
     // prepare
@@ -90,9 +98,6 @@ class NrdModule : public WorldModule, public SharedObject<NrdModule> {
     // composition
     std::shared_ptr<vk::ComputePipeline> composePipeline_;
     std::vector<std::shared_ptr<vk::DescriptorTable>> composeDescriptorTables_;
-    std::array<std::shared_ptr<vk::Sampler>, 2> composeSamplers_;
-    std::vector<std::shared_ptr<vk::DeviceLocalImage>> refractionHistoryRadianceImages_;
-    std::vector<std::shared_ptr<vk::DeviceLocalImage>> refractionHistoryDepthImages_;
 
 
     // output
@@ -100,8 +105,9 @@ class NrdModule : public WorldModule, public SharedObject<NrdModule> {
 
     struct ViewHistory {
         std::shared_ptr<NrdWrapper> wrapper_;
-        int32_t lastRefractionHistoryFrameIndex_ = -1;
+        std::shared_ptr<NrdWrapper> transmissionWrapper_;
         uint32_t nrdFrameIndex_ = 0;
+        glm::dvec3 reconstructionOrigin{0};
     };
     std::vector<ViewHistory> histories_;
     uint32_t width_, height_;
@@ -136,7 +142,6 @@ struct NrdModuleContext : public WorldModuleContext, public SharedObject<NrdModu
     std::shared_ptr<vk::DeviceLocalImage> clearRadianceImage;
     std::shared_ptr<vk::DeviceLocalImage> baseEmissionImage;
     std::shared_ptr<vk::DeviceLocalImage> fogImage;
-    std::shared_ptr<vk::DeviceLocalImage> diffuseHitDepthImage;
     std::shared_ptr<vk::DeviceLocalImage> specularHitDepthImage;
     std::shared_ptr<vk::DeviceLocalImage> refractionRadianceImage;
 
@@ -149,8 +154,6 @@ struct NrdModuleContext : public WorldModuleContext, public SharedObject<NrdModu
 
     std::shared_ptr<vk::DeviceLocalImage> denoisedDiffuseRadianceImage;
     std::shared_ptr<vk::DeviceLocalImage> denoisedSpecularRadianceImage;
-    std::shared_ptr<vk::DeviceLocalImage> refractionHistoryRadianceImage;
-    std::shared_ptr<vk::DeviceLocalImage> refractionHistoryDepthImage;
 
     std::shared_ptr<vk::DescriptorTable> prepareDescriptorTable;
     std::shared_ptr<vk::DescriptorTable> composeDescriptorTable;

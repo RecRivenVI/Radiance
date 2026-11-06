@@ -3,7 +3,7 @@
         "shader_pack": true,
         "display_name": "§8§kXX §r§b§lAdvanced§r §8§kXX§r"
     },
-    "requires_emission": true,
+    "requires_emission": false,
     "sharc": {
         "update_pass": "final_compose",
         "resolve_comp": "sharc_resolve.comp"
@@ -18,10 +18,16 @@
             }
         },
         {
-            "name": "render_pipeline.module.ray_tracing.attribute.num_ray_bounces",
-            "type": "int_range:1-128",
+            "name": "render_pipeline.module.ray_tracing.attribute.num_reflections",
+            "type": "int_range:2-128",
             "default_value": "4",
-            "define": "ADV_NUM_RAY_BOUNCES"
+            "define": "RADIANCE_REFLECTION_LIMIT"
+        },
+        {
+            "name": "render_pipeline.module.ray_tracing.attribute.num_refractions",
+            "type": "int_range:4-256",
+            "default_value": "8",
+            "define": "RADIANCE_REFRACTION_LIMIT"
         },
         {
             "name": "render_pipeline.module.ray_tracing.attribute.pbr_sampling_mode",
@@ -369,7 +375,7 @@
             "format": "R32G32B32A32_SFLOAT",
             "width": "RENDER_WIDTH",
             "height": "RENDER_HEIGHT",
-            "depth": 8,
+            "depth": 12,
             "storage_binding": 3
         },
         {
@@ -389,7 +395,7 @@
             "format": "R32G32B32A32_SFLOAT",
             "width": "RENDER_WIDTH",
             "height": "RENDER_HEIGHT",
-            "depth": 8,
+            "depth": 12,
             "storage_binding": 5
         },
         {
@@ -418,8 +424,8 @@
             "shared": true,
             "dimension": "2d_array",
             "format": "R32G32B32A32_SFLOAT",
-            "width": "RENDER_WIDTH",
-            "height": "RENDER_HEIGHT",
+            "width": "1 + (RENDER_WIDTH - 1) * ADV_ENABLE_RESTIR",
+            "height": "1 + (RENDER_HEIGHT - 1) * ADV_ENABLE_RESTIR",
             "depth": 6,
             "storage_binding": 8
         },
@@ -429,8 +435,8 @@
             "shared": true,
             "dimension": "2d_array",
             "format": "R32G32B32A32_UINT",
-            "width": "RENDER_WIDTH",
-            "height": "RENDER_HEIGHT",
+            "width": "1 + (RENDER_WIDTH - 1) * ADV_ENABLE_RESTIR",
+            "height": "1 + (RENDER_HEIGHT - 1) * ADV_ENABLE_RESTIR",
             "depth": 2,
             "storage_binding": 9
         },
@@ -440,8 +446,8 @@
             "shared": true,
             "dimension": "2d_array",
             "format": "R32G32B32A32_SFLOAT",
-            "width": "RENDER_WIDTH",
-            "height": "RENDER_HEIGHT",
+            "width": "1 + (RENDER_WIDTH - 1) * ADV_ENABLE_RESTIR",
+            "height": "1 + (RENDER_HEIGHT - 1) * ADV_ENABLE_RESTIR",
             "depth": 4,
             "storage_binding": 10
         },
@@ -631,7 +637,7 @@
         {
             "name": "restir_light_neighborhoods",
             "type": "intermediate",
-            "size": "CHUNK_NUM * (16 + ((2 * ADV_EMISSION_SIZE_XZ + 1) * (2 * ADV_EMISSION_SIZE_XZ + 1) * (2 * ADV_EMISSION_SIZE_Y + 1) * 16))",
+            "size": "16 + (CHUNK_NUM * (16 + ((2 * ADV_EMISSION_SIZE_XZ + 1) * (2 * ADV_EMISSION_SIZE_XZ + 1) * (2 * ADV_EMISSION_SIZE_Y + 1) * 16)) - 16) * ADV_ENABLE_RESTIR",
             "binding": 14
         }
     ],

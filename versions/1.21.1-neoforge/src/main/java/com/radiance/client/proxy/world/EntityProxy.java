@@ -15,7 +15,9 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.SheetedDecalTextureGenerator;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.blaze3d.vertex.VertexMultiConsumer;
+import com.radiance.adapter.vanilla.VanillaBlockReplacement;
 import com.radiance.api.audit.RenderAuditBridge;
+import com.radiance.api.render.BlockEntityPublications;
 import com.radiance.api.render.SourceHooks;
 import com.radiance.client.constant.Constants;
 import com.radiance.client.constant.Constants.RayTracingFlags;
@@ -1192,6 +1194,7 @@ public class EntityProxy {
                     BlockEntityRenderDispatcher blockEntityRenderDispatcher,
                     float tickDelta) {
         PoseStack matrixStack = new PoseStack();
+        Minecraft client = Minecraft.getInstance();
         List<StorageVertexConsumerProvider> entityStorageVertexConsumerProviders =
                 new ArrayList<>();
         EntityRenderDataList entityRenderDataList = new EntityRenderDataList();
@@ -1204,14 +1207,17 @@ public class EntityProxy {
             RenderAuditBridge.counter(
                     "CHUNK_PERF", "BLOCK_ENTITY_SECTION_VISITS", activeSections.size(), "");
         }
+        BlockEntityPublications.beginSections(blockBreakingProgressions);
         for (var active : activeSections) {
             // Recompilation may replace the compiled list while this frame still owns its
             // immutable snapshot. Only a reset/reposition/world change invalidates that owner.
             if (!ChunkProxy.currentBlockEntitySection(active)) continue;
             List<BlockEntity> list = active.compiled().getRenderableBlockEntities();
             if (!list.isEmpty()) {
+                list = BlockEntityPublications.enterSection(list);
                 for (BlockEntity blockEntity : list) {
-                    if (SourceHooks.ownsBlockEntity(Minecraft.getInstance().level, blockEntity)) {
+                    if (!VanillaBlockReplacement.valid(blockEntity)) continue;
+                    if (SourceHooks.ownsBlockEntity(client.level, blockEntity)) {
                         RenderAuditBridge.counter(
                                 "FLYWHEEL",
                                 "BLOCK_ENTITY_REPLACED",
@@ -1219,6 +1225,21 @@ public class EntityProxy {
                                 blockEntity.getType().toString());
                         continue;
                     }
+                    var renderer = blockEntityRenderDispatcher.getRenderer(blockEntity);
+                    if (renderer == null) continue;
+                    BlockPos blockPos = blockEntity.getBlockPos();
+                    SortedSet<BlockDestructionProgress> sortedSet =
+                            blockBreakingProgressions.get(blockPos.asLong());
+                    boolean outline =
+                            client.player != null
+                                    && client.levelRenderer.shouldShowEntityOutlines()
+                                    && blockEntity.hasCustomOutlineRendering(client.player);
+                    Object stableInputs =
+                            outline || sortedSet != null && !sortedSet.isEmpty()
+                                    ? null
+                                    : VanillaBlockReplacement.stableInputs(
+                                            renderer, blockEntity, tickDelta, null);
+                    if (BlockEntityPublications.selectStable(blockEntity, stableInputs)) continue;
                     StorageVertexConsumerProvider entityStorageVertexConsumerProvider =
                             new StorageVertexConsumerProvider(16384)
                                     .lineSource(
@@ -1227,18 +1248,14 @@ public class EntityProxy {
                                                     .ORDINARY);
                     entityStorageVertexConsumerProviders.add(entityStorageVertexConsumerProvider);
                     entityStorageVertexConsumerProvider.enablePartModels(
-                            blockEntity,
-                            blockEntityRenderDispatcher.getRenderer(blockEntity),
-                            true);
+                            blockEntity, renderer, true);
+                    entityStorageVertexConsumerProvider.blockEntityStableInputs = stableInputs;
                     StorageVertexConsumerProvider crumblingStorageVertexConsumerProvider = null;
 
                     StorageVertexConsumerProvider outlineStorageVertexConsumerProvider = null;
                     MultiBufferSource worldVertexConsumerProvider =
                             entityStorageVertexConsumerProvider;
-                    Minecraft client = Minecraft.getInstance();
-                    if (client.player != null
-                            && client.levelRenderer.shouldShowEntityOutlines()
-                            && blockEntity.hasCustomOutlineRendering(client.player)) {
+                    if (outline) {
                         outlineStorageVertexConsumerProvider =
                                 new StorageVertexConsumerProvider(16384, 1.0F)
                                         .surfaceRole(
@@ -1262,14 +1279,11 @@ public class EntityProxy {
                     final MultiBufferSource baseWorldVertexConsumerProvider =
                             worldVertexConsumerProvider;
 
-                    BlockPos blockPos = blockEntity.getBlockPos();
                     double entityPosX = blockPos.getX();
                     double entityPosY = blockPos.getY();
                     double entityPosZ = blockPos.getZ();
 
                     matrixStack.pushPose();
-                    SortedSet<BlockDestructionProgress> sortedSet =
-                            blockBreakingProgressions.get(blockPos.asLong());
                     if (sortedSet != null && !sortedSet.isEmpty()) {
                         int stage = sortedSet.last().getProgress();
                         if (stage >= 0) {
@@ -1298,17 +1312,19 @@ public class EntityProxy {
                     }
 
                     if (worldVertexConsumerProvider == entityStorageVertexConsumerProvider
-                            && com.radiance.adapter.vanilla.VanillaBlockReplacement.eligible(
-                                    blockEntityRenderDispatcher.getRenderer(blockEntity),
-                                    blockEntity))
-                        com.radiance.adapter.vanilla.VanillaBlockReplacement.render(
+                            && VanillaBlockReplacement.eligible(renderer, blockEntity))
+                        VanillaBlockReplacement.render(
                                 blockEntity,
                                 tickDelta,
                                 matrixStack,
                                 entityStorageVertexConsumerProvider);
                     else
-                        blockEntityRenderDispatcher.render(
-                                blockEntity, tickDelta, matrixStack, worldVertexConsumerProvider);
+                        VanillaBlockReplacement.renderWorldFallback(
+                                blockEntityRenderDispatcher,
+                                blockEntity,
+                                tickDelta,
+                                matrixStack,
+                                worldVertexConsumerProvider);
                     matrixStack.popPose();
 
                     processWorldEntityRenderData(
@@ -1346,8 +1362,10 @@ public class EntityProxy {
                                 entityRenderDataList);
                     }
                 }
+                BlockEntityPublications.leaveSection();
             }
         }
+        BlockEntityPublications.endSections();
 
         List<BlockEntity> noCullingBlockEntitySnapshot;
         synchronized (noCullingBlockEntities) {
@@ -1355,25 +1373,35 @@ public class EntityProxy {
         }
 
         for (BlockEntity blockEntity : noCullingBlockEntitySnapshot) {
-            if (SourceHooks.ownsBlockEntity(Minecraft.getInstance().level, blockEntity)) {
+            if (!VanillaBlockReplacement.valid(blockEntity)) continue;
+            if (SourceHooks.ownsBlockEntity(client.level, blockEntity)) {
                 RenderAuditBridge.counter(
                         "FLYWHEEL", "BLOCK_ENTITY_REPLACED", 1, blockEntity.getType().toString());
                 continue;
             }
+            var renderer = blockEntityRenderDispatcher.getRenderer(blockEntity);
+            if (renderer == null) continue;
+            boolean outline =
+                    client.player != null
+                            && client.levelRenderer.shouldShowEntityOutlines()
+                            && blockEntity.hasCustomOutlineRendering(client.player);
+            Object stableInputs =
+                    outline
+                            ? null
+                            : VanillaBlockReplacement.stableInputs(
+                                    renderer, blockEntity, tickDelta, null);
+            if (BlockEntityPublications.selectStable(blockEntity, stableInputs)) continue;
             StorageVertexConsumerProvider entityStorageVertexConsumerProvider =
                     new StorageVertexConsumerProvider(16384)
                             .lineSource(
                                     com.radiance.client.render.LineSources.BLOCK_ENTITY,
                                     com.radiance.render.contract.LineContract.WidthPolicy.ORDINARY);
             entityStorageVertexConsumerProviders.add(entityStorageVertexConsumerProvider);
-            entityStorageVertexConsumerProvider.enablePartModels(
-                    blockEntity, blockEntityRenderDispatcher.getRenderer(blockEntity), true);
+            entityStorageVertexConsumerProvider.enablePartModels(blockEntity, renderer, true);
+            entityStorageVertexConsumerProvider.blockEntityStableInputs = stableInputs;
             StorageVertexConsumerProvider outlineStorageVertexConsumerProvider = null;
             MultiBufferSource worldVertexConsumerProvider = entityStorageVertexConsumerProvider;
-            Minecraft client = Minecraft.getInstance();
-            if (client.player != null
-                    && client.levelRenderer.shouldShowEntityOutlines()
-                    && blockEntity.hasCustomOutlineRendering(client.player)) {
+            if (outline) {
                 outlineStorageVertexConsumerProvider =
                         new StorageVertexConsumerProvider(16384, 1.0F)
                                 .surfaceRole(
@@ -1401,13 +1429,16 @@ public class EntityProxy {
 
             matrixStack.pushPose();
             if (worldVertexConsumerProvider == entityStorageVertexConsumerProvider
-                    && com.radiance.adapter.vanilla.VanillaBlockReplacement.eligible(
-                            blockEntityRenderDispatcher.getRenderer(blockEntity), blockEntity))
-                com.radiance.adapter.vanilla.VanillaBlockReplacement.render(
+                    && VanillaBlockReplacement.eligible(renderer, blockEntity))
+                VanillaBlockReplacement.render(
                         blockEntity, tickDelta, matrixStack, entityStorageVertexConsumerProvider);
             else
-                blockEntityRenderDispatcher.render(
-                        blockEntity, tickDelta, matrixStack, worldVertexConsumerProvider);
+                VanillaBlockReplacement.renderWorldFallback(
+                        blockEntityRenderDispatcher,
+                        blockEntity,
+                        tickDelta,
+                        matrixStack,
+                        worldVertexConsumerProvider);
             matrixStack.popPose();
 
             processWorldEntityRenderData(
@@ -1512,6 +1543,7 @@ public class EntityProxy {
         List<StorageVertexConsumerProvider> storageVertexConsumerProviders = new ArrayList<>();
         EntityRenderDataList renderDataList = new EntityRenderDataList();
         for (BlockEntity blockEntity : blockEntities) {
+            if (!VanillaBlockReplacement.valid(blockEntity)) continue;
             if (SourceHooks.ownsBlockEntity(Minecraft.getInstance().level, blockEntity)) {
                 RenderAuditBridge.counter(
                         "FLYWHEEL",
@@ -1520,14 +1552,22 @@ public class EntityProxy {
                         blockEntity.getType().toString());
                 continue;
             }
+            var renderer = blockEntityRenderDispatcher.getRenderer(blockEntity);
+            if (renderer == null) continue;
+            Object stableInputs =
+                    placement == null
+                            ? null
+                            : VanillaBlockReplacement.stableInputs(
+                                    renderer, blockEntity, tickDelta, placement);
+            if (BlockEntityPublications.selectStable(blockEntity, stableInputs)) continue;
             StorageVertexConsumerProvider storage =
                     new StorageVertexConsumerProvider(16384)
                             .lineSource(
                                     lineSource,
                                     com.radiance.render.contract.LineContract.WidthPolicy.ORDINARY);
             storage.modelPlacement = placement;
-            storage.enablePartModels(
-                    blockEntity, blockEntityRenderDispatcher.getRenderer(blockEntity), true);
+            storage.enablePartModels(blockEntity, renderer, true);
+            storage.blockEntityStableInputs = stableInputs;
             storageVertexConsumerProviders.add(storage);
             BlockPos blockPos = blockEntity.getBlockPos();
             PoseStack poseStack = new PoseStack();
@@ -1539,13 +1579,16 @@ public class EntityProxy {
 
             transformedBlockEntityRenderDepth.set(transformedBlockEntityRenderDepth.get() + 1);
             try {
-                var renderer = blockEntityRenderDispatcher.getRenderer(blockEntity);
-                if (com.radiance.adapter.vanilla.VanillaBlockReplacement.eligible(
-                        renderer, blockEntity)) {
-                    com.radiance.adapter.vanilla.VanillaBlockReplacement.render(
+                if (VanillaBlockReplacement.eligible(renderer, blockEntity)) {
+                    VanillaBlockReplacement.render(
                             blockEntity, tickDelta, poseStack, storage, sourceCamera);
                 } else
-                    blockEntityRenderDispatcher.render(blockEntity, tickDelta, poseStack, storage);
+                    VanillaBlockReplacement.renderWorldFallback(
+                            blockEntityRenderDispatcher,
+                            blockEntity,
+                            tickDelta,
+                            poseStack,
+                            storage);
             } finally {
                 int depth = transformedBlockEntityRenderDepth.get() - 1;
                 if (depth == 0) {

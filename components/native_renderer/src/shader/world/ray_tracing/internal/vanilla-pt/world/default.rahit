@@ -45,7 +45,15 @@ indexBuffer;
 layout(location = 0) rayPayloadInEXT MainRay mainRay;
 hitAttributeEXT vec2 attribs;
 
+#include "util/coverage_sampling.glsl"
+
 void main() {
+    if ((mainRay.boundaryFlags & 0x40000000u) != 0u) {
+        uint replayGeometry=blasOffsets.offsets[gl_InstanceCustomIndexEXT]+uint(gl_GeometryIndexEXT);
+        if (replayGeometry != ((mainRay.boundaryFlags >> 3u) & 0x07ffffffu) ||
+            gl_PrimitiveID != mainRay.hasPrevScenePos) ignoreIntersectionEXT;
+        return;
+    }
 #if defined(RADIANCE_CLOUD_SURFACE)
     if (VPT_CLOUD_MODE != 1u) { ignoreIntersectionEXT; return; }
 #endif
@@ -97,8 +105,6 @@ void main() {
         uv = materialTextureUv(m0, baryCoords.x * m0.textureUV + baryCoords.y * m1.textureUV + baryCoords.z * m2.textureUV);
 
         float coneRadiusWorld = mainRay.coneWidth + gl_HitTEXT * mainRay.coneSpread;
-        vec3 dposdu, dposdv;
-        computedposduDv(p0.pos, p1.pos, p2.pos, m0.textureUV, m1.textureUV, m2.textureUV, dposdu, dposdv);
         lod = lodWithObjectCone(textures[nonuniformEXT(textureID)], coneRadiusWorld, mat3(gl_ObjectToWorldEXT),
             p0.pos, p1.pos, p2.pos, m0.textureUV, m1.textureUV, m2.textureUV);
 
@@ -125,7 +131,7 @@ void main() {
         return;
     }
     if (isCoverageAlphaMode(alphaMode)) {
-        if (alpha <= 0.0 || (alpha < 1.0 && !(RADIANCE_COVERAGE_CAPTURE != 0 && coverageBlendCandidate && rayCoverageCapture(mainRay)) && rand(mainRay.seed) >= alpha)) {
+        if (alpha <= 0.0 || (alpha < 1.0 && !(RADIANCE_COVERAGE_CAPTURE != 0 && coverageBlendCandidate && rayCoverageCapture(mainRay)) && coverageSample(geometryBufferIndex, uint(gl_PrimitiveID), rayBounce(mainRay)) >= alpha)) {
             ignoreIntersectionEXT;
         }
         return;

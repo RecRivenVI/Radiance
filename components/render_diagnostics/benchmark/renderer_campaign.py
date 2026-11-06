@@ -13,29 +13,37 @@ import vanilla_performance as city
 from takeover_experiment import ROOT, TARGET, WORKSPACE_SOFT_LIMIT_GIB, digest, write
 
 
-def observe_wddm(case):
+def observe_wddm(case, stop=None):
     """A separate, bounded memory observer; never opens or controls another process."""
     case = Path(case).resolve()
-    if not any(case.is_relative_to(path.resolve()) for path in (
-            ROOT/'validations/performance-sources/result',
-            ROOT/'validations/conformance-takeover/result/world-materials-134')):
-        raise ValueError('Owned city result directory required')
+    validations = (ROOT/'validations').resolve()
+    if not case.is_relative_to(validations) or case.relative_to(validations).parts[1:2] != ('result',):
+        raise ValueError('Owned validation result directory required')
     pid = int(json.loads((case/'process.json').read_text())['pid'])
     query = (f"$rows=@(Get-CimInstance -ClassName Win32_PerfFormattedData_GPUPerformanceCounters_GPUProcessMemory "
              f"-Filter \"Name LIKE 'pid_{pid}_%'\" | Select-Object Name,DedicatedUsage,SharedUsage,TotalCommitted); "
              "ConvertTo-Json -InputObject $rows -Compress")
     deadline = time.monotonic()+1200
     with (case/'wddm.jsonl').open('x',encoding='utf8') as out:
-        while time.monotonic()<deadline:
-            rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',query],text=True,timeout=10))
-            if not rows: break
+        while time.monotonic()<deadline and (stop is None or not stop.is_set()):
+            try:
+                rows=json.loads(subprocess.check_output(['powershell','-NoProfile','-Command',query],text=True,
+                    timeout=5,creationflags=subprocess.CREATE_NO_WINDOW))
+            except (OSError, ValueError, subprocess.SubprocessError) as error:
+                write(case/'wddm-error.json', dict(error=str(error)))
+                break
+            if not rows:
+                if stop is None or stop.wait(5): break
+                continue
             source = case/'lifecycle.jsonl'
             lines=source.read_text(encoding='utf8').splitlines() if source.is_file() else []
             out.write(json.dumps(dict(time=datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 phase=json.loads(lines[-1])['phase'] if lines else None,
                 adapters=rows,dedicated=sum(r['DedicatedUsage'] for r in rows),shared=sum(r['SharedUsage'] for r in rows),
                 committed=sum(r['TotalCommitted'] for r in rows)))+'\n')
-            out.flush(); time.sleep(5)
+            out.flush()
+            if stop is None: time.sleep(5)
+            elif stop.wait(5): break
 
 
 def analyze_minimal(case,width,height,distance):

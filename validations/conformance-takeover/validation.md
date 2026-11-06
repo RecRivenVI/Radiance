@@ -277,3 +277,18 @@ py -3.14 -B -X utf8 components/render_diagnostics/benchmark/world_materials.py d
 Native 的 `mcvr.display-profile` 检查格式、能力和峰值选择；`mcvr.display-colour-gpu` 执行实际 sRGB、PQ、色域、亮部压缩及发光函数；`mcvr.fg-ui-gpu` 检查 FP16 GUI 覆盖和背景处理。两套实际着色器包定向编译使用现有 `compile_world_materials.py`，按本次产物及配置记录身份，不用内部浮点图像代替 HDR 窗口输出证明。
 
 显示参数刷新或输出切换的定向回归可在同一命令前设置进程环境 `RADIANCE_DISPLAY_CONTROLS_ONLY=1`。它仅运行亮度原位更新、返回 SDR、返回 HDR、系统界面白和自动设置界面五场景，要求手动／自动两组完整读回；请求的参考白／界面白／峰值必须等于实际值，自动模式与当前显示器的系统白一致，参数更新窗口不得重建世界资源。该模式不代替此前完整场景与另一算法的验证。
+
+## 介质边界
+
+`media` 在已有小场景内检查真实流体生产的正反顶面及水／玻璃接触侧面，记录物理法线和未内缩的边界位置；还覆盖水下向上、掠射、直看水底和实体、带法线的粗糙玻璃、水与玻璃、异色玻璃两个方向及相机位于染色玻璃内部。`<设置归档>` 是仓库验证目录中冻结的配置 ZIP；工具记录它的哈希，固定本次功能用的八次反弹，不改变玩家配置。
+
+```powershell
+py -3.14 -X utf8 components/render_diagnostics/benchmark/world_materials.py media candidate <core> --settings-archive <设置归档>
+py -3.14 -X utf8 components/render_diagnostics/benchmark/world_materials.py media candidate <core> --settings-archive <设置归档> --algorithm advanced
+```
+
+两种算法须正常完成全部视角，真实水下／玻璃内相机位置与流体顶面、接触侧面检查均通过。Native GPU 契约另检查水→空气折射率、全反射、初始介质到不透明物的吸收、微表面样本的几何半球，以及相接替换和真正嵌套的区别；Advanced 阶段交接使用全精度状态。旧基线可显式设置探针 JVM 属性 `radiance.audit.expectPhysicalFluidNormals=false` 以记录既知生产缺陷并完成对照；其正常退出不代表物理检查通过。截图、自动检查、性能对照与玩家目视验收分别判定。
+
+接触减负的 `media` 夹具另加入独立悬空动态玻璃、单模型内部异种介质、动态接近／分离、真实空气缝、跨区段接触和玻璃板与水的局部重合，共 20 个视角。动态模型使用实际持久实例与空间接口。CPU 契约检查稳定父空间关系复用、异步结果版本、移除与槽位再用；GPU 契约执行生产过滤函数和真实介质 AS。实际包的 SPIR-V 另核对三条通用命中路径不含接触 ray query。正常退出及截图不代替动态接触的连续目视验收。
+
+性能使用冻结城市及同一探针，正式计时关闭 `RADIANCE_SHARC_AUDIT` 和管线统计。诊断可单独开启 `RADIANCE_SHARC_AUDIT=1`，以每 16×16 像素选一点的计数观察过滤、候选解码和接触事件；`MCVR_MEDIUM_CONTACT_FORCE_UNKNOWN=1` 只将准备结果标为未知，强制保留查询，不能当作关闭接触的交付开关。带计数的耗时不并入正式收益。

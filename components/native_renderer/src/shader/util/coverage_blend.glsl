@@ -16,7 +16,7 @@ void accumulateCoverage(inout vec3 radiance, inout float remaining, vec3 foregro
     remaining *= 1.0 - alpha;
 }
 
-const int coverageDeterministicLayers = 8;
+const int coverageDeterministicLayers = RADIANCE_COVERAGE_MODE == 2 ? 0 : 8;
 
 // Keep the filtered AOV sum equal to the unfiltered HDR foreground. In particular,
 // emission must not also remain in the diffuse/specular continuation channel.

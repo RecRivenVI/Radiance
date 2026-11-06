@@ -175,6 +175,7 @@ class DlssRR : public SharedObject<DlssRR> {
         RESOURCE_LINEARDEPTH,
         // Below are optional guide buffers
         RESOURCE_SPECULAR_HITDISTANCE,
+        RESOURCE_COLOR_BEFORE_TRANSPARENCY,
 
         RESOURCE_NUM
     };
@@ -198,6 +199,7 @@ class DlssRR : public SharedObject<DlssRR> {
                              glm::vec2 jitter,
                              const glm::mat4 &modelView,
                              const glm::mat4 &projection,
+                             const glm::dvec3 &cameraPosition,
                              bool reset = false);
 
   private:
@@ -223,6 +225,7 @@ class DlssRR : public SharedObject<DlssRR> {
     uint32_t m_viewport = 0;
     uint32_t m_lastFrame = UINT32_MAX;
     glm::mat4 m_previousView{1}, m_previousProjection{1};
+    glm::dvec3 m_reconstructionOrigin{0};
     bool m_resetPending = true;
     bool m_rayReconstruction = true;
     mcvr::FeatureResourceLifetime m_featureResources;

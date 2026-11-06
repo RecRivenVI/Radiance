@@ -10,8 +10,6 @@ import com.radiance.client.texture.TextureTasks;
 import com.radiance.client.texture.TextureTracker;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 import org.lwjgl.system.MemoryUtil;
 
 public class TextureProxy {
@@ -43,11 +41,6 @@ public class TextureProxy {
         return textureIds;
     }
 
-    private record EmissionTileKey(int textureId, long tileKey) {}
-
-    private static final Map<EmissionTileKey, EmissionRecorder.TileUpdate> emissionTileCache =
-            new ConcurrentHashMap<>();
-
     private static native int generateTextureIdNative();
 
     public static synchronized int generateTextureId() {
@@ -71,7 +64,6 @@ public class TextureProxy {
         TASKS.release(
                 owner,
                 () -> {
-                    clearEmissionTiles(id);
                     TextureTracker.release(id);
                     for (int unit = 0; unit < boundTextureIds.length; unit++)
                         if (boundTextureIds[unit] == id) boundTextureIds[unit] = -1;
@@ -155,7 +147,6 @@ public class TextureProxy {
 
     public static void prepareImage(
             int id, int mipLevels, int width, int height, VulkanConstants.VkFormat format) {
-        clearEmissionTiles(id);
         prepareImage(id, mipLevels, width, height, format.getValue());
     }
 
@@ -185,42 +176,7 @@ public class TextureProxy {
             int textureId, long tileKey, long cellsPtr, int cellCount);
 
     public static void uploadEmissionTile(EmissionRecorder.TileUpdate tileUpdate) {
-        if (tileUpdate == null) {
-            return;
-        }
-
-        emissionTileCache.put(
-                new EmissionTileKey(tileUpdate.textureId, tileUpdate.tileKey), tileUpdate);
-        if (!Options.collectChunkEmission) {
-            return;
-        }
-
-        uploadEmissionTileToNative(tileUpdate);
-    }
-
-    public static void flushEmissionTiles() {
-        if (!Options.collectChunkEmission) {
-            return;
-        }
-
-        for (EmissionRecorder.TileUpdate tileUpdate : emissionTileCache.values()) {
-            uploadEmissionTileToNative(tileUpdate);
-        }
-    }
-
-    public static boolean hasEmissionTile(int textureId, long tileKey) {
-        return emissionTileCache.containsKey(new EmissionTileKey(textureId, tileKey));
-    }
-
-    private static void clearEmissionTiles(int textureId) {
-        emissionTileCache.keySet().removeIf(key -> key.textureId == textureId);
-    }
-
-    private static void uploadEmissionTileToNative(EmissionRecorder.TileUpdate tileUpdate) {
-        if (tileUpdate == null) {
-            return;
-        }
-
+        if (tileUpdate == null || !Options.collectChunkEmission) return;
         ByteBuffer cellsBuffer = null;
         try {
             int cellCount = tileUpdate.cells.size();

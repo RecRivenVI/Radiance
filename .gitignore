@@ -56,3 +56,4 @@ replay_pid*
 __pycache__/
 *.pyc
 /validations/performance-sources/result/
+/validations/performance-scene_replay/result/

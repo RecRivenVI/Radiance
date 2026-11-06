@@ -58,7 +58,8 @@ void compare(const mcvr::StaticChunkScene &scene, const Fixture &fixture, uint32
     check(appearance.size() == refA.size());
     check(!std::memcmp(appearance.data(), refA.data(), appearance.size() * sizeof(appearance[0])));
     // Production upload layout: dynamic prefix + immutable primary chunks + external suffix.
-    auto compareUpload = [&]<class T>(const std::vector<T> &flat, std::vector<T> mcvr::StaticChunkPage::*member) {
+    auto compareUpload = [&]<class T>(const std::vector<T> &flat,
+                                      mcvr::StaticPageField<T> mcvr::StaticChunkPage::*member) {
         std::vector<T> changing(flat.begin(), flat.begin() + dynamicCount);
         auto expected = flat;
         if (!flat.empty()) {
@@ -130,6 +131,35 @@ void compare(const mcvr::StaticChunkScene &scene, const Fixture &fixture, uint32
 }
 } // namespace
 int main() {
+    {
+        mcvr::ChunkScenePublications spatial(65, 24);
+        auto slot = [](uint32_t x, uint32_t y, uint32_t z) { return (z * 24 + y) * 65 + x; };
+        spatial.changed(slot(0, 0, 0), false);
+        check(spatial.revision() == 0 && spatial.pages().empty());
+        std::map<uint32_t, size_t> sizes;
+        for (uint32_t z = 0; z < 65; ++z)
+            for (uint32_t y = 0; y < 24; ++y)
+                for (uint32_t x = 0; x < 65; ++x) {
+                    const auto id = spatial.pageOf(slot(x, y, z));
+                    ++sizes[id];
+                    check(id == spatial.pageOf(slot(x / 4 * 4, y / 4 * 4, z / 4 * 4)));
+                }
+        for (auto [id, count] : sizes) check(count <= 64);
+        std::set<uint32_t> xBoundary, zBoundary;
+        for (uint32_t i = 0; i < 65; ++i)
+            for (uint32_t y = 0; y < 24; ++y) {
+                xBoundary.insert(spatial.pageOf(slot(64, y, i)));
+                zBoundary.insert(spatial.pageOf(slot(i, y, 64)));
+            }
+        check(xBoundary.size() == 102 && xBoundary.size() == zBoundary.size());
+        spatial.changed(0, true);
+        spatial.changed(0, true); // An actual content replacement still invalidates.
+        check(spatial.revision() == 2);
+        spatial.changed(0, false);
+        const auto revision = spatial.revision();
+        spatial.changed(0, false);
+        check(spatial.revision() == revision && spatial.pages().begin()->second.active.empty());
+    }
     Fixture fixture;
     fixture.slots[100000] = std::make_shared<Published>(); // Capacity is not a traversal bound.
     fixture.slots[5] = std::make_shared<Published>();
@@ -139,6 +169,8 @@ int main() {
     auto get = [&] { return cache.get(publications, [&](const auto &active) { return fixture.build(active); }); };
     auto empty = get();
     check(empty->instanceCount == 0 && fixture.visits == 0);
+    publications->changed(5, false);
+    check(get() == empty && cache.builds() == 1);
     publications->changed(100000, true);
     publications->changed(5, true);
     auto frame = get();
@@ -158,6 +190,12 @@ int main() {
     auto updated = get();
     check(updated != frame && updated->pages.front()->materials[0] == 1001 && !old.expired());
     check(updated->pages.back() == frame->pages.back() && fixture.visits == 3 && cache.pageBuilds() == 3);
+    check(updated->pages.front()->groups.share() == frame->pages.front()->groups.share());
+    check(updated->pages.front()->appearances.share() == frame->pages.front()->appearances.share());
+    check(updated->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::lastPositions).directory ==
+          frame->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::lastPositions).directory);
+    check(updated->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::materials).directory !=
+          frame->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::materials).directory);
     compare(*updated, fixture, 11, {0, 1, 2});
     frame.reset();
     retention.beginFrame(2, 0, 3);

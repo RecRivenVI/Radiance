@@ -118,7 +118,7 @@ void main() {
     // Match the world text any-hit coverage decision for direct-light
     // visibility; anti-aliased glyphs must not cast opaque/glass shadows.
     if (textSurface) {
-        uint coverageSeed = xxhash32(uvec3(uint(gl_PrimitiveID), instanceID,
+        uint coverageSeed = xxhash32(uvec3(uint(gl_PrimitiveID), sceneSamplingInstance(instanceID),
                                             floatBitsToUint(gl_HitTEXT)));
         if (alpha <= 0.0 || (alpha < 1.0 && rand(coverageSeed) >= alpha)) {
             ignoreIntersectionEXT;

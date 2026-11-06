@@ -1,4 +1,9 @@
 #version 460
+#if RADIANCE_SER_MODE >= 3
+#extension GL_EXT_shader_invocation_reorder : require
+#elif RADIANCE_SER_MODE > 0
+#extension GL_NV_shader_invocation_reorder : require
+#endif
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : require
 #extension GL_EXT_control_flow_attributes : require
@@ -37,6 +42,8 @@
 #include "util/disney.glsl"
 #include "util/dielectric.glsl"
 #include "util/camera_ray.glsl"
+#include "util/reconstruction_material.glsl"
+#include "util/reconstruction_guides.glsl"
 #include "util/labpbr.glsl"
 #include "util/random.glsl"
 #include "util/ray_cone.glsl"
@@ -85,12 +92,28 @@ layout(set = 3, binding = 11, rgba16f) uniform image2D firstHitClearImage;
 layout(set = 3, binding = 12, rgba16f) uniform image2D firstHitBaseEmissionImage;
 layout(set = 3, binding = 13, rgba16f) uniform image2D fogImage;
 layout(set = 3, binding = 14, rgba16f) uniform image2D firstHitRefractionImage;
+layout(set = 3, binding = 15, rgba16f) uniform image2D reflectionGuideImage;
+layout(set = 3, binding = 16, rgba16f) uniform image2D reflectionMotionDepthImage;
+layout(set = 3, binding = 17, rgba16f) uniform image2D transmissionGuideImage;
+layout(set = 3, binding = 18, rgba16f) uniform image2D transmissionMotionDepthImage;
+layout(set = 3, binding = 19, rgba8) uniform image2D reflectionMaterialFactorImage;
+layout(set = 3, binding = 20, rgba8) uniform image2D transmissionMaterialFactorImage;
 layout(set = 5, binding = 32, r16f) uniform image2D postStarCloudTransmittanceImage;
 
 
 
 layout(location = 0) rayPayloadEXT MainRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
+layout(set = 0, binding = 0) uniform sampler2D textures[];
+layout(set=1,binding=2) readonly buffer IndexBufferAddr { uint64_t addrs[]; } indexBufferAddrs;
+layout(std430,buffer_reference,buffer_reference_align=8) readonly buffer IndexBuffer { uint indices[]; } indexBuffer;
+layout(set=1,binding=7) readonly buffer TextureMappingBuffer { TextureMapping mapping; };
+#include "util/medium_boundary_trace.glsl"
+
+// Zero mask retains every output for old callers, captures and custom graphs.
+bool exportOutput(uint index) {
+    return (uint(worldUBO.chunkStorageSectionPos.w) & (1u << index)) == 0u;
+}
 
 const uint VPT_WORLD_MISS_INDEX = 1u;
 const uint VPT_HAND_MISS_INDEX = 2u;
@@ -141,6 +164,7 @@ void initMainRay(vec3 origin, vec3 direction, uint seed, float coneSpread, vec2 
     ray.throughput = vec3(1.0);
     ray.coneSpread = coneSpread;
     ray.stateBits = 0u;
+    ray.mediumState = 0u;
     raySetBounce(ray, 0u);
     raySetDirectImage(ray, true);
     raySetStop(ray, false);
@@ -155,6 +179,7 @@ void initMainRay(vec3 origin, vec3 direction, uint seed, float coneSpread, vec2 
     ray.pad0 = 0u;
     ray.scatterRoughness = 0.0;
     rayInitializeMedium(ray, skyUBO.cameraSubmersionType == 1u ? 1.333 : 1.0);
+    initializeCameraMedium(ray, skyUBO);
 }
 
 void resetMainRay(inout MainRay ray, int bounce) {
@@ -205,7 +230,7 @@ void tracePrimary(vec3 eyePos,
     firstHit.worldPos = vec3(0.0);
 
     bool surfaceDepthSampled = false;
-    for (int step = 0; ; ++step) {
+    for (int step = 0; step < RADIANCE_FREE_CONTINUATIONS; ++step) {
         if (step > 0) {
             rayAdvanceQuery(rayState, mediumHistory);
             raySetCoverageCapture(rayState, false);
@@ -222,8 +247,9 @@ void tracePrimary(vec3 eyePos,
         mainRay = rayState;
         observeSharc(2u);
         mainRay.stateBits = uiPrimaryTraceState(mainRay.stateBits, uint(step));
-        traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, (isHand != 0 && step == 0 ? len : imagingTraceLimit(mainRay, len)), 0);
-        mainRay.stateBits &= ~rayUiPrimaryBit;
+        mainRay.stateBits |= rayPrimaryEmissionCaptureBit;
+        traceImagingRay( queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, (isHand != 0 && step == 0 ? len : imagingTraceLimit(mainRay, len)), 0);
+        mainRay.stateBits &= ~(rayUiPrimaryBit | rayPrimaryEmissionCaptureBit);
         rayState = mainRay;
 
 
@@ -277,16 +303,11 @@ bool initTransparent(MainRay rayState,
     dielectric.roughness = mat.roughness;
     vec3 branchDirection, branchThroughput;
     float directionPdf, fresnel;
-    if (!sampleDielectricBranch(dielectric, incident, normal, rayState.boundaryEta,
+    if (!sampleDielectricBranch(dielectric, incident, normal, rayState.geometricNormal, rayState.boundaryEta,
         isReflection, branchSeed, branchDirection, branchThroughput, directionPdf, fresnel)) return false;
     branchThroughput *= rayState.surfaceThroughput;
-    vec2 branchAux = rayLoadAux(rayState);
-    bool isWaterSurface = branchAux.y > 0.5;
-    float originBias = isWaterSurface ? max(branchAux.x, 0.0002) : 0.0001;
-
     branchRay = rayState;
-    branchRay.origin = isWaterSurface ? offsetQueryOrigin(worldPos, abs(normal.y) > 0.75 ? vec3(0.0, sign(normal.y), 0.0) : normal, branchDirection) :
-        worldPos + (dot(branchDirection, normal) > 0.0 ? normal : -normal) * originBias;
+    branchRay.origin = offsetQueryOrigin(worldPos, rayState.geometricNormal, branchDirection);
     branchRay.direction = branchDirection;
     branchRay.radiance = vec3(0.0);
     branchRay.previousBsdfPdf = -1.0;
@@ -307,6 +328,8 @@ bool initTransparent(MainRay rayState,
     return true;
 }
 
+#include "util/reconstruction_raygen.glsl"
+
 void traceSecondary(inout MainRay rayState,
                   inout MediumHistory mediumHistory,
                    int startBounce,
@@ -316,22 +339,25 @@ void traceSecondary(inout MainRay rayState,
                    inout bool sharcCacheHit,
 #endif
                    out bool hasSecondHit,
-                   out float secondHitDistance) {
+                   out float secondHitDistance, out float resolvedHitDistance) {
     raySetCoverageCapture(rayState, false);
     hasSecondHit = false;
     secondHitDistance = 0.0;
     float continuationDistance=0.0;
+    int continuations = 0;
+    resolvedHitDistance = 0.0;
+    bool resolvedSurface = false, awaitingResolvedHit = false;
 
-    for (int b = startBounce; b < VPT_NUM_RAY_BOUNCES; b++) {
+    for (int b = startBounce; b <= RADIANCE_PATH_EVENTS; b++) {
         if (rayShouldStop(rayState)) break;
 
         uint mask;
         float len;
         uint generatingLobe = rayLobeType(rayState);
         uint firstBounceLobeType = b == startBounce ? generatingLobe : 0u;
-        rayAdvanceQuery(rayState, mediumHistory);
+        if (!rayAdvanceQuery(rayState, mediumHistory)) break;
         resetMainRay(rayState, b);
-        raySetTerminal(rayState, b > 0 && b + 1 >= VPT_NUM_RAY_BOUNCES);
+        raySetTerminal(rayState, b == RADIANCE_PATH_EVENTS);
 #if SHARC_QUERY && USE_SHARC
         raySetCacheQuery(rayState, !rayDirectImage(rayState) && !rayReceiveOnlyReceiver(rayState));
         raySetLobeType(rayState, generatingLobe);
@@ -349,17 +375,31 @@ void traceSecondary(inout MainRay rayState,
         if (b == startBounce && VPT_CAPTURE_VOLUMETRIC_CLOUD_INDIRECT != 0 && allowIndirectCloudMiss) {
             missId = VPT_WORLD_MISS_INDEX;
         }
-        traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), VPT_RAY_FLAGS), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, imagingTraceLimit(mainRay, len), 0);
+        traceImagingRay( queryTraversalFlags(rayQueryPurpose(mainRay), VPT_RAY_FLAGS), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, imagingTraceLimit(mainRay, len), 0);
         rayState = mainRay;
 
         if (rayShouldContinue(rayState)) {
             if (!rayContinuationProgress(rayState,tracedOrigin,tracedDirection)) { raySetStop(rayState,true); break; }
+            if (++continuations >= RADIANCE_FREE_CONTINUATIONS) break;
             continuationDistance+=rayState.hitT; --b; continue;
         }
 
         if (b == startBounce) {
             secondHitDistance = rayState.hitT==INF_DISTANCE ? INF_DISTANCE : continuationDistance+rayState.hitT;
             hasSecondHit = rayState.hitT != INF_DISTANCE;
+        }
+        float segmentLength = rayState.hitT == INF_DISTANCE ? INF_DISTANCE : continuationDistance + rayState.hitT;
+        continuationDistance = 0.0;
+        if (awaitingResolvedHit) {
+            resolvedHitDistance = segmentLength;
+            awaitingResolvedHit = false;
+        }
+        if (!resolvedSurface && rayState.hitT == INF_DISTANCE) resolvedHitDistance = INF_DISTANCE;
+        if (!resolvedSurface && rayState.hitT != INF_DISTANCE) {
+            if ((rayState.stateBits & rayCacheTransparentBit) == 0u || rayState.scatterRoughness > 0.08) {
+                resolvedSurface = true;
+                awaitingResolvedHit = true;
+            }
         }
 
 #if SHARC_QUERY && USE_SHARC
@@ -394,28 +434,28 @@ void traceTransparent(inout MainRay transparentRay,
                       inout bool sharcDebugCacheHit,
 #endif
                       out bool hasTransparentSecondHit,
-                      out float transparentSecondHitDistance) {
+                      out float transparentSecondHitDistance, out float resolvedHitDistance) {
     traceSecondary(transparentRay, mediumHistory, startBounce, isHand,
 #if USE_SHARC && SHARC_QUERY
                   sharcDebugBounceCount, sharcDebugCacheHit,
 #endif
-                  hasTransparentSecondHit, transparentSecondHitDistance);
+                  hasTransparentSecondHit, transparentSecondHitDistance, resolvedHitDistance);
 }
 
 #if USE_SHARC && SHARC_UPDATE
 void traceSharcUpdate(
     ivec2 pixel, vec2 resolution, vec3 origin, vec3 direction, float fovY, float fovX, uint rayFlags) {
     SharcParameters sharcParameters = makeSharcParameters();
-    MediumHistory mediumHistory;
+    MediumHistory mediumHistory = MediumHistory(0u, 0u);
     SharcState sharcState;
     SharcInit(sharcState);
 
     initMainRay(origin, direction, worldUBO.seed ^ sharcConfig.frameIndex, coneSpreadFromFov(fovY, fovX, resolution), resolution,
                     mainRay);
-    for (int b = 0; b < VPT_NUM_RAY_BOUNCES; ++b) {
-        if (b != 0) rayAdvanceQuery(mainRay, mediumHistory);
+    for (int b = 0; b <= RADIANCE_PATH_EVENTS; ++b) {
+        if (b != 0 && !rayAdvanceQuery(mainRay, mediumHistory)) break;
         resetMainRay(mainRay, b);
-        raySetTerminal(mainRay, b > 0 && b + 1 >= VPT_NUM_RAY_BOUNCES);
+        raySetTerminal(mainRay, b == RADIANCE_PATH_EVENTS);
         mainRay.throughput = vec3(1.0);
         mainRay.surfaceThroughput = vec3(1.0);
         mainRay.radiance = vec3(0.0);
@@ -424,14 +464,15 @@ void traceSharcUpdate(
         float len = (b <= 1) ? 1000.0 : 384.0;
 
         vec3 tracedOrigin, tracedDirection;
-        for (;;) {
+        for (int continuation = 0; ; ++continuation) {
             tracedOrigin=mainRay.origin; tracedDirection=mainRay.direction;
-        traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, VPT_WORLD_NO_VOLUMETRIC_MISS_INDEX,
+        traceImagingRay( queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, VPT_WORLD_NO_VOLUMETRIC_MISS_INDEX,
                     mainRay.origin, 0.0, mainRay.direction, len, 0);
             if (!rayShouldContinue(mainRay)) break;
-            if (!rayContinuationProgress(mainRay,tracedOrigin,tracedDirection)) {raySetStop(mainRay,true);break;}
+            if (continuation + 1 >= RADIANCE_FREE_CONTINUATIONS ||
+                !rayContinuationProgress(mainRay,tracedOrigin,tracedDirection)) {raySetStop(mainRay,true);break;}
             resetMainRay(mainRay,b);
-            raySetTerminal(mainRay, b > 0 && b + 1 >= VPT_NUM_RAY_BOUNCES);
+            raySetTerminal(mainRay, b == RADIANCE_PATH_EVENTS);
         }
 
         if (b == 0) {
@@ -473,19 +514,48 @@ void traceSharcUpdate(
 }
 #endif
 
-#if RADIANCE_COVERAGE_MODE == 1
-void completeCoverageLighting(inout MainRay rayState, inout MediumHistory mediumHistory, int isHand) {
+#if RADIANCE_COVERAGE_MODE == 2
+void captureCoverageGuide(MainRay hit, vec3 origin, vec3 direction) {
+    if (rayShouldContinue(hit)) return;
+    ReconstructionSurface guide;
+    vec2 pixelCenter = vec2(gl_LaunchIDEXT.xy) + 0.5 + worldUBO.cameraJitter;
+    vec3 cameraDelta = vec3(worldUBO.cameraPos.xyz - lastWorldUBO.cameraPos.xyz);
+    if (hit.hitT == INF_DISTANCE) {
+        guide = reconstructionSurfaceFromSky(origin + direction * 32000.0, direction,
+            mat3(1), vec3(0), mat3(1), vec3(0), pixelCenter, cameraDelta);
+    } else {
+        MaterialInfo material = rayLoadMaterial(hit);
+        if (!reconstructionReusableSurface(hit.normal, material.transmission, material.roughness)) return;
+        guide = reconstructionSurfaceFromHit(hit, material, origin + direction * hit.hitT, direction,
+            mat3(1), vec3(0), mat3(1), vec3(0), pixelCenter, cameraDelta);
+    }
+    // These launch-local outputs are not published until the dispatch completes.
+    // Use them before their final stores instead of carrying a guide across the
+    // nested lighting traces on every path's private ray-tracing stack.
+    ivec2 pixel = ivec2(gl_LaunchIDEXT.xy);
+    imageStore(transmissionGuideImage, pixel, guide.normalRoughness);
+    imageStore(transmissionMotionDepthImage, pixel, guide.motionDepth);
+    imageStore(reflectionGuideImage, pixel, vec4(guide.diffuse, 0));
+    imageStore(reflectionMotionDepthImage, pixel, vec4(guide.specular, 0));
+    imageStore(transmissionMaterialFactorImage, pixel,
+        vec4(reconstructionLayerFactor(guide.diffuse, guide.specular), 0.75));
+}
+#define COVERAGE_CAPTURE_GUIDE(hit, origin, direction) captureCoverageGuide(hit, origin, direction)
+#endif
+#if RADIANCE_COVERAGE_MODE != 0
+float completeCoverageLighting(inout MainRay rayState, inout MediumHistory mediumHistory, int isHand) {
 #if SHARC_QUERY && USE_SHARC
     int debugBounceCount = 0;
     bool cacheHit = false;
 #endif
     bool hasHit;
-    float hitDistance;
+    float hitDistance, resolvedDistance;
     traceSecondary(rayState, mediumHistory, 1, isHand,
 #if SHARC_QUERY && USE_SHARC
                    debugBounceCount, cacheHit,
 #endif
-                   hasHit, hitDistance);
+                   hasHit, hitDistance, resolvedDistance);
+    return hitDistance;
 }
 #define COVERAGE_RAY_FLAGS VPT_RAY_FLAGS
 #define COVERAGE_MISS_INDEX VPT_WORLD_MISS_INDEX
@@ -531,6 +601,7 @@ void main() {
     MaterialInfo firstHitMat;
     bool hasSecondHit = false;
     float distFirstToSecond = 0.0;
+    float resolvedDistance = 0.0, reflectionResolvedDistance = 0.0, transmissionResolvedDistance = 0.0;
     bool isFirstHitNoisy = false;
     bool isFirstHitDiffuse = false;
     bool isFirstHitRefraction = false;
@@ -546,6 +617,7 @@ void main() {
     vec3 transparentRefractionRadiance = vec3(0.0);
     bool hasTransparentReflection = false;
     bool hasTransparentRefraction = false;
+    float transmissionHitDistance = 0.0;
     bool hasTransparentReflectionSecondHit = false;
     float transparentReflectionSecondHitDistance = 0.0;
     bool useTransparentSplit = false;
@@ -557,29 +629,46 @@ void main() {
     observeSharc(3u);
 #    endif
 
-    MediumHistory mediumHistory;
+    imageStore(firstHitBaseEmissionImage, pixel, vec4(0.0));
+    MediumHistory mediumHistory = MediumHistory(0u, 0u);
     MainRay selectedRay;
     initMainRay(origin, direction, worldUBO.seed ^ 0x9E3779B9u, coneSpreadFromFov(fovY, fovX, resolution), resolution, selectedRay);
-    raySetCoverageCapture(selectedRay, RADIANCE_COVERAGE_MODE == 1u);
+    raySetCoverageCapture(selectedRay, RADIANCE_COVERAGE_MODE != 0u);
     FirstHitPayload selectedFirstHit;
-    tracePrimary(eyePos, orgDirection, rayFlags, 1, selectedRay, mediumHistory, selectedFirstHit);
-    int isHand = selectedFirstHit.surfaceDepth != INF_DISTANCE ? 1 : 0;
+    // The hand query misses on almost every pixel. An inline traversal with the same mask, flags
+    // and interval sees exactly the candidates the pipeline trace would; without one, that trace
+    // can only run the miss shader, whose result the world query below discards.
+    bool handCandidate;
+    {
+        rayQueryEXT handQuery;
+        rayQueryInitializeEXT(handQuery, topLevelAS, queryTraversalFlags(queryDirect, rayFlags), queryReceiveOnly,
+            origin, 0.0, direction, 10.0);
+        handCandidate = rayQueryProceedEXT(handQuery);
+        if (handCandidate) rayQueryTerminateEXT(handQuery);
+        else handCandidate = rayQueryGetIntersectionTypeEXT(handQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+    }
+    int isHand = 0;
+    if (handCandidate) {
+        tracePrimary(eyePos, orgDirection, rayFlags, 1, selectedRay, mediumHistory, selectedFirstHit);
+        isHand = selectedFirstHit.surfaceDepth != INF_DISTANCE ? 1 : 0;
+    }
     if (isHand == 0) {
         initMainRay(origin, direction, worldUBO.seed, coneSpreadFromFov(fovY, fovX, resolution), resolution, selectedRay);
-        raySetCoverageCapture(selectedRay, RADIANCE_COVERAGE_MODE == 1u);
+        raySetCoverageCapture(selectedRay, RADIANCE_COVERAGE_MODE != 0u);
         tracePrimary(eyePos, orgDirection, rayFlags, 0, selectedRay, mediumHistory, selectedFirstHit);
     }
     mainRay = selectedRay;
 
     MainRay coverageSourceRay = mainRay;
-    MediumHistory coverageHistory = mediumHistory;
+    MediumHistory coverageHistory = forkMediumHistory(mainRay, mediumHistory, 1u);
     float coverageAlpha = rayLoadCoverage(mainRay);
     bool blendCoverage = coverageAlpha < 1.0;
     raySetCoverageCapture(mainRay, false);
     vec3 coverageBackground = vec3(0.0);
+    float coverageBackgroundHitDistance = 0.0;
     vec3 coverageForegroundSpecular = vec3(0.0);
     bool hitSky = selectedFirstHit.hitSky;
-    float postStarCloudTransmittance = hitSky ? clamp(mainRay.directLightRadiance.x, 0.0, 1.0) : 1.0;
+    imageStore(postStarCloudTransmittanceImage, pixel, vec4(hitSky ? clamp(mainRay.directLightRadiance.x, 0.0, 1.0) : 1.0));
     float viewDepth = selectedFirstHit.viewDepth;
     int startBounce = selectedFirstHit.startBounce;
     firstHitIncomingDirection = selectedFirstHit.incomingDirection;
@@ -595,6 +684,10 @@ void main() {
     vec3 cameraDelta = vec3(currCameraPos - lastCameraPos);
     mat4 prevRelativeMVP = lastWorldUBO.cameraProjMat * lastWorldUBO.cameraEffectedViewMat;
 
+    ReconstructionSurface reflectedGuide = emptyReconstructionSurface();
+    ReconstructionSurface transmittedGuide = emptyReconstructionSurface();
+    float fresnel = 1.0;
+    uint guideState = 0u;
     if (hitSky) {
         imageStore(outputImage, pixel, vec4(mainRay.radiance, 1.0));
         imageStore(diffuseAlbedoImage, pixel, vec4(reinhardMax(mainRay.radiance), 0));
@@ -628,11 +721,34 @@ void main() {
 
         firstHitMat = rayLoadMaterial(mainRay);
         imageStore(diffuseAlbedoImage, pixel,
-                   vec4(firstHitMat.albedoValue.rgb * firstHitMat.albedoValue.a, firstHitMat.metallic));
-        imageStore(specularAlbedoImage, pixel, vec4(firstHitMat.f0, 0.0));
+                   vec4(firstHitMat.albedoValue.rgb * (1.0 - firstHitMat.metallic) *
+                        (1.0 - firstHitMat.transmission), firstHitMat.metallic));
+        imageStore(specularAlbedoImage, pixel, vec4(reconstructionSpecularReflectance(firstHitMat.f0, firstHitMat.roughness,
+            dot(mainRay.normal, -firstHitIncomingDirection)), 0.0));
 
         imageStore(normalRoughnessImage, pixel, vec4(mainRay.normal, firstHitMat.roughness));
 
+#if VPT_RECONSTRUCTION_GUIDES
+        // Guides are traced here, before the path continues: their inputs are then not live across every
+        // later trace call. Tracing them after the path cost up to 28% of the frame in stacked glass.
+        if (!blendCoverage && firstHitMat.roughness <= 0.08 &&
+            (firstHitMat.transmission > EPS || firstHitMat.metallic > 0.99 || max(firstHitMat.f0.r, max(firstHitMat.f0.g, firstHitMat.f0.b)) > 0.95)) {
+            vec4 previousNormalData = imageLoad(rayMaterialStateImage, rayMaterialStateCoord(3));
+            vec3 firstPreviousNormal = previousNormalData.w > 0.5 ? normalize(previousNormalData.xyz) : firstHitNormal;
+            reflectedGuide = traceReconstructionSurface(coverageSourceRay, coverageHistory, firstHitMat,
+                firstHitWorldPos, firstHitIncomingDirection, true, eyePos, orgDirection, pixelCenter, cameraDelta, firstPreviousNormal, isHand);
+            if (firstHitMat.transmission > EPS)
+                transmittedGuide = traceReconstructionSurface(coverageSourceRay, coverageHistory, firstHitMat,
+                    firstHitWorldPos, firstHitIncomingDirection, false, eyePos, orgDirection, pixelCenter, cameraDelta, firstPreviousNormal, isHand);
+            fresnel = firstHitMat.transmission > EPS ?
+                DielectricFresnel(abs(dot(firstHitIncomingDirection, firstHitNormal)), coverageSourceRay.boundaryEta) : 1.0;
+            // The first-surface state already survives the guide traces as their source.
+            mainRay = coverageSourceRay;
+            raySetCoverageCapture(mainRay, false);
+            rayStoreMaterial(mainRay, firstHitMat.albedoValue, firstHitMat.f0, firstHitMat.roughness, firstHitMat.metallic,
+                firstHitMat.transmission, firstHitMat.ior, firstHitMat.emission);
+        }
+#endif
         imageStore(linearDepthImage, pixel, vec4(viewDepth));
 
         {
@@ -641,6 +757,46 @@ void main() {
             vec2 motionVec = computeCameraMotionVector(prevRelativeMVP, pixelCenter, vec4(originRelativeToPrevCam, 1.0));
             imageStore(motionVectorImage, pixel, vec4(motionVec, 0.0, 0.0));
         }
+
+#if RADIANCE_COVERAGE_MODE != 2
+        // Publish everything the guides decide before the lighting traces. Only two resolved
+        // distances arrive later; keeping both guides until then puts them on every path's stack.
+        {
+            bool reflectedValid = reconstructionGuideValid(reflectedGuide.normalRoughness);
+            bool transmittedValid = reconstructionGuideValid(transmittedGuide.normalRoughness);
+            bool preferTransmission = reconstructionDominantTransmission(fresnel, transmittedValid) > 0.0;
+            ReconstructionSurface dominant = preferTransmission ? transmittedGuide : reflectedGuide;
+            if (reconstructionGuideValid(dominant.normalRoughness)) {
+                float wt = transmittedValid ? 1.0 - fresnel : 0.0;
+                float wr = reflectedValid ? fresnel : 0.0;
+                float invWeight = 1.0 / max(wr + wt, 1e-6);
+                vec3 mixedNormal = reflectedGuide.normalRoughness.xyz * wr + transmittedGuide.normalRoughness.xyz * wt;
+                vec3 normal = dot(mixedNormal, mixedNormal) > 1e-8 ? normalize(mixedNormal) : dominant.normalRoughness.xyz;
+                imageStore(normalRoughnessImage, pixel, vec4(normal,
+                    (reflectedGuide.normalRoughness.w * wr + transmittedGuide.normalRoughness.w * wt) * invWeight));
+                imageStore(motionVectorImage, pixel, vec4(dominant.motionDepth.xy, 0, 0));
+                imageStore(linearDepthImage, pixel, vec4(dominant.motionDepth.z));
+                imageStore(diffuseAlbedoImage, pixel, vec4(clamp((reflectedGuide.diffuse * wr +
+                    transmittedGuide.diffuse * firstHitMat.albedoValue.rgb * wt) * invWeight, vec3(0), vec3(1)), 0));
+                imageStore(specularAlbedoImage, pixel, vec4(clamp((reflectedGuide.specular * wr +
+                    transmittedGuide.specular * wt) * invWeight, vec3(0), vec3(1)), 0));
+                guideState |= preferTransmission ? 2u : 1u;
+            }
+#if VPT_RECONSTRUCTION_GUIDES
+            if (any(notEqual(reflectedGuide.motionDepth.xyz, vec3(0)))) guideState |= 4u;
+            if (any(notEqual(transmittedGuide.motionDepth.xyz, vec3(0)))) guideState |= 8u;
+            if (exportOutput(15u)) imageStore(reflectionGuideImage, pixel, reflectedGuide.normalRoughness);
+            if (exportOutput(16u) && (guideState & 4u) != 0u) imageStore(reflectionMotionDepthImage, pixel, reflectedGuide.motionDepth);
+            if (exportOutput(17u)) imageStore(transmissionGuideImage, pixel, transmittedGuide.normalRoughness);
+            if (exportOutput(18u) && (guideState & 8u) != 0u) imageStore(transmissionMotionDepthImage, pixel, transmittedGuide.motionDepth);
+            if (exportOutput(19u)) imageStore(reflectionMaterialFactorImage, pixel,
+                vec4(reconstructionLayerFactor(reflectedGuide.diffuse, reflectedGuide.specular), reflectedValid ? 1.0 : 0.0));
+            if (exportOutput(20u)) imageStore(transmissionMaterialFactorImage, pixel,
+                vec4(reconstructionLayerFactor(transmittedGuide.diffuse, transmittedGuide.specular), transmittedValid ? 1.0 : 0.0));
+            guideState |= 16u;
+#endif
+        }
+#endif
 
 
         psrHitPosition = firstHitWorldPos;
@@ -652,7 +808,7 @@ void main() {
         firstHitDirectRadiance = vec3(0.0);
         firstHitIndirectRadiance = vec3(0.0);
         if (isFirstHitNoisy) {
-            firstHitEmission = firstHitMat.albedoValue.rgb * firstHitMat.emission;
+            firstHitEmission = imageLoad(firstHitBaseEmissionImage, pixel).rgb;
             // Material identity is independent of the randomly sampled lobe.
             // Otherwise dual tracing is conditional on selecting transmission
             // first and counts reflection twice in expectation.
@@ -676,16 +832,14 @@ void main() {
                     // becomes transport, but the sibling refraction must retain the
                     // original camera ownership, seed and auxiliary surface state.
                     MainRay splitSourceRay = mainRay;
-                    MediumHistory reflectionHistory = mediumHistory;
-                    MediumHistory refractionHistory = mediumHistory;
                     MainRay transparentReflectionRay;
                     if (initTransparent(splitSourceRay, firstHitMat, firstHitIncomingDirection, firstHitNormal,
                                         firstHitWorldPos, 0x9E3779B9u, true, transparentReflectionRay)) {
-                        traceTransparent(transparentReflectionRay, reflectionHistory, startBounce, isHand,
+                        traceTransparent(transparentReflectionRay, mediumHistory, startBounce, isHand,
 #    if SHARC_QUERY && USE_SHARC
                                          sharcDebugBounceCount, sharcDebugCacheHit,
 #    endif
-                                         hasTransparentReflectionSecondHit, transparentReflectionSecondHitDistance);
+                                         hasTransparentReflectionSecondHit, transparentReflectionSecondHitDistance, reflectionResolvedDistance);
                         transparentReflectionRadiance = transparentReflectionRay.radiance;
                         hasTransparentReflection = true;
                     }
@@ -693,13 +847,16 @@ void main() {
                     MainRay transparentRefractionRay;
                     if (initTransparent(splitSourceRay, firstHitMat, firstHitIncomingDirection, firstHitNormal,
                                         firstHitWorldPos, 0x3C6EF372u, false, transparentRefractionRay)) {
+                        MediumHistory refractionHistory = forkMediumHistory(splitSourceRay, coverageHistory, 0u);
                         bool hasTransparentRefractionSecondHit = false;
                         float transparentRefractionSecondHitDistance = 0.0;
                         traceTransparent(transparentRefractionRay, refractionHistory, startBounce, isHand,
 #    if SHARC_QUERY && USE_SHARC
                                          sharcDebugBounceCount, sharcDebugCacheHit,
 #    endif
-                                         hasTransparentRefractionSecondHit, transparentRefractionSecondHitDistance);
+                                         hasTransparentRefractionSecondHit, transparentRefractionSecondHitDistance, transmissionResolvedDistance);
+                        transmissionHitDistance = hasTransparentRefractionSecondHit ?
+                            transparentRefractionSecondHitDistance : INF_DISTANCE;
                         transparentRefractionRadiance = transparentRefractionRay.radiance;
                         hasTransparentRefraction = true;
                     }
@@ -711,31 +868,34 @@ void main() {
 #    if SHARC_QUERY && USE_SHARC
                                   sharcDebugBounceCount, sharcDebugCacheHit,
 #    endif
-                                  hasSecondHit, distFirstToSecond);
+                                  hasSecondHit, distFirstToSecond, resolvedDistance);
                 }
             } else {
                 traceSecondary(mainRay, mediumHistory, startBounce, isHand,
 #    if SHARC_QUERY && USE_SHARC
                               sharcDebugBounceCount, sharcDebugCacheHit,
 #    endif
-                              hasSecondHit, distFirstToSecond);
+                              hasSecondHit, distFirstToSecond, resolvedDistance);
 
-                if (isFirstHitDiffuse) { firstHitIndirectRadiance = mainRay.radiance - firstHitDirectRadiance; }
+                if (isFirstHitDiffuse) { firstHitIndirectRadiance = mainRay.radiance - firstHitDirectRadiance - firstHitEmission; }
             }
         } else {
             traceSecondary(mainRay, mediumHistory, startBounce, isHand,
 #    if SHARC_QUERY && USE_SHARC
                           sharcDebugBounceCount, sharcDebugCacheHit,
 #    endif
-                          hasSecondHit, distFirstToSecond);
+                          hasSecondHit, distFirstToSecond, resolvedDistance);
         }
     }
 
-#if RADIANCE_COVERAGE_MODE == 1
+#if RADIANCE_COVERAGE_MODE != 0
     if (blendCoverage) {
+#if RADIANCE_COVERAGE_MODE == 2
+        imageStore(transmissionMaterialFactorImage, pixel, vec4(0));
+#endif
         MainRay foregroundResult = mainRay;
         coverageBackground = (1.0 - coverageAlpha) *
-            traceCoverageBackground(coverageSourceRay, coverageHistory, firstHitWorldPos, firstHitIncomingDirection, isHand);
+            traceCoverageBackground(coverageSourceRay, coverageHistory, firstHitWorldPos, firstHitIncomingDirection, isHand, coverageBackgroundHitDistance);
         mainRay = foregroundResult;
         mainRay.radiance = coverageAlpha * mainRay.radiance + coverageBackground;
         vec3 weightedEmission;
@@ -754,45 +914,50 @@ void main() {
         mainRay.radiance = transparentReflectionRadiance + transparentRefractionRadiance + firstHitEmission;
     }
 
+    if (!useTransparentSplit && isFirstHitRefraction)
+        transmissionHitDistance = hasSecondHit ? distFirstToSecond : INF_DISTANCE;
+
+    // Zero denotes an unsampled diffuse lobe, not a surface at the camera.
+    float diffuseHitDistance = isFirstHitDiffuse ? (hasSecondHit ? distFirstToSecond : INF_DISTANCE) : 0.0;
     if (blendCoverage) {
-        imageStore(firstHitDiffuseDirectLightImage, pixel, vec4(isFirstHitDiffuse ? firstHitDirectRadiance : vec3(0.0), 1.0));
-        imageStore(firstHitDiffuseIndirectLightImage, pixel, vec4(isFirstHitDiffuse ? firstHitIndirectRadiance : vec3(0.0), 1.0));
-        imageStore(firstHitSpecularImage, pixel, vec4(isFirstHitDiffuse ? vec3(0.0) :
+        if (exportOutput(8u)) imageStore(firstHitDiffuseDirectLightImage, pixel, vec4(isFirstHitDiffuse ? firstHitDirectRadiance : vec3(0.0), 1.0));
+        if (exportOutput(9u)) imageStore(firstHitDiffuseIndirectLightImage, pixel, vec4(isFirstHitDiffuse ? firstHitIndirectRadiance : vec3(0.0), diffuseHitDistance));
+        if (exportOutput(10u)) imageStore(firstHitSpecularImage, pixel, vec4(isFirstHitDiffuse ? vec3(0.0) :
             coverageForegroundSpecular, 1.0));
-        imageStore(firstHitClearImage, pixel, vec4(0.0));
-        imageStore(firstHitRefractionImage, pixel, vec4(coverageBackground, 1.0));
+        if (exportOutput(11u)) imageStore(firstHitClearImage, pixel, vec4(0.0));
+        imageStore(firstHitRefractionImage, pixel, vec4(coverageBackground, RADIANCE_COVERAGE_MODE == 2 ? 2.0 + coverageAlpha : 1.0));
     } else if (!psrHitSky && isFirstHitNoisy) {
         if (useTransparentSplit) {
-            imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitSpecularImage, ivec2(pixel), vec4(transparentReflectionRadiance, 1.0));
-            imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+            if (exportOutput(8u)) imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
+            if (exportOutput(9u)) imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(0.0));
+            if (exportOutput(10u)) imageStore(firstHitSpecularImage, ivec2(pixel), vec4(transparentReflectionRadiance, transmissionHitDistance));
+            if (exportOutput(11u)) imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
             imageStore(firstHitRefractionImage, ivec2(pixel),
                        vec4(transparentRefractionRadiance, hasTransparentRefraction ? 1.0 : -1.0));
         } else if (isFirstHitDiffuse) {
-            imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(firstHitDirectRadiance, 1.0));
-            imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(firstHitIndirectRadiance, 1.0));
-            imageStore(firstHitSpecularImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+            if (exportOutput(8u)) imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(firstHitDirectRadiance, 1.0));
+            if (exportOutput(9u)) imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(firstHitIndirectRadiance, diffuseHitDistance));
+            if (exportOutput(10u)) imageStore(firstHitSpecularImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
+            if (exportOutput(11u)) imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
             imageStore(firstHitRefractionImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
         } else if (isFirstHitRefraction) {
-            imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitSpecularImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
-            imageStore(firstHitRefractionImage, ivec2(pixel), vec4(mainRay.radiance, 1.0));
+            if (exportOutput(8u)) imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
+            if (exportOutput(9u)) imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(0.0));
+            if (exportOutput(10u)) imageStore(firstHitSpecularImage, ivec2(pixel), vec4(vec3(0.0), transmissionHitDistance));
+            if (exportOutput(11u)) imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+            imageStore(firstHitRefractionImage, ivec2(pixel), vec4(mainRay.radiance - firstHitEmission, 1.0));
         } else {
-            imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
-            imageStore(firstHitSpecularImage, ivec2(pixel), vec4(mainRay.radiance, 1.0));
-            imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+            if (exportOutput(8u)) imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 1.0));
+            if (exportOutput(9u)) imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(0.0));
+            if (exportOutput(10u)) imageStore(firstHitSpecularImage, ivec2(pixel), vec4(mainRay.radiance - firstHitEmission, 1.0));
+            if (exportOutput(11u)) imageStore(firstHitClearImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
             imageStore(firstHitRefractionImage, ivec2(pixel), vec4(vec3(0.0), isFirstHitTransparent ? -1.0 : 0.0));
         }
     } else {
-        imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
-        imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
-        imageStore(firstHitSpecularImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
-        imageStore(firstHitClearImage, ivec2(pixel), vec4(mainRay.radiance, 1.0));
+        if (exportOutput(8u)) imageStore(firstHitDiffuseDirectLightImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+        if (exportOutput(9u)) imageStore(firstHitDiffuseIndirectLightImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+        if (exportOutput(10u)) imageStore(firstHitSpecularImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
+        if (exportOutput(11u)) imageStore(firstHitClearImage, ivec2(pixel), vec4(mainRay.radiance, 1.0));
         imageStore(firstHitRefractionImage, ivec2(pixel), vec4(vec3(0.0), 0.0));
     }
     imageStore(firstHitBaseEmissionImage, ivec2(pixel), vec4(firstHitEmission, 1.0));
@@ -806,8 +971,102 @@ void main() {
     } else {
         specHitDepth = isFirstHitSpecular ? (hasSecondHit ? distFirstToSecond : INF_DISTANCE) : 0.0;
     }
+    if (!useTransparentSplit) {
+        reflectionResolvedDistance = isFirstHitRefraction ? 0.0 : resolvedDistance;
+        transmissionResolvedDistance = isFirstHitRefraction ? resolvedDistance : 0.0;
+    }
+#if RADIANCE_COVERAGE_MODE == 2
+    vec4 coverageHitFactor = vec4(0);
+    if (!hitSky && blendCoverage) {
+        reflectedGuide.normalRoughness = vec4(firstHitNormal, firstHitMat.roughness);
+        reflectedGuide.motionDepth = vec4(imageLoad(motionVectorImage, pixel).xy, viewDepth, 0);
+        reflectedGuide.diffuse = firstHitMat.albedoValue.rgb * (1.0 - firstHitMat.metallic);
+        reflectedGuide.specular = reconstructionSpecularReflectance(firstHitMat.f0, firstHitMat.roughness,
+            abs(dot(firstHitNormal, -firstHitIncomingDirection)));
+        vec3 finishedRadiance = mainRay.radiance;
+        MainRay straightSource = coverageSourceRay;
+        straightSource.boundaryEta = 1.0;
+        MaterialInfo straightMaterial = firstHitMat;
+        straightMaterial.transmission = 1.0;
+        straightMaterial.roughness = 0.0;
+        memoryBarrierImage();
+        coverageHitFactor = imageLoad(transmissionMaterialFactorImage, pixel);
+        if (coverageHitFactor.a > 0.5) {
+            transmittedGuide.normalRoughness = imageLoad(transmissionGuideImage, pixel);
+            transmittedGuide.motionDepth = imageLoad(transmissionMotionDepthImage, pixel);
+            transmittedGuide.diffuse = imageLoad(reflectionGuideImage, pixel).rgb;
+            transmittedGuide.specular = imageLoad(reflectionMotionDepthImage, pixel).rgb;
+        }
+        if (!reconstructionGuideValid(transmittedGuide.normalRoughness)) {
+            transmittedGuide = traceReconstructionSurface(straightSource, coverageHistory, straightMaterial,
+                firstHitWorldPos, firstHitIncomingDirection, false, eyePos, orgDirection, pixelCenter, cameraDelta, firstHitNormal, isHand);
+        }
+        mainRay.radiance = finishedRadiance;
+        fresnel = coverageAlpha;
+        reflectionResolvedDistance = distFirstToSecond;
+        transmissionResolvedDistance = coverageBackgroundHitDistance;
+    }
+#endif
+#if RADIANCE_COVERAGE_MODE == 2
+        bool preferTransmission = reconstructionDominantTransmission(fresnel, reconstructionGuideValid(transmittedGuide.normalRoughness)) > 0.0;
+        ReconstructionSurface dominant = preferTransmission ? transmittedGuide : reflectedGuide;
+        if (reconstructionGuideValid(dominant.normalRoughness)) {
+            float wt = reconstructionGuideValid(transmittedGuide.normalRoughness) ? 1.0 - fresnel : 0.0;
+            float wr = reconstructionGuideValid(reflectedGuide.normalRoughness) ? fresnel : 0.0;
+            float invWeight = 1.0 / max(wr + wt, 1e-6);
+            vec3 mixedNormal = reflectedGuide.normalRoughness.xyz * wr + transmittedGuide.normalRoughness.xyz * wt;
+            vec3 normal = dot(mixedNormal, mixedNormal) > 1e-8 ? normalize(mixedNormal) : dominant.normalRoughness.xyz;
+            imageStore(normalRoughnessImage, pixel, vec4(normal,
+                (reflectedGuide.normalRoughness.w * wr + transmittedGuide.normalRoughness.w * wt) * invWeight));
+            imageStore(motionVectorImage, pixel, vec4(dominant.motionDepth.xy, 0, 0));
+            imageStore(linearDepthImage, pixel, vec4(dominant.motionDepth.z));
+            specHitDepth = preferTransmission ? transmissionResolvedDistance : reflectionResolvedDistance;
+            imageStore(diffuseAlbedoImage, pixel, vec4(clamp((reflectedGuide.diffuse * wr +
+                transmittedGuide.diffuse * firstHitMat.albedoValue.rgb * wt) * invWeight, vec3(0), vec3(1)), 0));
+            imageStore(specularAlbedoImage, pixel, vec4(clamp((reflectedGuide.specular * wr +
+                transmittedGuide.specular * wt) * invWeight, vec3(0), vec3(1)), 0));
+        }
+    reflectedGuide.motionDepth.w = reflectionResolvedDistance;
+    transmittedGuide.motionDepth.w = transmissionResolvedDistance;
+#if VPT_RECONSTRUCTION_GUIDES || RADIANCE_COVERAGE_MODE == 2
+    // Alpha remains a validity test (> 0.5); 0.75 additionally identifies
+    // reused hits in diagnostic readbacks without another image or counter.
+    float reflectionGuideValidity = reconstructionGuideValid(reflectedGuide.normalRoughness) ? 1.0 : 0.0;
+    float transmissionGuideValidity = reconstructionGuideValid(transmittedGuide.normalRoughness) ? 1.0 : 0.0;
+#if RADIANCE_COVERAGE_MODE == 2
+    if (blendCoverage && coverageHitFactor.a > 0.5) transmissionGuideValidity = coverageHitFactor.a;
+#endif
+    if (exportOutput(15u)) imageStore(reflectionGuideImage, pixel, reflectedGuide.normalRoughness);
+    if (exportOutput(16u)) imageStore(reflectionMotionDepthImage, pixel, reflectedGuide.motionDepth);
+    if (exportOutput(17u)) imageStore(transmissionGuideImage, pixel, transmittedGuide.normalRoughness);
+    if (exportOutput(18u)) imageStore(transmissionMotionDepthImage, pixel, transmittedGuide.motionDepth);
+    if (exportOutput(19u)) imageStore(reflectionMaterialFactorImage, pixel, vec4(reconstructionLayerFactor(reflectedGuide.diffuse, reflectedGuide.specular),
+        reflectionGuideValidity));
+    vec3 transmissionFactor = reconstructionLayerFactor(transmittedGuide.diffuse, transmittedGuide.specular);
+#if RADIANCE_COVERAGE_MODE == 2
+    if (blendCoverage && coverageHitFactor.a > 0.5) transmissionFactor = coverageHitFactor.rgb;
+#endif
+    if (exportOutput(20u)) imageStore(transmissionMaterialFactorImage, pixel, vec4(transmissionFactor, transmissionGuideValidity));
+#endif
+#else
+    // The guides were published before the lighting traces; only these distances are new.
+    if ((guideState & 3u) != 0u)
+        specHitDepth = (guideState & 2u) != 0u ? transmissionResolvedDistance : reflectionResolvedDistance;
+#if VPT_RECONSTRUCTION_GUIDES
+    memoryBarrierImage();
+    if (exportOutput(16u)) imageStore(reflectionMotionDepthImage, pixel, vec4(
+        (guideState & 4u) != 0u ? imageLoad(reflectionMotionDepthImage, pixel).xyz : vec3(0), reflectionResolvedDistance));
+    if (exportOutput(18u)) imageStore(transmissionMotionDepthImage, pixel, vec4(
+        (guideState & 8u) != 0u ? imageLoad(transmissionMotionDepthImage, pixel).xyz : vec3(0), transmissionResolvedDistance));
+    if ((guideState & 16u) == 0u) {
+        if (exportOutput(15u)) imageStore(reflectionGuideImage, pixel, vec4(0));
+        if (exportOutput(17u)) imageStore(transmissionGuideImage, pixel, vec4(0));
+        if (exportOutput(19u)) imageStore(reflectionMaterialFactorImage, pixel, vec4(reconstructionLayerFactor(vec3(0), vec3(0)), 0.0));
+        if (exportOutput(20u)) imageStore(transmissionMaterialFactorImage, pixel, vec4(reconstructionLayerFactor(vec3(0), vec3(0)), 0.0));
+    }
+#endif
+#endif
     imageStore(fogImage, ivec2(pixel), vec4(composeFogAdditive, composeFogTransmittance));
-    imageStore(postStarCloudTransmittanceImage, ivec2(pixel), vec4(postStarCloudTransmittance));
     imageStore(specularHitDepthImage, ivec2(pixel), vec4(specHitDepth, vec3(1.0)));
 #    if SHARC_QUERY && USE_SHARC
     SharcParameters sharcParameters = makeSharcParameters();
@@ -819,7 +1078,7 @@ void main() {
         mainRay.radiance =
             HashGridDebugOccupancy(uvec2(pixel), uvec2(imageSize(outputImage)), sharcParameters.hashMapData);
     } else if (sharcConfig.debugMode == 3u) {
-        float t = clamp(float(sharcDebugBounceCount) / max(float(VPT_NUM_RAY_BOUNCES), 1.0), 0.0, 1.0);
+        float t = clamp(float(sharcDebugBounceCount) / max(float(RADIANCE_PATH_EVENTS), 1.0), 0.0, 1.0);
         vec3 heat = mix(vec3(0.0, 0.8, 0.0), vec3(1.0, 0.0, 0.0), t);
         if (sharcDebugCacheHit) { heat = vec3(0.0, 0.5, 1.0); }
         mainRay.radiance = heat;

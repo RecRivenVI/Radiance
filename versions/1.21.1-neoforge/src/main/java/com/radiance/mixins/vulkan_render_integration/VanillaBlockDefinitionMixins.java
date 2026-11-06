@@ -58,6 +58,10 @@ public final class VanillaBlockDefinitionMixins {
 
     @Mixin(BeaconRenderer.class)
     public abstract static class Beacon implements VanillaBlockReplacement.Source {
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            return ((BeaconBlockEntity) value).getBeamSections().isEmpty() ? Boolean.FALSE : null;
+        }
+
         public void radiance$collect(
                 BlockEntity value,
                 float partial,
@@ -91,6 +95,16 @@ public final class VanillaBlockDefinitionMixins {
 
     @Mixin(TheEndPortalRenderer.class)
     public abstract static class Portals implements VanillaBlockReplacement.Source {
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            if (value instanceof TheEndGatewayBlockEntity gateway
+                    && (gateway.isSpawning() || gateway.isCoolingDown())) return null;
+            return VanillaPortalRequests.faceMask((TheEndPortalBlockEntity) value);
+        }
+
         @Invoker("getOffsetDown")
         protected abstract float radiance$down();
 
@@ -287,6 +301,25 @@ public final class VanillaBlockDefinitionMixins {
     public abstract static class Vault implements VanillaBlockReplacement.Source {
         @Shadow @Final private net.minecraft.util.RandomSource random;
 
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            return radiance$displayItem(
+                                    (net.minecraft.world.level.block.entity.vault.VaultBlockEntity)
+                                            value)
+                            .isEmpty()
+                    ? Boolean.FALSE
+                    : null;
+        }
+
+        @Unique
+        private static net.minecraft.world.item.ItemStack radiance$displayItem(
+                net.minecraft.world.level.block.entity.vault.VaultBlockEntity vault) {
+            var data = vault.getSharedData();
+            return net.minecraft.world.level.block.entity.vault.VaultBlockEntity.Client
+                            .shouldDisplayActiveEffects(data)
+                    ? data.getDisplayItem()
+                    : net.minecraft.world.item.ItemStack.EMPTY;
+        }
+
         public boolean radiance$supportsBlock(BlockEntity value) {
             return VanillaItemReplacement.supportsWorldStack(
                     ((net.minecraft.world.level.block.entity.vault.VaultBlockEntity) value)
@@ -303,11 +336,8 @@ public final class VanillaBlockDefinitionMixins {
                 int light,
                 int overlay) {
             var vault = (net.minecraft.world.level.block.entity.vault.VaultBlockEntity) value;
-            var stack = vault.getSharedData().getDisplayItem();
-            if (!net.minecraft.world.level.block.entity.vault.VaultBlockEntity.Client
-                            .shouldDisplayActiveEffects(vault.getSharedData())
-                    || value.getLevel() == null
-                    || stack.isEmpty()) return;
+            var stack = radiance$displayItem(vault);
+            if (value.getLevel() == null || stack.isEmpty()) return;
             random.setSeed(
                     net.minecraft.client.renderer.entity.ItemEntityRenderer.getSeedForItemStack(
                             stack));
@@ -333,6 +363,11 @@ public final class VanillaBlockDefinitionMixins {
         @Shadow @Final private ModelPart shell;
         @Shadow @Final private ModelPart cage;
         @Shadow @Final private BlockEntityRenderDispatcher renderer;
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            var conduit = (ConduitBlockEntity) value;
+            return conduit.isActive() ? null : conduit.getActiveRotation(0);
+        }
 
         public void radiance$collect(
                 BlockEntity value,
@@ -449,6 +484,19 @@ public final class VanillaBlockDefinitionMixins {
         @Shadow @Final private ModelPart leftSide;
         @Shadow @Final private ModelPart rightSide;
 
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            var pot = (DecoratedPotBlockEntity) value;
+            var style = pot.lastWobbleStyle;
+            if (style != null
+                    && value.getLevel().getGameTime() - pot.wobbleStartedAtTick <= style.duration)
+                return null;
+            return pot.getDecorations();
+        }
+
         public void radiance$collect(
                 BlockEntity value,
                 float partial,
@@ -523,6 +571,16 @@ public final class VanillaBlockDefinitionMixins {
 
     @Mixin(CampfireRenderer.class)
     public abstract static class Campfire implements VanillaBlockReplacement.Source {
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            for (var item : ((CampfireBlockEntity) value).getItems())
+                if (item != net.minecraft.world.item.ItemStack.EMPTY) return null;
+            return Boolean.FALSE;
+        }
+
         public boolean radiance$supportsBlock(BlockEntity value) {
             return ((CampfireBlockEntity) value)
                     .getItems().stream().allMatch(VanillaItemReplacement::supportsWorldStack);
@@ -623,6 +681,14 @@ public final class VanillaBlockDefinitionMixins {
         @Shadow @Final private ModelPart headRoot;
         @Shadow @Final private ModelPart footRoot;
 
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            return ((BedBlockEntity) value).getColor();
+        }
+
         public void radiance$collect(
                 BlockEntity value,
                 float partial,
@@ -637,17 +703,19 @@ public final class VanillaBlockDefinitionMixins {
             var state = value.getBlockState();
             var level = value.getLevel();
             if (level != null) {
-                var combined =
-                        DoubleBlockCombiner.combineWithNeigbour(
-                                BlockEntityType.BED,
-                                BedBlock::getBlockType,
-                                BedBlock::getConnectedDirection,
-                                ChestBlock.FACING,
-                                state,
-                                level,
-                                value.getBlockPos(),
-                                (a, b) -> false);
-                light = combined.apply(new BrightnessCombiner<>()).get(light);
+                if (com.radiance.client.render.RasterPreviewScope.active()) {
+                    var combined =
+                            DoubleBlockCombiner.combineWithNeigbour(
+                                    BlockEntityType.BED,
+                                    BedBlock::getBlockType,
+                                    BedBlock::getConnectedDirection,
+                                    ChestBlock.FACING,
+                                    state,
+                                    level,
+                                    value.getBlockPos(),
+                                    (a, b) -> false);
+                    light = combined.apply(new BrightnessCombiner<>()).get(light);
+                }
                 VanillaBedRequests.add(
                         state.getValue(BedBlock.PART)
                                         == net.minecraft.world.level.block.state.properties.BedPart
@@ -690,6 +758,14 @@ public final class VanillaBlockDefinitionMixins {
     @Mixin(BellRenderer.class)
     public abstract static class Bell implements VanillaBlockReplacement.Source {
         @Shadow @Final private ModelPart bellBody;
+
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            return ((BellBlockEntity) value).shaking ? null : Boolean.TRUE;
+        }
 
         public void radiance$collect(
                 BlockEntity value,
@@ -765,6 +841,14 @@ public final class VanillaBlockDefinitionMixins {
     public abstract static class LecternBook implements VanillaBlockReplacement.Source {
         @Shadow @Final private BookModel bookModel;
 
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            return value.getBlockState();
+        }
+
         public void radiance$collect(
                 BlockEntity value,
                 float partial,
@@ -798,6 +882,16 @@ public final class VanillaBlockDefinitionMixins {
     @Mixin(ShulkerBoxRenderer.class)
     public abstract static class ShulkerBox implements VanillaBlockReplacement.Source {
         @Shadow @Final private ShulkerModel<?> model;
+
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            var box = (ShulkerBoxBlockEntity) value;
+            float progress = box.getProgress(0);
+            return progress == box.getProgress(1) ? progress : null;
+        }
 
         public void radiance$collect(
                 BlockEntity value,
@@ -858,6 +952,22 @@ public final class VanillaBlockDefinitionMixins {
         protected abstract net.minecraft.client.resources.model.Material radiance$material(
                 T entity, net.minecraft.world.level.block.state.properties.ChestType type);
 
+        @SuppressWarnings("unchecked")
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            T chest = (T) value;
+            var state = value.getBlockState();
+            if (!(state.getBlock() instanceof AbstractChestBlock<?> block)) return null;
+            var openness =
+                    block.combine(state, value.getLevel(), value.getBlockPos(), true)
+                            .apply(ChestBlock.opennessCombiner(chest));
+            float previous = openness.get(0);
+            return previous == openness.get(1) ? previous : null;
+        }
+
         @SuppressWarnings({"unchecked", "rawtypes"})
         public void radiance$collect(
                 BlockEntity value,
@@ -892,7 +1002,14 @@ public final class VanillaBlockDefinitionMixins {
             float openness = neighbors.apply(ChestBlock.opennessCombiner(chest)).get(partial);
             openness = 1 - openness;
             openness = 1 - openness * openness * openness;
-            int brightness = neighbors.apply(new BrightnessCombiner<>()).applyAsInt(light);
+            // Item and vehicle contents already carry the caller's light. Only a
+            // level-backed chest can require an additional neighbor-light query.
+            int brightness =
+                    !hasLevel
+                            ? light
+                            : com.radiance.client.render.RasterPreviewScope.active()
+                                    ? neighbors.apply(new BrightnessCombiner<>()).applyAsInt(light)
+                                    : 0;
             ModelPart selectedLid = lid, selectedLock = lock, selectedBottom = bottom;
             if (type == net.minecraft.world.level.block.state.properties.ChestType.LEFT) {
                 selectedLid = doubleLeftLid;
@@ -924,6 +1041,17 @@ public final class VanillaBlockDefinitionMixins {
     @Mixin(SkullBlockRenderer.class)
     public abstract static class Skull implements VanillaBlockReplacement.Source {
         @Shadow @Final private java.util.Map<SkullBlock.Type, SkullModelBase> modelByType;
+
+        public boolean radiance$restable(BlockEntity value) {
+            return true;
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            var skull = (SkullBlockEntity) value;
+            if (skull.getOwnerProfile() != null) return null;
+            float angle = skull.getAnimation(0);
+            return angle == skull.getAnimation(1) ? angle : null;
+        }
 
         public boolean radiance$supportsBlock(BlockEntity entity) {
             return VanillaModelPose.supports(

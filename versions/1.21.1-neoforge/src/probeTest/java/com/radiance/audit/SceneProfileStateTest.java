@@ -26,13 +26,15 @@ class SceneProfileStateTest {
                             42,
                             6000,
                             0,
-                            0);
+                            0,
+                            70);
             String[] values = state.csv().split(",");
             assertEquals(SceneProfileState.HEADER.split(",").length, values.length);
             assertEquals("-66.066240000", values[2]);
             assertEquals("-64.000000000", values[7]);
             assertEquals("-64", values[8]);
             assertEquals("320", values[9]);
+            assertEquals("70.000000", values[14]);
         } finally {
             Locale.setDefault(previous);
         }
@@ -41,9 +43,9 @@ class SceneProfileStateTest {
     @Test
     void absenceIsExplicitAndDimensionCannotInjectColumns() {
         assertTrue(SceneProfileState.absent().csv().startsWith("none,NaN,NaN,NaN,"));
-        assertEquals(14, SceneProfileState.absent().csv().split(",").length);
+        assertEquals(15, SceneProfileState.absent().csv().split(",").length);
         assertThrows(
                 IllegalArgumentException.class,
-                () -> new SceneProfileState("bad,key", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0));
+                () -> new SceneProfileState("bad,key", 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 70));
     }
 }

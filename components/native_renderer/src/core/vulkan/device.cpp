@@ -2,6 +2,7 @@
 
 #include "core/logging.hpp"
 #include "core/diagnostics/as_lifetime_trace.hpp"
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/failure_state.hpp"
 #include "core/diagnostics/device_loss_trace.hpp"
 #include "core/diagnostics/gpu_fault_capture.hpp"
@@ -39,21 +40,19 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
                    std::shared_ptr<Window> window,
                    std::shared_ptr<PhysicalDevice> physicalDevice)
     : instance_(instance), window_(window), physicalDevice_(physicalDevice) {
-    // enabled device extensions
-    std::vector<const char *> enabledExtensions = {
-        VK_KHR_SWAPCHAIN_EXTENSION_NAME,
-        VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME,
-        VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME,
-        VK_KHR_SPIRV_1_4_EXTENSION_NAME,
-        VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME,
-        VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
-        VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME,
-        VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
-        VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,
-        VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME,
-        VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME,
-        // VK_KHR_MAINTENANCE_5_EXTENSION_NAME,
-    };
+    const auto &capabilities = physicalDevice_->capabilities();
+    const auto &supportedExtensions = capabilities.extensions;
+    const auto required = DeviceCapabilities::requiredExtensions();
+    std::vector<const char *> enabledExtensions(required.begin(), required.end());
+    for (const char *extension : {
+             VK_KHR_SPIRV_1_4_EXTENSION_NAME,
+             VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME,
+             VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME,
+             VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME,
+             VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME,
+         })
+        if (supportedExtensions.contains(extension)) enabledExtensions.push_back(extension);
+
     std::vector<std::string> dlssRequiredExtensions;
     bool dlssRequirementQuerySuccess = false;
 #ifdef MCVR_ENABLE_XESS
@@ -121,16 +120,6 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
     }
 #endif
 
-    uint32_t deviceExtensionCount = 0;
-    vkEnumerateDeviceExtensionProperties(physicalDevice_->vkPhysicalDevice(), nullptr, &deviceExtensionCount, nullptr);
-    std::vector<VkExtensionProperties> deviceExtensions(deviceExtensionCount);
-    vkEnumerateDeviceExtensionProperties(physicalDevice_->vkPhysicalDevice(), nullptr, &deviceExtensionCount,
-                                         deviceExtensions.data());
-
-    std::unordered_set<std::string> supportedExtensions;
-    supportedExtensions.reserve(deviceExtensions.size());
-    for (const auto &ext : deviceExtensions) { supportedExtensions.insert(ext.extensionName); }
-
     if (supportedExtensions.find(VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME) != supportedExtensions.end()) {
         enabledExtensions.push_back(VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME);
     }
@@ -164,6 +153,53 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
     }
 #endif
 
+    const auto executableRequested = std::getenv("MCVR_PIPELINE_EXECUTABLE_STATS");
+    auto executableFeatures = capabilities.supportedExecutable;
+    if (executableRequested && std::string_view(executableRequested) == "1" &&
+        supportedExtensions.contains(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME)) {
+        pipelineExecutableStats_ = executableFeatures.pipelineExecutableInfo;
+        if (pipelineExecutableStats_) enabledExtensions.push_back(VK_KHR_PIPELINE_EXECUTABLE_PROPERTIES_EXTENSION_NAME);
+    }
+    if (executableRequested)
+        deviceCout() << "Pipeline executable statistics supported=" << pipelineExecutableStats_ << std::endl;
+    auto reorderFeatures = capabilities.supportedReorder;
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+    auto reorderExtFeatures = capabilities.supportedReorderExt;
+#endif
+    if (const char *mode = std::getenv("RADIANCE_SER_MODE"); mode && std::string_view(mode) != "0") {
+        const std::string_view requested(mode);
+        if (requested != "1" && requested != "2" && requested != "3" && requested != "4")
+            throw std::invalid_argument("RADIANCE_SER_MODE must be 0 through 4");
+        if ((requested == "1" || requested == "2") && reorderFeatures.rayTracingInvocationReorder &&
+            supportedExtensions.contains(VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME)) {
+            VkPhysicalDeviceRayTracingInvocationReorderPropertiesNV properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_PROPERTIES_NV};
+            VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &properties};
+            vkGetPhysicalDeviceProperties2(physicalDevice_->vkPhysicalDevice(), &properties2);
+            if (requested == "1" || properties.rayTracingInvocationReorderReorderingHint ==
+                                        VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_NV) {
+                enabledExtensions.push_back(VK_NV_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME);
+                rayReorderMode_ = requested == "1" ? 1 : 2;
+            }
+        }
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+        if ((requested == "3" || requested == "4") && reorderExtFeatures.rayTracingInvocationReorder &&
+            supportedExtensions.contains(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME)) {
+            VkPhysicalDeviceRayTracingInvocationReorderPropertiesEXT properties{
+                VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_INVOCATION_REORDER_PROPERTIES_EXT};
+            VkPhysicalDeviceProperties2 properties2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &properties};
+            vkGetPhysicalDeviceProperties2(physicalDevice_->vkPhysicalDevice(), &properties2);
+            if (requested == "3" || properties.rayTracingInvocationReorderReorderingHint ==
+                                        VK_RAY_TRACING_INVOCATION_REORDER_MODE_REORDER_EXT) {
+                enabledExtensions.push_back(VK_EXT_RAY_TRACING_INVOCATION_REORDER_EXTENSION_NAME);
+                rayReorderMode_ = requested == "3" ? 3 : 4;
+            }
+        }
+#endif
+        deviceCout() << "SER requested=" << mode << " enabled=" << rayReorderMode_ << std::endl;
+    }
+    opacityMicromapEnabled_ = std::getenv("RADIANCE_REPLAY_OPACITY") && capabilities.supportedOpacityMicromap.micromap;
+    if (opacityMicromapEnabled_) enabledExtensions.push_back(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
     std::vector<const char *> filteredExtensions;
     if (supportedExtensions.contains(VK_EXT_HDR_METADATA_EXTENSION_NAME))
         enabledExtensions.push_back(VK_EXT_HDR_METADATA_EXTENSION_NAME);
@@ -198,113 +234,58 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
     for (int i = 0; i < filteredExtensions.size(); i++) { deviceCout() << "\t" << filteredExtensions[i] << std::endl; }
 #endif
 
-    // query supported features
-    VkPhysicalDeviceMaintenance5Features supportedMaintenance5{};
-    supportedMaintenance5.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES;
-    VkPhysicalDeviceFaultFeaturesEXT supportedFault{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
-    if (mcvr::diagnostics::device_loss::enabled() && supportedExtensions.contains(VK_EXT_DEVICE_FAULT_EXTENSION_NAME))
-        supportedMaintenance5.pNext = &supportedFault;
-
-    VkPhysicalDeviceCoherentMemoryFeaturesAMD supportedCoherentMemoryFeatures{};
-    supportedCoherentMemoryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COHERENT_MEMORY_FEATURES_AMD;
-    supportedCoherentMemoryFeatures.pNext = &supportedMaintenance5;
-    VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR supportedComputeDerivatives{
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
-    if (supportedExtensions.contains(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)) {
-        supportedComputeDerivatives.pNext = &supportedMaintenance5;
-        supportedCoherentMemoryFeatures.pNext = &supportedComputeDerivatives;
-    }
-
-    VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT supportedVertexInputDynamicState{};
-    supportedVertexInputDynamicState.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;
-    supportedVertexInputDynamicState.pNext = &supportedCoherentMemoryFeatures;
-
-    VkPhysicalDeviceExtendedDynamicState3FeaturesEXT supportedExtendedDynamicState3{};
-    supportedExtendedDynamicState3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
-    supportedExtendedDynamicState3.pNext = &supportedVertexInputDynamicState;
-
-    VkPhysicalDeviceExtendedDynamicState2FeaturesEXT supportedExtendedDynamicState2{};
-    supportedExtendedDynamicState2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
-    supportedExtendedDynamicState2.pNext = &supportedExtendedDynamicState3;
-
-    VkPhysicalDeviceVulkan13Features supportedVulkan13{};
-    supportedVulkan13.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    supportedVulkan13.pNext = &supportedExtendedDynamicState2;
-
-    VkPhysicalDeviceVulkan11Features supportedVulkan11{};
-    supportedVulkan11.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
-    supportedVulkan11.pNext = &supportedVulkan13;
-
-    VkPhysicalDeviceVulkan12Features supportedVulkan12{};
-    supportedVulkan12.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
-    supportedVulkan12.pNext = &supportedVulkan11;
-
-    VkPhysicalDeviceAccelerationStructureFeaturesKHR supportedAccelerationStructureFeatures{};
-    supportedAccelerationStructureFeatures.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
-    supportedAccelerationStructureFeatures.pNext = &supportedVulkan12;
-
-    VkPhysicalDeviceRayTracingPipelineFeaturesKHR supportedRayTracingFeatures{};
-    supportedRayTracingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
-    supportedRayTracingFeatures.pNext = &supportedAccelerationStructureFeatures;
-
-    VkPhysicalDeviceFeatures2 supportedFeatures2{};
-    supportedFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
-    supportedFeatures2.pNext = &supportedRayTracingFeatures;
-
-    vkGetPhysicalDeviceFeatures2(physicalDevice_->vkPhysicalDevice(), &supportedFeatures2);
-
     std::unordered_set<std::string> selectedExtensions;
     selectedExtensions.reserve(filteredExtensions.size());
     for (const auto *ext : filteredExtensions) { selectedExtensions.insert(ext); }
     auto hasExtension = [&](const char *name) { return selectedExtensions.find(name) != selectedExtensions.end(); };
 
     // enabling features
-    VkPhysicalDeviceMaintenance5Features maintenance5Features{};
-    maintenance5Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MAINTENANCE_5_FEATURES;
-    maintenance5Features.maintenance5 =
-        hasExtension(VK_KHR_MAINTENANCE_5_EXTENSION_NAME) ? supportedMaintenance5.maintenance5 : VK_FALSE;
-
     VkPhysicalDeviceCoherentMemoryFeaturesAMD coherentMemoryFeatures{};
     coherentMemoryFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COHERENT_MEMORY_FEATURES_AMD;
-    coherentMemoryFeatures.pNext = &maintenance5Features;
-    coherentMemoryFeatures.deviceCoherentMemory = hasExtension(VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME) ?
-                                                      supportedCoherentMemoryFeatures.deviceCoherentMemory :
-                                                      VK_FALSE;
+    coherentMemoryFeatures.deviceCoherentMemory =
+        hasExtension(VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME) ?
+            capabilities.supportedCoherentMemoryFeatures.deviceCoherentMemory :
+            VK_FALSE;
 
     VkPhysicalDeviceVertexInputDynamicStateFeaturesEXT vertexInputDynamicState{};
     vertexInputDynamicState.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_INPUT_DYNAMIC_STATE_FEATURES_EXT;
-    vertexInputDynamicState.pNext = &coherentMemoryFeatures;
-    vertexInputDynamicState.vertexInputDynamicState = hasExtension(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) ?
-                                                          supportedVertexInputDynamicState.vertexInputDynamicState :
-                                                          VK_FALSE;
+    vertexInputDynamicState.pNext =
+        hasExtension(VK_AMD_DEVICE_COHERENT_MEMORY_EXTENSION_NAME) ? &coherentMemoryFeatures : nullptr;
+    vertexInputDynamicState.vertexInputDynamicState =
+        hasExtension(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) ?
+            capabilities.supportedVertexInputDynamicState.vertexInputDynamicState :
+            VK_FALSE;
 
     VkPhysicalDeviceExtendedDynamicState3FeaturesEXT extendedDynamicState3{};
     extendedDynamicState3.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_3_FEATURES_EXT;
-    extendedDynamicState3.pNext = &vertexInputDynamicState;
+    extendedDynamicState3.pNext = hasExtension(VK_EXT_VERTEX_INPUT_DYNAMIC_STATE_EXTENSION_NAME) ?
+                                      static_cast<void *>(&vertexInputDynamicState) :
+                                      vertexInputDynamicState.pNext;
     if (hasExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_3_EXTENSION_NAME)) {
         extendedDynamicState3.extendedDynamicState3PolygonMode =
-            supportedExtendedDynamicState3.extendedDynamicState3PolygonMode;
+            capabilities.supportedExtendedDynamicState3.extendedDynamicState3PolygonMode;
         extendedDynamicState3.extendedDynamicState3ColorBlendEnable =
-            supportedExtendedDynamicState3.extendedDynamicState3ColorBlendEnable;
+            capabilities.supportedExtendedDynamicState3.extendedDynamicState3ColorBlendEnable;
         extendedDynamicState3.extendedDynamicState3ColorBlendEquation =
-            supportedExtendedDynamicState3.extendedDynamicState3ColorBlendEquation;
+            capabilities.supportedExtendedDynamicState3.extendedDynamicState3ColorBlendEquation;
         extendedDynamicState3.extendedDynamicState3ColorWriteMask =
-            supportedExtendedDynamicState3.extendedDynamicState3ColorWriteMask;
+            capabilities.supportedExtendedDynamicState3.extendedDynamicState3ColorWriteMask;
         extendedDynamicState3.extendedDynamicState3LogicOpEnable =
-            supportedExtendedDynamicState3.extendedDynamicState3LogicOpEnable;
+            capabilities.supportedExtendedDynamicState3.extendedDynamicState3LogicOpEnable;
     }
 
     VkPhysicalDeviceExtendedDynamicState2FeaturesEXT extendedDynamicState2{};
     extendedDynamicState2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_EXTENDED_DYNAMIC_STATE_2_FEATURES_EXT;
     extendedDynamicState2.pNext = &extendedDynamicState3;
     if (hasExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME)) {
-        extendedDynamicState2.extendedDynamicState2 = supportedExtendedDynamicState2.extendedDynamicState2;
+        extendedDynamicState2.extendedDynamicState2 = capabilities.supportedExtendedDynamicState2.extendedDynamicState2;
         extendedDynamicState2.extendedDynamicState2LogicOp =
-            supportedExtendedDynamicState2.extendedDynamicState2LogicOp ? VK_TRUE : VK_FALSE;
+            capabilities.supportedExtendedDynamicState2.extendedDynamicState2LogicOp ? VK_TRUE : VK_FALSE;
 
         // Store the flag for runtime checks
-        extendedDynamicState2LogicOp_ = (extendedDynamicState2.extendedDynamicState2LogicOp == VK_TRUE);
+        extendedDynamicState2LogicOp_ = extendedDynamicState2.extendedDynamicState2LogicOp &&
+                                        extendedDynamicState3.extendedDynamicState3LogicOpEnable &&
+                                        capabilities.supportedFeatures2.features.logicOp;
 
 #ifdef DEBUG
         mcvr::log::debug("Device") << "extendedDynamicState2="
@@ -320,83 +301,87 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
 
     VkPhysicalDeviceVulkan13Features vulkan13Features{};
     vulkan13Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
-    vulkan13Features.pNext = &extendedDynamicState2;
-    vulkan13Features.shaderDemoteToHelperInvocation = supportedVulkan13.shaderDemoteToHelperInvocation;
-    vulkan13Features.synchronization2 = supportedVulkan13.synchronization2;
+    vulkan13Features.pNext = hasExtension(VK_EXT_EXTENDED_DYNAMIC_STATE_2_EXTENSION_NAME) ?
+                                 static_cast<void *>(&extendedDynamicState2) :
+                                 static_cast<void *>(&extendedDynamicState3);
+    vulkan13Features.shaderDemoteToHelperInvocation = capabilities.supportedVulkan13.shaderDemoteToHelperInvocation;
+    vulkan13Features.synchronization2 = capabilities.supportedVulkan13.synchronization2;
     // Streamline 2.14.1 sl.common creates a private slot during Vulkan initialization.
     // The create-device proxy does not enable this member in our existing Vulkan13 structure.
-    vulkan13Features.privateData = supportedVulkan13.privateData;
+    vulkan13Features.privateData = capabilities.supportedVulkan13.privateData;
 
     VkPhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     vulkan11Features.pNext = &vulkan13Features;
-    vulkan11Features.storageBuffer16BitAccess = supportedVulkan11.storageBuffer16BitAccess;
+    vulkan11Features.storageBuffer16BitAccess = capabilities.supportedVulkan11.storageBuffer16BitAccess;
 
     VkPhysicalDeviceVulkan12Features vulkan12Features{};
     vulkan12Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
     vulkan12Features.pNext = &vulkan11Features;
-    vulkan12Features.bufferDeviceAddress = supportedVulkan12.bufferDeviceAddress;
+    vulkan12Features.bufferDeviceAddress = capabilities.supportedVulkan12.bufferDeviceAddress;
     vulkan12Features.descriptorBindingUpdateUnusedWhilePending =
-        supportedVulkan12.descriptorBindingUpdateUnusedWhilePending;
-    vulkan12Features.descriptorBindingPartiallyBound = supportedVulkan12.descriptorBindingPartiallyBound;
-    vulkan12Features.descriptorIndexing = supportedVulkan12.descriptorIndexing;
-    vulkan12Features.runtimeDescriptorArray = supportedVulkan12.runtimeDescriptorArray;
+        capabilities.supportedVulkan12.descriptorBindingUpdateUnusedWhilePending;
+    vulkan12Features.descriptorBindingPartiallyBound = capabilities.supportedVulkan12.descriptorBindingPartiallyBound;
+    vulkan12Features.descriptorIndexing = capabilities.supportedVulkan12.descriptorIndexing;
+    vulkan12Features.runtimeDescriptorArray = capabilities.supportedVulkan12.runtimeDescriptorArray;
     vulkan12Features.descriptorBindingVariableDescriptorCount =
-        supportedVulkan12.descriptorBindingVariableDescriptorCount;
+        capabilities.supportedVulkan12.descriptorBindingVariableDescriptorCount;
     vulkan12Features.shaderSampledImageArrayNonUniformIndexing =
-        supportedVulkan12.shaderSampledImageArrayNonUniformIndexing;
+        capabilities.supportedVulkan12.shaderSampledImageArrayNonUniformIndexing;
     vulkan12Features.descriptorBindingUniformBufferUpdateAfterBind =
-        supportedVulkan12.descriptorBindingUniformBufferUpdateAfterBind;
+        capabilities.supportedVulkan12.descriptorBindingUniformBufferUpdateAfterBind;
     vulkan12Features.descriptorBindingSampledImageUpdateAfterBind =
-        supportedVulkan12.descriptorBindingSampledImageUpdateAfterBind;
+        capabilities.supportedVulkan12.descriptorBindingSampledImageUpdateAfterBind;
     vulkan12Features.descriptorBindingStorageImageUpdateAfterBind =
-        supportedVulkan12.descriptorBindingStorageImageUpdateAfterBind;
+        capabilities.supportedVulkan12.descriptorBindingStorageImageUpdateAfterBind;
     vulkan12Features.descriptorBindingStorageBufferUpdateAfterBind =
-        supportedVulkan12.descriptorBindingStorageBufferUpdateAfterBind;
-    vulkan12Features.shaderFloat16 = supportedVulkan12.shaderFloat16;
-    vulkan12Features.shaderBufferInt64Atomics = supportedVulkan12.shaderBufferInt64Atomics;
+        capabilities.supportedVulkan12.descriptorBindingStorageBufferUpdateAfterBind;
+    vulkan12Features.shaderFloat16 = capabilities.supportedVulkan12.shaderFloat16;
+    vulkan12Features.shaderBufferInt64Atomics = capabilities.supportedVulkan12.shaderBufferInt64Atomics;
     vulkan12Features.shaderStorageBufferArrayNonUniformIndexing =
-        supportedVulkan12.shaderStorageBufferArrayNonUniformIndexing;
+        capabilities.supportedVulkan12.shaderStorageBufferArrayNonUniformIndexing;
     vulkan12Features.shaderStorageImageArrayNonUniformIndexing =
-        supportedVulkan12.shaderStorageImageArrayNonUniformIndexing;
+        capabilities.supportedVulkan12.shaderStorageImageArrayNonUniformIndexing;
     vulkan12Features.shaderUniformBufferArrayNonUniformIndexing =
-        supportedVulkan12.shaderUniformBufferArrayNonUniformIndexing;
+        capabilities.supportedVulkan12.shaderUniformBufferArrayNonUniformIndexing;
 
     VkPhysicalDeviceAccelerationStructureFeaturesKHR accelerationStructureFeatures = {};
     accelerationStructureFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR;
     accelerationStructureFeatures.pNext = &vulkan12Features;
     if (hasExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME)) {
         accelerationStructureFeatures.accelerationStructure =
-            supportedAccelerationStructureFeatures.accelerationStructure;
+            capabilities.supportedAccelerationStructureFeatures.accelerationStructure;
         accelerationStructureFeatures.descriptorBindingAccelerationStructureUpdateAfterBind =
-            supportedAccelerationStructureFeatures.descriptorBindingAccelerationStructureUpdateAfterBind;
+            capabilities.supportedAccelerationStructureFeatures.descriptorBindingAccelerationStructureUpdateAfterBind;
     }
 
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingFeatures = {};
     rayTracingFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
     rayTracingFeatures.pNext = &accelerationStructureFeatures;
     if (hasExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME)) {
-        rayTracingFeatures.rayTracingPipeline = supportedRayTracingFeatures.rayTracingPipeline;
+        rayTracingFeatures.rayTracingPipeline = capabilities.supportedRayTracingFeatures.rayTracingPipeline;
     }
 
     VkPhysicalDeviceFeatures features = {};
-    features.independentBlend = supportedFeatures2.features.independentBlend;
-    features.tessellationShader = supportedFeatures2.features.tessellationShader;
-    features.multiDrawIndirect = supportedFeatures2.features.multiDrawIndirect;
-    features.drawIndirectFirstInstance = supportedFeatures2.features.drawIndirectFirstInstance;
+    features.independentBlend = capabilities.supportedFeatures2.features.independentBlend;
+    features.tessellationShader = capabilities.supportedFeatures2.features.tessellationShader;
+    features.multiDrawIndirect = capabilities.supportedFeatures2.features.multiDrawIndirect;
+    features.drawIndirectFirstInstance = capabilities.supportedFeatures2.features.drawIndirectFirstInstance;
     multiDrawIndirect_ = features.multiDrawIndirect == VK_TRUE;
     drawIndirectFirstInstance_ = features.drawIndirectFirstInstance == VK_TRUE;
     tessellation_ = features.tessellationShader == VK_TRUE;
-    features.shaderClipDistance = supportedFeatures2.features.shaderClipDistance;
-    features.shaderCullDistance = supportedFeatures2.features.shaderCullDistance;
-    features.logicOp = supportedFeatures2.features.logicOp;
-    features.fillModeNonSolid = supportedFeatures2.features.fillModeNonSolid;
-    features.depthBiasClamp = supportedFeatures2.features.depthBiasClamp;
-    features.shaderInt64 = supportedFeatures2.features.shaderInt64;
-    features.shaderFloat64 = supportedFeatures2.features.shaderFloat64;
-    features.shaderInt16 = supportedFeatures2.features.shaderInt16;
-    features.shaderStorageImageReadWithoutFormat = supportedFeatures2.features.shaderStorageImageReadWithoutFormat;
-    features.shaderStorageImageWriteWithoutFormat = supportedFeatures2.features.shaderStorageImageWriteWithoutFormat;
+    features.shaderClipDistance = capabilities.supportedFeatures2.features.shaderClipDistance;
+    features.shaderCullDistance = capabilities.supportedFeatures2.features.shaderCullDistance;
+    features.logicOp = capabilities.supportedFeatures2.features.logicOp;
+    features.fillModeNonSolid = capabilities.supportedFeatures2.features.fillModeNonSolid;
+    features.depthBiasClamp = capabilities.supportedFeatures2.features.depthBiasClamp;
+    features.shaderInt64 = capabilities.supportedFeatures2.features.shaderInt64;
+    features.shaderFloat64 = capabilities.supportedFeatures2.features.shaderFloat64;
+    features.shaderInt16 = capabilities.supportedFeatures2.features.shaderInt16;
+    features.shaderStorageImageReadWithoutFormat =
+        capabilities.supportedFeatures2.features.shaderStorageImageReadWithoutFormat;
+    features.shaderStorageImageWriteWithoutFormat =
+        capabilities.supportedFeatures2.features.shaderStorageImageWriteWithoutFormat;
 
     VkPhysicalDeviceFeatures2 features2 = {};
     features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
@@ -407,25 +392,47 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
     VkPhysicalDeviceComputeShaderDerivativesFeaturesKHR computeDerivatives{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_COMPUTE_SHADER_DERIVATIVES_FEATURES_KHR};
     if (hasExtension(VK_KHR_COMPUTE_SHADER_DERIVATIVES_EXTENSION_NAME)) {
-        computeDerivatives.computeDerivativeGroupQuads = supportedComputeDerivatives.computeDerivativeGroupQuads;
-        computeDerivatives.computeDerivativeGroupLinear = supportedComputeDerivatives.computeDerivativeGroupLinear;
+        computeDerivatives.computeDerivativeGroupQuads =
+            capabilities.supportedComputeDerivatives.computeDerivativeGroupQuads;
+        computeDerivatives.computeDerivativeGroupLinear =
+            capabilities.supportedComputeDerivatives.computeDerivativeGroupLinear;
         computeDerivatives.pNext = features2.pNext;
         features2.pNext = &computeDerivatives;
     }
     VkPhysicalDeviceFaultFeaturesEXT faultFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FAULT_FEATURES_EXT};
-    faultFeatures.deviceFault = supportedFault.deviceFault;
+    faultFeatures.deviceFault =
+        hasExtension(VK_EXT_DEVICE_FAULT_EXTENSION_NAME) ? capabilities.supportedFault.deviceFault : VK_FALSE;
     faultDiagnostics_ = faultFeatures.deviceFault == VK_TRUE;
     if (faultDiagnostics_) {
         faultFeatures.pNext = features2.pNext;
         features2.pNext = &faultFeatures;
     }
+    if (pipelineExecutableStats_) {
+        executableFeatures.pNext = features2.pNext;
+        features2.pNext = &executableFeatures;
+    }
+    if (rayReorderMode_ == 1 || rayReorderMode_ == 2) {
+        reorderFeatures.pNext = features2.pNext;
+        features2.pNext = &reorderFeatures;
+    }
+#ifdef VK_EXT_ray_tracing_invocation_reorder
+    if (rayReorderMode_ == 3 || rayReorderMode_ == 4) {
+        reorderExtFeatures.pNext = features2.pNext;
+        features2.pNext = &reorderExtFeatures;
+    }
+#endif
+    VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromap{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
+    if (opacityMicromapEnabled_) {
+        opacityMicromap.micromap = VK_TRUE;
+        opacityMicromap.pNext = features2.pNext;
+        features2.pNext = &opacityMicromap;
+    }
     VkDeviceDiagnosticsConfigCreateInfoNV captureConfig{VK_STRUCTURE_TYPE_DEVICE_DIAGNOSTICS_CONFIG_CREATE_INFO_NV};
     VkPhysicalDeviceDiagnosticsConfigFeaturesNV captureFeatures{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DIAGNOSTICS_CONFIG_FEATURES_NV};
     if (captureFlags && hasExtension(VK_NV_DEVICE_DIAGNOSTICS_CONFIG_EXTENSION_NAME)) {
-        VkPhysicalDeviceFeatures2 captureSupport{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
-        captureSupport.pNext = &captureFeatures;
-        vkGetPhysicalDeviceFeatures2(physicalDevice_->vkPhysicalDevice(), &captureSupport);
+        captureFeatures.diagnosticsConfig = capabilities.supportedCapture.diagnosticsConfig;
         if (!captureFeatures.diagnosticsConfig)
             mcvr::failure::raise(mcvr::failure::Kind::initialization, VK_ERROR_FEATURE_NOT_PRESENT,
                                  "local GPU capture diagnosticsConfig feature");
@@ -462,7 +469,7 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
         VkDeviceQueueCreateInfo queueCreateInfo = {};
         queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
         queueCreateInfo.queueFamilyIndex = physicalDevice_->mainQueueIndex();
-        queueCreateInfo.queueCount = 2;
+        queueCreateInfo.queueCount = physicalDevice_->hasSecondaryQueue() ? 2 : 1;
         queueCreateInfo.pQueuePriorities = queuePriorities.data();
 
         deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
@@ -517,8 +524,16 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
 
     vkGetDeviceQueue(device_, physicalDevice_->mainQueueIndex(), 0, &mainQueue_);
     vkGetDeviceQueue(device_, physicalDevice_->secondaryQueueIndex(),
-                     physicalDevice_->mainQueueIndex() == physicalDevice_->secondaryQueueIndex() ? 1 : 0,
+                     physicalDevice_->mainQueueIndex() == physicalDevice_->secondaryQueueIndex() &&
+                             physicalDevice_->hasSecondaryQueue() ?
+                         1 :
+                         0,
                      &secondaryQueue_);
+    deviceCout() << "Renderer device=" << physicalDevice_->properties().deviceName
+                 << " extensions=" << filteredExtensions.size() << " NGX SR/RR/FG requirements=" << dlssSRCompatible_
+                 << "/" << dlssDeviceExtensionsCompatible_ << "/" << dlssFGCompatible_
+                 << " HDR metadata extension=" << hasExtension(VK_EXT_HDR_METADATA_EXTENSION_NAME)
+                 << " dynamic logic op=" << extendedDynamicState2LogicOp_ << std::endl;
     if (mcvr::diagnostics::device_loss::enabled()) {
         deviceCout() << "GPU diagnostics instance=" << instance_->vkInstance() << " device=" << device_
                      << " mainQueue=" << mainQueue_ << " secondaryQueue=" << secondaryQueue_
@@ -536,6 +551,10 @@ vk::Device::Device(std::shared_ptr<Instance> instance,
                        << " diagnosticsConfig=" << captureFeatures.diagnosticsConfig
                        << " deviceFault=" << faultDiagnostics_ << " checkpoints=" << checkpoints_
                        << " debugNames=" << (vkSetDebugUtilsObjectNameEXT != nullptr)
+                       << " deviceName=" << physicalDevice_->properties().deviceName
+                       << " enabledExtensions=" << filteredExtensions.size() << " ngxSR=" << dlssSRCompatible_
+                       << " ngxRR=" << dlssDeviceExtensionsCompatible_ << " ngxFG=" << dlssFGCompatible_
+                       << " hdrMetadata=" << hasExtension(VK_EXT_HDR_METADATA_EXTENSION_NAME)
                        << " memoryBudget=" << memoryBudget_
                        << " computeDerivativeQuads=" << computeDerivatives.computeDerivativeGroupQuads << '\n';
             capability.close();
@@ -617,11 +636,59 @@ VkResult vk::Device::createRayTracingPipelines(VkDeferredOperationKHR deferredOp
                                                const VkRayTracingPipelineCreateInfoKHR *createInfos,
                                                const VkAllocationCallbacks *allocator,
                                                VkPipeline *pipelines) {
-    if (pipelineCache_) {
-        return pipelineCache_->createRayTracingPipelines(deferredOperation, count, createInfos, allocator, pipelines);
+    std::vector<VkRayTracingPipelineCreateInfoKHR> profiled;
+    if (pipelineExecutableStats_) {
+        profiled.assign(createInfos, createInfos + count);
+        for (auto &info : profiled) info.flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
+        createInfos = profiled.data();
     }
-    return vkCreateRayTracingPipelinesKHR(device_, deferredOperation, VK_NULL_HANDLE, count, createInfos, allocator,
-                                          pipelines);
+    const auto result = pipelineCache_ ? pipelineCache_->createRayTracingPipelines(deferredOperation, count,
+                                                                                   createInfos, allocator, pipelines) :
+                                         vkCreateRayTracingPipelinesKHR(device_, deferredOperation, VK_NULL_HANDLE,
+                                                                        count, createInfos, allocator, pipelines);
+    if (result == VK_SUCCESS && pipelineExecutableStats_)
+        for (uint32_t p = 0; p < count; ++p) {
+            VkPipelineInfoKHR info{VK_STRUCTURE_TYPE_PIPELINE_INFO_KHR};
+            info.pipeline = pipelines[p];
+            uint32_t executables = 0;
+            auto status = vkGetPipelineExecutablePropertiesKHR(device_, &info, &executables, nullptr);
+            std::vector<VkPipelineExecutablePropertiesKHR> properties(
+                executables, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_PROPERTIES_KHR});
+            if (status == VK_SUCCESS)
+                status = vkGetPipelineExecutablePropertiesKHR(device_, &info, &executables, properties.data());
+            deviceCout() << "ExecutableStatistics pipeline=" << pipelines[p] << " status=" << status
+                         << " count=" << executables << std::endl;
+            if (status != VK_SUCCESS) continue;
+            for (uint32_t e = 0; e < executables; ++e) {
+                VkPipelineExecutableInfoKHR executable{VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_INFO_KHR};
+                executable.pipeline = pipelines[p];
+                executable.executableIndex = e;
+                uint32_t statistics = 0;
+                status = vkGetPipelineExecutableStatisticsKHR(device_, &executable, &statistics, nullptr);
+                std::vector<VkPipelineExecutableStatisticKHR> values(
+                    statistics, {VK_STRUCTURE_TYPE_PIPELINE_EXECUTABLE_STATISTIC_KHR});
+                if (status == VK_SUCCESS)
+                    status = vkGetPipelineExecutableStatisticsKHR(device_, &executable, &statistics, values.data());
+                auto log = deviceCout();
+                log << "ExecutableStatistics pipeline=" << pipelines[p] << " executable=" << e
+                    << " name=" << properties[e].name << " stages=" << properties[e].stages
+                    << " subgroup=" << properties[e].subgroupSize << " status=" << status;
+                if (status == VK_SUCCESS)
+                    for (const auto &value : values) {
+                        log << " | " << value.name << "=";
+                        if (value.format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_UINT64_KHR)
+                            log << value.value.u64;
+                        else if (value.format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_INT64_KHR)
+                            log << value.value.i64;
+                        else if (value.format == VK_PIPELINE_EXECUTABLE_STATISTIC_FORMAT_FLOAT64_KHR)
+                            log << value.value.f64;
+                        else
+                            log << value.value.b32;
+                    }
+                log << std::endl;
+            }
+        }
+    return result;
 }
 
 void vk::Device::nameObject(VkObjectType type, uint64_t handle, const char *label) const noexcept {
@@ -640,6 +707,8 @@ void vk::Device::resource(VkObjectType type,
                           const char *label,
                           bool created) const noexcept {
     if (!mcvr::diagnostics::device_loss::enabled() || !handle) return;
+    mcvr::profile::AllocationScope scope(created ? "allocation.resource.register" : "allocation.resource.unregister",
+                                         bytes);
     mcvr::diagnostics::device_loss::note(created ? "resource-create" : "resource-destroy-call", VK_SUCCESS,
                                          uint32_t(type), 0, handle, address, bytes);
     if (created) {

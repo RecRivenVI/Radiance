@@ -5,6 +5,17 @@
 #include "util/imaging_trace.glsl"
 #ifndef PRIORITY_IMAGE_EXTERNAL_PAYLOAD
 layout(location = 0) rayPayloadEXT MainRay mainRay;
+layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
+layout(set=0,binding=0) uniform sampler2D textures[];
+layout(set=1,binding=1) readonly buffer BLASOffsets { uint offsets[]; } blasOffsets;
+layout(set=1,binding=2) readonly buffer IndexBufferAddr { uint64_t addrs[]; } indexBufferAddrs;
+layout(set=1,binding=7) readonly buffer TextureMappingBuffer { TextureMapping mapping; };
+layout(std430,buffer_reference,buffer_reference_align=8) readonly buffer IndexBuffer { uint indices[]; } indexBuffer;
+#include "util/medium_boundary_trace.glsl"
+#define PRIORITY_TRACE_LIGHTING(flags,mask,offset,stride,miss,origin,minimum,direction,maximum,payload) traceImagingRay(flags,mask,offset,stride,miss,origin,minimum,direction,maximum,payload)
+#else
+// The compute contract supplies the traversal primitive and payload itself.
+#define PRIORITY_TRACE_LIGHTING(flags,mask,offset,stride,miss,origin,minimum,direction,maximum,payload) traceRayEXT(topLevelAS,flags,mask,offset,stride,miss,origin,minimum,direction,maximum,payload)
 #endif
 
 void initPriorityQuery(vec3 origin, vec3 direction, uint state, uint seed) {
@@ -53,18 +64,15 @@ vec4 tracePriorityLayer(vec3 origin, vec3 direction, uint seed, out float hitT, 
     if (alpha <= 0.0) return vec4(0);
 
     initPriorityQuery(origin, direction, rayPriorityShadeBit, seed);
-    MediumHistory mediumHistory;
-#ifdef ADV_NUM_RAY_BOUNCES
-    const int limit = ADV_NUM_RAY_BOUNCES;
-#else
-    const int limit = VPT_NUM_RAY_BOUNCES;
-#endif
+    MediumHistory mediumHistory = MediumHistory(0u, 0u);
+    int continuations = 0;
     bool priorityPending=true;
-    for (int bounce = 0; bounce < limit; ++bounce) {
+    for (int bounce = 0; bounce <= RADIANCE_PATH_EVENTS; ++bounce) {
         // Consume the preceding event before clearing its continuation bit.
         // Coverage and refraction preserve camera ownership, even in this pass.
-        if (bounce != 0) rayAdvanceQuery(mainRay, mediumHistory);
+        if (bounce != 0 && !rayAdvanceQuery(mainRay, mediumHistory)) break;
         raySetBounce(mainRay, uint(bounce));
+        raySetTerminal(mainRay, bounce == RADIANCE_PATH_EVENTS);
         raySetStop(mainRay, false);
         raySetContinue(mainRay, false);
         uint mask = priorityPending ? queryMask(queryPriority, true) : queryMask(rayQueryPurpose(mainRay), worldUBO.isFirstPerson > 0);
@@ -72,7 +80,7 @@ vec4 tracePriorityLayer(vec3 origin, vec3 direction, uint seed, out float hitT, 
             mainRay.stateBits &= ~rayPriorityShadeBit;
         }
         vec3 tracedOrigin=mainRay.origin, tracedDirection=mainRay.direction;
-        traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), gl_RayFlagsCullBackFacingTrianglesEXT),
+        PRIORITY_TRACE_LIGHTING(queryTraversalFlags(rayQueryPurpose(mainRay), gl_RayFlagsCullBackFacingTrianglesEXT),
                     mask, 1, 1, 1, mainRay.origin, 0.0, mainRay.direction, imagingTraceLimit(mainRay, 1000.0), 0);
         if (priorityPending) {
             MaterialInfo material = rayLoadMaterial(mainRay);
@@ -82,7 +90,7 @@ vec4 tracePriorityLayer(vec3 origin, vec3 direction, uint seed, out float hitT, 
         }
         priorityPending=false;
         if (rayShouldContinue(mainRay)) {
-            if (!rayContinuationProgress(mainRay,tracedOrigin,tracedDirection)) {raySetStop(mainRay,true);break;}
+            if (++continuations >= RADIANCE_FREE_CONTINUATIONS || !rayContinuationProgress(mainRay,tracedOrigin,tracedDirection)) {raySetStop(mainRay,true);break;}
             --bounce;
             continue;
         }

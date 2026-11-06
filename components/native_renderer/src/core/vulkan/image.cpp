@@ -115,6 +115,11 @@ VkImageView &vk::SwapchainImage::vkImageView(int index) {
     return imageViews_[index];
 }
 
+vk::ImageViewDescription vk::SwapchainImage::describeView(int index) const {
+    if (index != 0) return {};
+    return {imageViews_[0], format_, {width_, height_}, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT};
+}
+
 VkImageLayout &vk::SwapchainImage::imageLayout() {
     return imageLayout_;
 }
@@ -503,7 +508,8 @@ vk::DeviceLocalImage::DeviceLocalImage(std::shared_ptr<Device> device,
     createInfo.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
     createInfo.subresourceRange = makeImageSubresourceRange(imageAspectMask(usage_), mipLevels_, depth_, layer_);
 
-    if (const auto result = vkCreateImageView(device_->vkDevice(), &createInfo, nullptr, &imageViews_[0]);
+    imageViews_[0] = {VK_NULL_HANDLE, format_, {width_, height_}, usage_};
+    if (const auto result = vkCreateImageView(device_->vkDevice(), &createInfo, nullptr, &imageViews_[0].handle);
         result != VK_SUCCESS) {
         imageCerr() << "failed to create image view for image" << std::endl;
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateImageView");
@@ -518,7 +524,7 @@ vk::DeviceLocalImage::~DeviceLocalImage() {
     device_->resource(VK_OBJECT_TYPE_IMAGE, (uint64_t)image_, 0, 0, "MCVR image", false);
     mcvr::diag::recordAllocDestroy("image", tracedImageBytes(width_, height_, depth_, layer_, format_), allocTraceTag_);
     for (const auto imageView : imageViews_) {
-        if (imageView != VK_NULL_HANDLE) { vkDestroyImageView(device_->vkDevice(), imageView, nullptr); }
+        if (imageView.handle != VK_NULL_HANDLE) vkDestroyImageView(device_->vkDevice(), imageView.handle, nullptr);
     }
     if (stagingBuffer_ != VK_NULL_HANDLE || stagingAllocation_ != VK_NULL_HANDLE) {
         vmaDestroyBuffer(vma_->allocator(), stagingBuffer_, stagingAllocation_);
@@ -634,6 +640,11 @@ VkImage &vk::DeviceLocalImage::vkImage() {
 }
 
 VkImageView &vk::DeviceLocalImage::vkImageView(int index) {
+    return imageViews_[index].handle;
+}
+
+vk::ImageViewDescription vk::DeviceLocalImage::describeView(int index) const {
+    if (index < 0 || static_cast<size_t>(index) >= imageViews_.size()) return {};
     return imageViews_[index];
 }
 
@@ -656,7 +667,9 @@ void vk::DeviceLocalImage::addImageView(VkImageViewCreateInfo info) {
         imageCerr() << "failed to create image view for image" << std::endl;
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateImageView(additional)");
     }
-    imageViews_.push_back(vkImageView);
+    const auto mip = info.subresourceRange.baseMipLevel;
+    imageViews_.push_back(
+        {vkImageView, info.format, {std::max(1u, width_ >> mip), std::max(1u, height_ >> mip)}, usage_});
 }
 
 vk::Sampler::Sampler(std::shared_ptr<Device> device)

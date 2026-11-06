@@ -38,7 +38,13 @@ hitAttributeEXT vec2 attribs;
 #include "util/world_material_faces.glsl"
 #include "util/layered_texture.glsl"
 void main() {
-    uint geometry=getGeometryBufferIndex(gl_InstanceCustomIndexEXT,gl_GeometryIndexEXT);
+    if ((mainRay.boundaryFlags & 0x40000000u) != 0u) {
+        uint replayGeometry=blasOffsets.offsets[gl_InstanceCustomIndexEXT]+uint(gl_GeometryIndexEXT);
+        if (replayGeometry != ((mainRay.boundaryFlags >> 3u) & 0x07ffffffu) ||
+            gl_PrimitiveID != mainRay.hasPrevScenePos) ignoreIntersectionEXT;
+        return;
+    }
+    uint geometry=blasOffsets.offsets[gl_InstanceCustomIndexEXT]+uint(gl_GeometryIndexEXT);
     if(!acceptsWorldMaterialFace(instanceAppearances.values[geometry].materialFlags,
         gl_HitKindEXT==gl_HitKindFrontFacingTriangleEXT,geometry,gl_PrimitiveID,rayDirectImage(mainRay))) {ignoreIntersectionEXT;return;}
     uint i0,i1,i2;PositionVertex p0,p1,p2;MaterialVertex m0,m1,m2;

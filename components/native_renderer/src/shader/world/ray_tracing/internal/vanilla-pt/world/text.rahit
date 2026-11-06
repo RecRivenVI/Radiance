@@ -39,7 +39,15 @@ indexBuffer;
 layout(location = 0) rayPayloadInEXT MainRay mainRay;
 hitAttributeEXT vec2 attribs;
 
+#include "util/coverage_sampling.glsl"
+
 void main() {
+    if ((mainRay.boundaryFlags & 0x40000000u) != 0u) {
+        uint replayGeometry=blasOffsets.offsets[gl_InstanceCustomIndexEXT]+uint(gl_GeometryIndexEXT);
+        if (replayGeometry != ((mainRay.boundaryFlags >> 3u) & 0x07ffffffu) ||
+            gl_PrimitiveID != mainRay.hasPrevScenePos) ignoreIntersectionEXT;
+        return;
+    }
     if (!rayPriorityLayerAllowed(mainRay)) { ignoreIntersectionEXT; return; }
     uint instanceID = gl_InstanceCustomIndexEXT;
     uint geometryID = gl_GeometryIndexEXT;
@@ -93,7 +101,7 @@ void main() {
     // Text glyphs are coverage masks, not dielectric/transmission materials.
     // Stochastic acceptance preserves anti-aliased coverage for primary,
     // secondary and shadow rays while still allowing deeper layers to be hit.
-    if (alpha <= 0.0 || (alpha < 1.0 && rand(mainRay.seed) >= alpha)) {
+    if (alpha <= 0.0 || (alpha < 1.0 && coverageSample(geometryBufferIndex, uint(gl_PrimitiveID), rayBounce(mainRay)) >= alpha)) {
         ignoreIntersectionEXT;
     }
 }

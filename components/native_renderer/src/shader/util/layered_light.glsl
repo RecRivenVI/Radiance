@@ -29,7 +29,7 @@ vec3 sampleLayeredWorldLight(LabPBRMat mat,vec3 point,vec3 normal,vec3 viewDir) 
     if(lightPdf<=0 || light.a<=0)return vec3(0);
     float bsdfPdf;vec3 brdf=DisneyEval(mat,viewDir,normal,direction,bsdfPdf);
     shadowRay.radiance=vec3(0);shadowRay.throughput=vec3(1);shadowRay.queryPadding=0u;shadowRay.pad0=1u;
-    traceRayEXT(topLevelAS,0u,receiverQueryMask(queryTransport,worldUBO.isFirstPerson>0,rayReceiveOnlyReceiver(mainRay)),
+    traceRayEXT(topLevelAS,gl_RayFlagsTerminateOnFirstHitEXT | gl_RayFlagsSkipClosestHitShaderEXT,receiverQueryMask(queryTransport,worldUBO.isFirstPerson>0,rayReceiveOnlyReceiver(mainRay)),
         0,0,0,offsetQueryOrigin(point,normal,direction),.0001,direction,max(distance-.001,.0001),1);
     float mis=lightPdf*lightPdf/max(lightPdf*lightPdf+bsdfPdf*bsdfPdf,1e-20);
     return mainRay.throughput*shadowRay.radiance*light.rgb*light.a*material.surface.y/

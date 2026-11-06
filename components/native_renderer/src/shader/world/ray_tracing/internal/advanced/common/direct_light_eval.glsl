@@ -117,16 +117,18 @@ vec3 shadeStoredAreaLightReservoir(SampledSurface surface,
                                    float maxDepthWorld,
                                    AreaLightReservoir reservoir) {
     if (!(reservoir.valid > 0.5) || reservoir.contributionWeight <= 1e-8) { return vec3(0.0); }
+    if (!areaLightReservoirSourceExists(reservoir)) return vec3(0.0);
+    vec3 scenePoint = areaLightScenePoint(reservoir.sourceChunkIndex, reservoir.point);
 
     vec3 transmission = traceAreaLightReservoirTransmission(
         surface, referenceUv, referenceWorldPos, atlasUvMin, atlasUvMax, dPduWorld, dPdvWorld, baseGeoNormal,
-        traceLocalHeight, normalTextureID, maxDepthWorld, reservoir.point, reservoir.normal, rayDirectImage(mainRay), rayReceiveOnlyReceiver(mainRay));
+        traceLocalHeight, normalTextureID, maxDepthWorld, scenePoint, reservoir.normal, rayDirectImage(mainRay), rayReceiveOnlyReceiver(mainRay));
     if (max(max(transmission.x, transmission.y), transmission.z) <= 1e-8) { return vec3(0.0); }
 
     float ignoredTargetFunction = 0.0;
     vec3 contribution = evaluateAreaLightSampleContribution(
         surface, viewDir, referenceUv, referenceWorldPos, atlasUvMin, atlasUvMax, dPduWorld, dPdvWorld, baseGeoNormal,
-        false, -1, 0.0, reservoir.emission, reservoir.point, reservoir.normal, false,
+        false, -1, 0.0, reservoir.emission, scenePoint, reservoir.normal, false,
         ignoredTargetFunction);
     return contribution * transmission * reservoir.contributionWeight;
 }

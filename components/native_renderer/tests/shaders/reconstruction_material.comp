@@ -1,0 +1,64 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define NRD_NORMAL_ENCODING 2
+#define NRD_ROUGHNESS_ENCODING 1
+#include "util/reconstruction_material.glsl"
+#include "util/reconstruction_guides.glsl"
+#include "world/nrd/nrd_glsl_compat.glsl"
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Results { vec4 rows[]; } result;
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    float roughness = float(i) / 9.0;
+    vec3 f = reconstructionSpecularReflectance(vec3(0.04), roughness, 1.0);
+    vec3 grazing = reconstructionSpecularReflectance(vec3(0.04), 0.0, 0.05);
+    vec3 zero = reconstructionSpecularReflectance(vec3(0.0), roughness, 0.5);
+    vec3 diff, spec;
+    reconstructionMaterialFactors(vec4(vec3(0.2, 0.5, 0.8) * (1.0 - float(i % 2u)), float(i % 2u)), f, roughness, false, diff, spec);
+    vec3 light = vec3(0.125, 2.0, 9.0);
+    vec3 error = abs((light / diff) * diff - light) + abs((light / spec) * spec - light);
+    bool passed = all(lessThanEqual(error, vec3(1e-5))) && all(greaterThanEqual(diff, vec3(0.02)))
+        && all(greaterThanEqual(spec, vec3(0.02))) && all(equal(zero, vec3(0.0)))
+        && grazing.r > 0.7 && all(lessThanEqual(f, vec3(1.0))) && all(greaterThanEqual(f, vec3(0.0)))
+        && (i != 0u || abs(f.r - 0.04) < 0.01);
+    if (i % 2u != 0u) passed = passed && all(equal(diff, vec3(0.02)));
+    vec3 transmissionDiffuse, transmissionSpecular;
+    reconstructionMaterialFactors(vec4(1.0), vec3(0.04), roughness, true, transmissionDiffuse, transmissionSpecular);
+    passed = passed && all(equal(transmissionSpecular, vec3(1.0)));
+    float absent = REBLUR_FrontEnd_GetNormHitDist(0.0, 10.0, vec3(3.0, 0.1, 20.0), roughness);
+    passed = passed && absent == 0.0 && NRD_FrontEnd_TrimHitDistance(0.0002, 0.001) == 0.0
+        && REBLUR_FrontEnd_GetNormHitDist(65504.0, 10.0, vec3(3.0, 0.1, 20.0), roughness) == 1.0;
+    vec3 n = normalize(vec3(float(i) - 4.5, 2.0, -3.0));
+    vec3 from = normalize(vec3(1, float(i) + 0.5, -2));
+    vec3 to = normalize(vec3(-2, 1, float(i) - 3.5));
+    passed = passed && length(reconstructionRotation(from, to) * from - to) < 1e-4;
+    passed = passed && length(reconstructionRotation(from, -from) * from + from) < 1e-4;
+    mat3 unfolded = mat3(1);
+    vec3 translation = vec3(0);
+    vec3 pivot = vec3(-32.0 + float(i), 3.0, 7.0);
+    vec3 point = vec3(2, -1, 5);
+    reconstructionUnfold(unfolded, translation, reconstructionReflection(n), pivot);
+    vec3 expected = reflect(point - pivot, n) + pivot;
+    passed = passed && length(unfolded * point + translation - expected) < 1e-4;
+    vec3 delta = vec3(0.125, -0.25, 0.5);
+    mat3 previousUnfolded = mat3(1);
+    vec3 previousTranslation = vec3(0);
+    reconstructionUnfold(previousUnfolded, previousTranslation, reconstructionReflection(n), pivot + delta);
+    vec3 previousPoint = previousUnfolded * point + previousTranslation;
+    passed = passed && length(previousPoint - expected - 2.0 * n * dot(n, delta)) < 1e-4;
+    passed = passed && reconstructionDominantTransmission(0.1, true) == 1.0
+        && reconstructionDominantTransmission(0.9, true) == 0.0
+        && reconstructionDominantTransmission(0.1, false) == 0.0;
+    passed = passed && reconstructionReusableSurface(vec3(0, 1, 0), 0.0, 0.0)
+        && reconstructionReusableSurface(vec3(0, 1, 0), 1.0, 0.2)
+        && !reconstructionReusableSurface(vec3(0, 1, 0), 1.0, 0.0)
+        && !reconstructionReusableSurface(vec3(0), 0.0, 0.5);
+    vec3 factor = reconstructionLayerFactor(vec3(float(i) / 9.0, 0.0, 1.5), vec3(0.04));
+    vec4 stored = vec4(round(factor * 255.0) / 255.0, 1.0);
+    vec3 restored = reconstructionStoredFactor(stored);
+    passed = passed && all(greaterThanEqual(restored, vec3(0.02)))
+        && all(lessThanEqual(restored, vec3(1)))
+        && all(lessThan(abs((light / restored) * restored - light), vec3(1e-5)))
+        && all(equal(reconstructionStoredFactor(vec4(0)), vec3(1)));
+    result.rows[i * 8u] = vec4(passed ? 1.0 : 0.0, f.r, grazing.r, 0.0);
+}

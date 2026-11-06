@@ -2,6 +2,7 @@
 #include "core/failure_state.hpp"
 #include "core/diagnostics/as_lifetime_trace.hpp"
 #include "core/vulkan/as.hpp"
+#include "core/diagnostics/scene_replay.hpp"
 
 #include "core/vulkan/command.hpp"
 #include "core/vulkan/device.hpp"
@@ -195,7 +196,15 @@ std::shared_ptr<vk::BLAS> vk::BLASBuilder::buildAndSubmit(std::shared_ptr<Device
     const VkAccelerationStructureBuildRangeInfoKHR *pBuildRanges = buildRanges.data();
     vkCmdBuildAccelerationStructuresKHR(commandBuffer->vkCommandBuffer(), 1, &buildInfo, &pBuildRanges);
 
-    return BLAS::create(device, dstBLAS_, blasBuffer_);
+    auto result = BLAS::create(device, dstBLAS_, blasBuffer_);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        result->captureGeometries = geometryBuilder_.geometries;
+        result->capturePrimitiveCounts = geometryBuilder_.primitiveCounts;
+        mcvr::replay::registerBlasFlags(result.get(), flags_);
+    }
+#endif
+    return result;
 }
 
 std::shared_ptr<vk::BLAS> vk::BLASBuilder::build(std::shared_ptr<Device> device) {
@@ -211,7 +220,15 @@ std::shared_ptr<vk::BLAS> vk::BLASBuilder::build(std::shared_ptr<Device> device)
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateAccelerationStructureKHR(BLAS AABBs)");
     }
 
-    return BLAS::create(device, dstBLAS_, blasBuffer_);
+    auto result = BLAS::create(device, dstBLAS_, blasBuffer_);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        result->captureGeometries = geometryBuilder_.geometries;
+        result->capturePrimitiveCounts = geometryBuilder_.primitiveCounts;
+        mcvr::replay::registerBlasFlags(result.get(), flags_);
+    }
+#endif
+    return result;
 }
 
 std::shared_ptr<vk::BLAS> vk::BLASBuilder::buildExternal(std::shared_ptr<Device> device,
@@ -230,7 +247,15 @@ std::shared_ptr<vk::BLAS> vk::BLASBuilder::buildExternal(std::shared_ptr<Device>
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateAccelerationStructureKHR(BLAS update)");
     }
 
-    return BLAS::create(device, dstBLAS_, buffer);
+    auto result = BLAS::create(device, dstBLAS_, buffer);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        result->captureGeometries = geometryBuilder_.geometries;
+        result->capturePrimitiveCounts = geometryBuilder_.primitiveCounts;
+        mcvr::replay::registerBlasFlags(result.get(), flags_);
+    }
+#endif
+    return result;
 }
 
 void vk::BLASBuilder::submit(std::shared_ptr<vk::CommandBuffer> commandBuffer) {
@@ -458,16 +483,17 @@ vk::TLASBuilder::TLASInstanceBuilder::defineInstance(VkTransformMatrixKHR transf
     return *this;
 }
 
-std::shared_ptr<vk::TLASBuilder>
-vk::TLASBuilder::TLASInstanceBuilder::endInstanceBuilder(std::shared_ptr<Device> device, std::shared_ptr<VMA> vma) {
+std::shared_ptr<vk::TLASBuilder> vk::TLASBuilder::TLASInstanceBuilder::endInstanceBuilder(
+    std::shared_ptr<Device> device, std::shared_ptr<VMA> vma, VkBufferUsageFlags usage) {
     instanceBuffer =
         DeviceLocalBuffer::create(vma, device, false, sizeof(VkAccelerationStructureInstanceKHR) * instances.size(),
                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | usage,
                                   0, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 16);
     instanceBuffer->uploadToStagingBuffer(instances.data());
     if (mcvr::diagnostics::as_lifetime::membershipEnabled()) {
         for (size_t i = 0; i < instances.size(); ++i) {
+            if (instances[i].accelerationStructureReference == 0) continue;
             mcvr::diagnostics::as_lifetime::note(
                 mcvr::diagnostics::as_lifetime::Kind::instance, (uint64_t)instanceModels[i]->blas(),
                 instances[i].accelerationStructureReference, instanceBuffer->bufferAddress(), i);

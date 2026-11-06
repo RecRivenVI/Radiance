@@ -8,6 +8,8 @@
 #include "core/render/chunk_geometry_layout.hpp"
 #include "core/render/material_palette.hpp"
 #include "core/render/chunks.hpp"
+#include "core/diagnostics/scene_replay.hpp"
+#include "core/render/medium_contact_mesh.hpp"
 #include "core/render/chunk_build_submission.hpp"
 #include "core/failure_state.hpp"
 
@@ -46,6 +48,36 @@ struct ChunkPerformanceStats {
 
 ChunkPerformanceStats chunkPerformance;
 const bool chunkPerformanceEnabled = std::getenv("RADIANCE_CHUNK_PERF") != nullptr;
+
+enum class Flow { initial, update, replaceQueued, admitted, complete, published, held, stale, empty, relocated, count };
+constexpr const char *flowNames[]{"chunk.input.initial", "chunk.input.update",  "chunk.input.replace-queued",
+                                  "chunk.admitted",      "chunk.gpu-completed", "chunk.published",
+                                  "chunk.publish-held",  "chunk.stale",         "chunk.empty",
+                                  "chunk.relocated"};
+std::array<std::atomic<uint64_t>, size_t(Flow::count)> flowCounts{};
+std::atomic<uint64_t> flowPublishNs{0}, flowPublishMaxNs{0};
+void noteFlow(Flow event, uint64_t count = 1) {
+    if (mcvr::profile::flowAuditEnabled()) flowCounts[size_t(event)].fetch_add(count, std::memory_order_relaxed);
+}
+
+// Worker events are drained into the next render-frame interval, not falsely attributed
+// to the frame that originally requested them. The first interval of a capture is partial.
+void drainFlow() {
+    if (!mcvr::profile::flowAuditEnabled()) return;
+    static uint64_t observedEpoch = 0;
+    const auto epoch = mcvr::profile::epoch.load();
+    const bool cold = observedEpoch != epoch;
+    observedEpoch = epoch;
+    for (size_t i = 0; i < flowCounts.size(); ++i) {
+        const auto count = flowCounts[i].exchange(0);
+        if (!cold) mcvr::profile::emit(mcvr::profile::frame, 5, flowNames[i], count, 0);
+    }
+    const auto sum = flowPublishNs.exchange(0), maximum = flowPublishMaxNs.exchange(0);
+    if (!cold) {
+        mcvr::profile::emit(mcvr::profile::frame, 6, "chunk.enqueue-to-publish.sum", sum, sum);
+        mcvr::profile::emit(mcvr::profile::frame, 6, "chunk.enqueue-to-publish.max", maximum, maximum);
+    }
+}
 
 uint64_t elapsedNs(std::chrono::steady_clock::time_point start) {
     return static_cast<uint64_t>(
@@ -153,11 +185,12 @@ static void clipUvPolygonAgainstEdge(
     }
 }
 
-static std::vector<glm::vec2>
-clipUvTriangleToRect(const std::array<glm::vec2, 3> &triangle, const glm::vec2 &rectMin, const glm::vec2 &rectMax) {
-    std::vector<glm::vec2> polygon(triangle.begin(), triangle.end());
-    std::vector<glm::vec2> scratch;
-
+static void clipUvTriangleToRect(const std::array<glm::vec2, 3> &triangle,
+                                 const glm::vec2 &rectMin,
+                                 const glm::vec2 &rectMax,
+                                 std::vector<glm::vec2> &polygon,
+                                 std::vector<glm::vec2> &scratch) {
+    polygon.assign(triangle.begin(), triangle.end());
     clipUvPolygonAgainstEdge(polygon, scratch, 0, rectMin.x, true);
     polygon.swap(scratch);
     clipUvPolygonAgainstEdge(polygon, scratch, 0, rectMax.x, false);
@@ -166,7 +199,6 @@ clipUvTriangleToRect(const std::array<glm::vec2, 3> &triangle, const glm::vec2 &
     polygon.swap(scratch);
     clipUvPolygonAgainstEdge(polygon, scratch, 1, rectMax.y, false);
     polygon.swap(scratch);
-    return polygon;
 }
 
 static void releaseChunkBuildDataStaging(const std::shared_ptr<ChunkBuildData> &chunkBuildData) {
@@ -218,10 +250,11 @@ static glm::vec3 emissionVertexTint(const vk::VertexFormat::PBRVertex &vertex) {
     return glm::clamp(glm::vec3(vertex.colorLayer), glm::vec3(0.0f), glm::vec3(1.0f));
 }
 
-static uint64_t
-buildChunkLightStableID(int64_t chunkId, uint32_t geometryIndex, uint32_t quadIndex, uint64_t cellStableKey) {
+static uint64_t buildChunkLightStableID(
+    int64_t chunkId, glm::ivec3 origin, uint32_t geometryIndex, uint32_t quadIndex, uint64_t cellStableKey) {
     uint64_t seed = 0xcbf29ce484222325ull;
     seed = hashCombine64(seed, static_cast<uint64_t>(chunkId));
+    for (int axis = 0; axis < 3; ++axis) seed = hashCombine64(seed, static_cast<uint32_t>(origin[axis]));
     seed = hashCombine64(seed, static_cast<uint64_t>(geometryIndex));
     seed = hashCombine64(seed, static_cast<uint64_t>(quadIndex));
     seed = hashCombine64(seed, cellStableKey);
@@ -241,6 +274,7 @@ static ChunkPackedData makeChunkPackedData(
 }
 
 static void storeChunkPackedData(std::vector<ChunkPackedData> &chunkPackedData,
+                                 uint64_t &revision,
                                  int64_t id,
                                  int32_t x,
                                  int32_t y,
@@ -248,25 +282,27 @@ static void storeChunkPackedData(std::vector<ChunkPackedData> &chunkPackedData,
                                  uint32_t geometryCount,
                                  uint32_t lightCount,
                                  VkDeviceAddress lightBufferAddress) {
-    if (!Renderer::options.collectChunkEmission) { return; }
+    if (uint64_t(id) >= chunkPackedData.size()) { return; }
 
-    chunkPackedData[id] = makeChunkPackedData(x, y, z, geometryCount, lightCount, lightBufferAddress);
+    const auto next = makeChunkPackedData(x, y, z, geometryCount, lightCount, lightBufferAddress);
+    if (chunkPackedData[id] != next) {
+        chunkPackedData[id] = next;
+        ++revision;
+    }
 }
 
-static LightData packLight(const LightInfo &light, const glm::vec3 &chunkOrigin) {
+static LightData packLight(const LightInfo &light) {
     LightData gpuLight{};
-    glm::vec3 p0 = light.p0 + chunkOrigin;
-    glm::vec3 p1 = light.p1 + chunkOrigin;
-    glm::vec3 p2 = light.p2 + chunkOrigin;
-    glm::vec3 p3 = light.p3 + chunkOrigin;
-
-    gpuLight.p0Area = glm::vec4(p0, light.area);
+    gpuLight.p0Area = glm::vec4(light.p0, light.area);
     // Spare lanes retain exact source UVs for water-emitter exclusion; the packed
     // record stays seven vec4s. Texture IDs occupy bits 8..19, outside face bits.
-    gpuLight.p1 = glm::vec4(p1, light.uv0.x);
-    gpuLight.p2 = glm::vec4(p2, light.uv0.y);
-    gpuLight.p3 = glm::vec4(p3, light.uv1.x);
-    gpuLight.normal = glm::vec4(light.normal, packUintBits(light.sourceFaceFlags | (light.textureID << 8u)));
+    gpuLight.p1 = glm::vec4(light.p1, light.uv0.x);
+    gpuLight.p2 = glm::vec4(light.p2, light.uv0.y);
+    gpuLight.p3 = glm::vec4(light.p3, light.uv1.x);
+    const uint32_t source = light.sourceFaceFlags | (light.textureID << 8u) |
+                            (light.evaluateTexture ? mcvr::abi::CHUNK_EMITTER_TEXTURE_EVAL_BIT : 0u) |
+                            (light.neutralOverlay ? mcvr::abi::CHUNK_EMITTER_NEUTRAL_OVERLAY_BIT : 0u);
+    gpuLight.normal = glm::vec4(light.normal, packUintBits(source));
     gpuLight.radiance = glm::vec4(light.radiance, light.uv2.y);
     uint32_t stableIDLow = static_cast<uint32_t>(light.stableID & 0xffffffffull);
     uint32_t stableIDHigh = static_cast<uint32_t>((light.stableID >> 32u) & 0xffffffffull);
@@ -291,12 +327,11 @@ void ChunkBuildData::buildLightBuffer(const std::shared_ptr<vk::VMA> &vma,
     std::vector<LightData> gpuLights;
     gpuLights.reserve(lightInfos.size());
 
-    glm::vec3 chunkOrigin(static_cast<float>(x), static_cast<float>(y), static_cast<float>(z));
     for (const auto &light : lightInfos) {
         float maxRadiance = std::max({light.radiance.r, light.radiance.g, light.radiance.b});
         if (light.area <= 1e-6f || maxRadiance <= 1e-6f) { continue; }
 
-        gpuLights.push_back(packLight(light, chunkOrigin));
+        gpuLights.push_back(packLight(light));
     }
 
     if (gpuLights.empty()) { return; }
@@ -357,6 +392,7 @@ ChunkBuildData::ChunkBuildData(int64_t id,
       lightCount(0) {
     mcvr::profile::Scope topologyProfile("chunk-input-topology");
     topologyVertexFlags.resize(this->vertices.size());
+    std::vector<std::vector<uint32_t>> mediumSheetPairs(this->vertices.size());
     this->allVertexCount = 0;
     this->allIndexCount = 0;
     for (size_t g = 0; g < this->vertices.size(); ++g) {
@@ -365,6 +401,7 @@ ChunkBuildData::ChunkBuildData(int64_t id,
                 mcvr::faces::withAlphaMode(this->geometryMaterialFlags[g], vertex.alphaMode);
         auto result = mcvr::geometry::prepare(this->vertices[g], this->indices[g], true);
         topologyVertexFlags[g] = std::move(result.vertexFlags);
+        mediumSheetPairs[g] = std::move(result.sheetPairs);
         if (result.report.pairedQuads || result.report.pairedTriangles)
             this->geometryMaterialFlags[g] |= mcvr::geometry::pairedGeometryBit;
         mcvr::audit::geometry("chunk/" + this->geometryGroupNames[g], id, g, this->vertices[g], this->indices[g],
@@ -372,6 +409,8 @@ ChunkBuildData::ChunkBuildData(int64_t id,
         this->allVertexCount += static_cast<uint32_t>(this->vertices[g].size());
         this->allIndexCount += static_cast<uint32_t>(this->indices[g].size());
     }
+    mediumMesh = mcvr::medium::makeMesh(this->vertices, this->indices, topologyVertexFlags, this->geometryMaterialFlags,
+                                        mediumSheetPairs);
 }
 
 void ChunkBuildData::buildLightInfos(const Emission &emission) {
@@ -408,11 +447,6 @@ void ChunkBuildData::buildLightInfos(const Emission &emission) {
             }
             if (mcvr::faces::effective(sourceFaces) == (mcvr::faces::back | mcvr::faces::front)) continue;
 
-            glm::vec3 tint0 = emissionVertexTint(v0);
-            glm::vec3 tint1 = emissionVertexTint(v1);
-            glm::vec3 tint2 = emissionVertexTint(v2);
-            glm::vec3 tint3 = emissionVertexTint(v3);
-
             if (v0.useTexture == 0 || v1.useTexture == 0 || v2.useTexture == 0 || v3.useTexture == 0) { continue; }
 
             std::array<glm::vec2, 4> quadUv = {v0.textureUV, v1.textureUV, v2.textureUV, v3.textureUV};
@@ -426,6 +460,10 @@ void ChunkBuildData::buildLightInfos(const Emission &emission) {
             glm::vec2 uvSize = uvMax - uvMin;
             if (uvSize.x <= 1e-6f || uvSize.y <= 1e-6f) { continue; }
 
+            thread_local std::vector<std::shared_ptr<const EmissionCell>> candidateCells;
+            emission.collectCells(v0.textureID, uvMin, uvMax, candidateCells);
+            if (candidateCells.empty()) continue;
+
             glm::vec3 triNormal0 = glm::cross(v1.pos - v0.pos, v2.pos - v0.pos);
             glm::vec3 triNormal1 = glm::cross(v2.pos - v0.pos, v3.pos - v0.pos);
             glm::vec3 baseNormal = triNormal0 + triNormal1;
@@ -436,8 +474,24 @@ void ChunkBuildData::buildLightInfos(const Emission &emission) {
             float quadArea = triangleArea(v0.pos, v1.pos, v2.pos) + triangleArea(v0.pos, v2.pos, v3.pos);
             if (quadArea <= 1e-6f) { continue; }
 
-            thread_local std::vector<std::shared_ptr<const EmissionCell>> candidateCells;
-            emission.collectCells(v0.textureID, uvMin, uvMax, candidateCells);
+            std::array<std::array<glm::vec2, 3>, 2> triangleUv;
+            std::array<std::array<glm::vec3, 3>, 2> trianglePos, triangleTint;
+            std::array<bool, 2> evaluateTexture{true, true}, neutralOverlay{};
+            for (size_t tri = 0; tri < 2; ++tri)
+                for (size_t corner = 0; corner < 3; ++corner) {
+                    const auto &vertex = geometryVertices.at(indices[geometryIndex][firstIndex + tri * 3 + corner]);
+                    triangleUv[tri][corner] = vertex.textureUV;
+                    trianglePos[tri][corner] = vertex.pos;
+                    triangleTint[tri][corner] = emissionVertexTint(vertex);
+                    const bool defaultOverlay = vertex.useOverlay != 0 && vertex.overlayUV == glm::ivec2(0, 10);
+                    if (corner == 0) neutralOverlay[tri] = defaultOverlay;
+                    evaluateTexture[tri] = evaluateTexture[tri] && vertex.alphaMode == mcvr::abi::ALPHA_OPAQUE &&
+                                           vertex.useColorLayer <= 1u && (vertex.useOverlay == 0u || defaultOverlay) &&
+                                           vertex.useGlint == 0u && vertex.albedoEmission == 0.0f &&
+                                           vertex.textureID == v0.textureID &&
+                                           triangleTint[tri][corner] == glm::vec3(1.0f);
+                }
+            thread_local std::vector<glm::vec2> clippedPolygon, clipScratch;
             for (const auto &candidateCell : candidateCells) {
                 if (candidateCell == nullptr) { continue; }
 
@@ -447,32 +501,13 @@ void ChunkBuildData::buildLightInfos(const Emission &emission) {
                 glm::vec2 overlapSize = overlapMax - overlapMin;
                 if (overlapSize.x <= 1e-6f || overlapSize.y <= 1e-6f || cell.avgEmission <= 0.0f) { continue; }
 
-                uint64_t baseStableID = buildChunkLightStableID(id, geometryIndex, quadIndex, cell.stableKey);
-                std::array<std::array<glm::vec2, 3>, 2> triangleUv = {{
-                    {v0.textureUV, v1.textureUV, v2.textureUV},
-                    {v0.textureUV, v2.textureUV, v3.textureUV},
-                }};
-                std::array<std::array<glm::vec3, 3>, 2> trianglePos = {{
-                    {v0.pos, v1.pos, v2.pos},
-                    {v0.pos, v2.pos, v3.pos},
-                }};
-                std::array<std::array<glm::vec3, 3>, 2> triangleTint = {{
-                    {tint0, tint1, tint2},
-                    {tint0, tint2, tint3},
-                }};
-
-                for (size_t tri = 0; tri < 2; ++tri)
-                    for (size_t corner = 0; corner < 3; ++corner) {
-                        const auto &vertex = geometryVertices.at(indices[geometryIndex][firstIndex + tri * 3 + corner]);
-                        triangleUv[tri][corner] = vertex.textureUV;
-                        trianglePos[tri][corner] = vertex.pos;
-                        triangleTint[tri][corner] = emissionVertexTint(vertex);
-                    }
+                uint64_t baseStableID =
+                    buildChunkLightStableID(id, {x, y, z}, geometryIndex, quadIndex, cell.stableKey);
                 baseStableID = hashCombine64(baseStableID, policy);
                 uint64_t trianglePieceIndex = 0;
                 for (int triangleIndex = 0; triangleIndex < 2; ++triangleIndex) {
-                    std::vector<glm::vec2> clippedPolygon =
-                        clipUvTriangleToRect(triangleUv[triangleIndex], overlapMin, overlapMax);
+                    clipUvTriangleToRect(triangleUv[triangleIndex], overlapMin, overlapMax, clippedPolygon,
+                                         clipScratch);
                     if (clippedPolygon.size() < 3) { continue; }
 
                     glm::vec3 fanOrigin;
@@ -521,6 +556,8 @@ void ChunkBuildData::buildLightInfos(const Emission &emission) {
                             .uv1 = clippedPolygon[polygonIndex],
                             .uv2 = clippedPolygon[polygonIndex + 1],
                             .sourceFaceFlags = sourceFaces,
+                            .evaluateTexture = evaluateTexture[triangleIndex],
+                            .neutralOverlay = evaluateTexture[triangleIndex] && neutralOverlay[triangleIndex],
                             .stableID = hashCombine64(hashCombine64(baseStableID, sourceFaces), trianglePieceIndex++),
                         };
                         lightInfos.push_back(info);
@@ -767,6 +804,7 @@ ChunkBuildScheduler::ChunkBuildScheduler(std::set<int64_t> &queuedIndex,
                                          std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas,
                                          std::recursive_mutex &mutex,
                                          std::vector<ChunkPackedData> &chunkPackedData,
+                                         uint64_t &chunkPackedRevision,
                                          mcvr::ExternalChunkHandleTable &externalHandles,
                                          uint32_t chunkBuildingBatchSize,
                                          uint32_t chunkBuildingTotalBatches)
@@ -775,13 +813,15 @@ ChunkBuildScheduler::ChunkBuildScheduler(std::set<int64_t> &queuedIndex,
       chunkBuildDatas_(chunkBuildDatas),
       mutex_(mutex),
       chunkPackedData_(chunkPackedData),
+      chunkPackedRevision_(chunkPackedRevision),
       externalHandles_(externalHandles),
       chunkBuildingBatchSize_(chunkBuildingBatchSize),
       chunkBuildingTotalBatches_(chunkBuildingTotalBatches) {
     auto framework = Renderer::instance().framework();
     auto device = framework->device();
     auto physicalDevice = framework->physicalDevice();
-    useSecondaryQueue_ = physicalDevice->mainQueueIndex() == physicalDevice->secondaryQueueIndex();
+    useSecondaryQueue_ = physicalDevice->hasSecondaryQueue() &&
+                         physicalDevice->mainQueueIndex() == physicalDevice->secondaryQueueIndex();
     commandPool_ = vk::CommandPool::create(physicalDevice, device,
                                            useSecondaryQueue_ ? physicalDevice->secondaryQueueIndex() :
                                                                 physicalDevice->mainQueueIndex());
@@ -833,6 +873,7 @@ void ChunkBuildScheduler::pollBatches(bool wait) {
                 chunkPerformance.batchQueueGpuWallNs += elapsedNs((*batch)->submittedAt);
         }
         for (const auto &data : (*batch)->batchData) {
+            noteFlow(Flow::complete);
             mcvr::chunkTrace::note("gpu-complete", data->id, data->version, 0, data->slotGeneration);
             data->completion = mcvr::scene::Completion::gpuComplete;
         }
@@ -896,8 +937,9 @@ void ChunkBuildScheduler::publishCompleted() {
             releaseChunkBuildDataStaging(data);
             if (externalHandles_.isCurrent(uint32_t(data->id), data->slotGeneration) &&
                 chunks_[data->id]->enqueue(data))
-                storeChunkPackedData(chunkPackedData_, data->id, data->x, data->y, data->z, data->geometryCount,
-                                     data->lightCount, data->lightBuffer ? data->lightBuffer->bufferAddress() : 0);
+                storeChunkPackedData(chunkPackedData_, chunkPackedRevision_, data->id, data->x, data->y, data->z,
+                                     data->geometryCount, data->lightCount,
+                                     data->lightBuffer ? data->lightBuffer->bufferAddress() : 0);
         }
         selectedCount_.fetch_sub(entry.batch->batchData.size());
         selectedBytes_.fetch_sub(entry.batch->reservedInputBytes);
@@ -924,6 +966,18 @@ void ChunkBuildScheduler::tryScheduleBatches(uint32_t maxBatchSize) {
     bool moved;
     {
         std::lock_guard lock(mutex_);
+        if (mcvr::profile::flowAuditEnabled()) {
+            drainFlow();
+            auto physicalDevice = Renderer::instance().framework()->physicalDevice();
+            mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.scheduler.background", useSecondaryQueue_ ? 1 : 0, 0);
+            mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.scheduler.main-family",
+                                physicalDevice->mainQueueIndex(), 0);
+            mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.scheduler.secondary-family",
+                                physicalDevice->secondaryQueueIndex(), 0);
+            mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.backlog.queued", queuedIndex_.size(), 0);
+            mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.backlog.selected", selectedCount_.load(),
+                                selectedBytes_.load());
+        }
         auto world = Renderer::instance().world();
         auto next = glm::dvec3(world->getCameraPos());
         moved = next != camera_;
@@ -1012,6 +1066,7 @@ void ChunkBuildScheduler::scheduleBatches(uint32_t maxBatchSize) {
                 auto &data = chunkBuildDatas_[*it];
                 if (!data || !externalHandles_.isCurrent(uint32_t(*it), data->slotGeneration) ||
                     data->version != chunks_[*it]->desiredVersion) {
+                    noteFlow(Flow::stale);
                     data = nullptr;
                     it = queuedIndex_.erase(it);
                 } else
@@ -1044,6 +1099,7 @@ void ChunkBuildScheduler::scheduleBatches(uint32_t maxBatchSize) {
                                   uint64_t(data->allIndexCount) * sizeof(uint32_t) +
                                   uint64_t(data->lightInfos.size()) * sizeof(LightInfo);
             selectedCount_ += chunkBuildDataBatch->batchData.size();
+            noteFlow(Flow::admitted, chunkBuildDataBatch->batchData.size());
             chunkBuildDataBatch->reservedInputBytes = submittedBytes - previousBytes;
             selectedBytes_ += chunkBuildDataBatch->reservedInputBytes;
             ++preparingBatches_;
@@ -1337,6 +1393,7 @@ bool Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
                                                desiredVersion};
     if (mcvr::scene::mayPublish(desired, built, blasVersion, chunkBuildData->completion)) {
         if (publicationHeld) {
+            noteFlow(Flow::held);
             mcvr::chunkTrace::note("publish-held", chunkBuildData->id, chunkBuildData->version, 0,
                                    chunkBuildData->slotGeneration);
             heldBuild = std::move(chunkBuildData);
@@ -1347,6 +1404,13 @@ bool Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
         sceneMetadataCache.reset();
         blasVersion = chunkBuildData->version;
         settledVersion = blasVersion;
+        if (mcvr::profile::flowAuditEnabled()) {
+            noteFlow(Flow::published);
+            const auto age = elapsedNs(chunkBuildData->queuedAt);
+            flowPublishNs.fetch_add(age, std::memory_order_relaxed);
+            auto maximum = flowPublishMaxNs.load();
+            while (age > maximum && !flowPublishMaxNs.compare_exchange_weak(maximum, age)) {}
+        }
         mcvr::chunkTrace::note("publish", chunkBuildData->id, blasVersion, 0, chunkBuildData->slotGeneration);
         x = chunkBuildData->x;
         y = chunkBuildData->y;
@@ -1391,8 +1455,10 @@ bool Chunk1::enqueue(std::shared_ptr<ChunkBuildData> chunkBuildData) {
         frr.retain(geometryMaterialFlags);
         geometryMaterialFlags =
             std::make_shared<std::vector<uint32_t>>(std::move(chunkBuildData->geometryMaterialFlags));
+        mediumMesh = chunkBuildData->mediumMesh;
         return true;
     } else {
+        noteFlow(Flow::stale);
         frr.retain(chunkBuildData->blas);
         frr.retain(chunkBuildData->indexBuffer);
         frr.retain(chunkBuildData->positionBuffer);
@@ -1471,6 +1537,7 @@ void Chunk1::invalidate(int64_t generation) {
 
     frr.retain(geometryMaterialFlags);
     geometryMaterialFlags = nullptr;
+    mediumMesh.reset();
 }
 
 void Chunk1::retainResources(FrameResourceRetainer &frr) {
@@ -1517,6 +1584,7 @@ std::shared_ptr<ChunkRenderData> Chunk1::tryGetValid() {
     ret->geometryCount = geometryCount;
     ret->geometryGroupNames = geometryGroupNames;
     ret->geometryMaterialFlags = geometryMaterialFlags;
+    ret->mediumMesh = mediumMesh;
 
     return ret;
 }
@@ -1539,6 +1607,7 @@ const std::shared_ptr<mcvr::ChunkSceneMetadata> &Chunk1::sceneMetadata() {
         auto metadata = std::make_shared<mcvr::ChunkSceneMetadata>(
             snapshot, snapshot->geometryCount, *snapshot->indexBufferAddresses, *snapshot->positionBufferAddresses,
             *snapshot->materialBufferAddresses, names, *snapshot->geometryMaterialFlags);
+        metadata->mediumMesh = snapshot->mediumMesh;
         size_t memoryIndex = 0;
         for (const auto &buffer :
              {snapshot->indexBuffer, snapshot->positionBuffer, snapshot->materialBuffer, snapshot->lightBuffer})
@@ -1561,7 +1630,8 @@ void Chunks::allocateChunkPackedDataBuffers() {
     auto vma = framework->vma();
 
     chunkPackedDataBuffers_.clear();
-    chunkPackedDataBuffers_.resize(framework->swapchain()->imageCount());
+    chunkPackedDataBuffers_.resize(framework->mainFrameSlotCount());
+    uploadedChunkPackedRevisions_.assign(chunkPackedDataBuffers_.size(), 0);
     if (chunkPackedData_.empty()) { return; }
 
     const size_t chunkPackedDataBytes = chunkPackedData_.size() * sizeof(ChunkPackedData);
@@ -1587,7 +1657,7 @@ void Chunks::releaseEmissionResources() {
         chunkBuildData->lightCount = 0;
     }
 
-    std::fill(chunkPackedData_.begin(), chunkPackedData_.end(), ChunkPackedData{});
+    chunkPackedData_.clear();
     for (auto &chunkPackedDataBuffer : chunkPackedDataBuffers_) {
         frr.retain(chunkPackedDataBuffer);
         chunkPackedDataBuffer = nullptr;
@@ -1618,10 +1688,13 @@ void Chunks::reset(uint32_t numChunks, uint32_t sizeX, uint32_t sizeY, uint32_t 
     chunks_.clear();
     chunks_.resize(numChunks);
     staticSceneCache_.reset();
-    scenePublications_ = std::make_shared<mcvr::ChunkScenePublications>();
-    chunkPackedData_.assign(numChunks, ChunkPackedData{});
+    scenePublications_ = std::make_shared<mcvr::ChunkScenePublications>(sizeX, sizeY);
+    chunkPackedData_.clear();
     chunkPackedDataBuffers_.clear();
-    if (Renderer::options.collectChunkEmission) { allocateChunkPackedDataBuffers(); }
+    if (Renderer::options.collectChunkEmission) {
+        chunkPackedData_.resize(numChunks);
+        allocateChunkPackedDataBuffers();
+    }
     chunkBuildDatas_.clear();
     chunkBuildDatas_.resize(numChunks);
     queuedIndex_.clear();
@@ -1635,9 +1708,9 @@ void Chunks::reset(uint32_t numChunks, uint32_t sizeX, uint32_t sizeY, uint32_t 
 
     uint32_t chunkBuildingBatchSize = Renderer::instance().options.chunkBuildingBatchSize;
     uint32_t chunkBuildingTotalBatches = Renderer::instance().options.chunkBuildingTotalBatches;
-    chunkBuildScheduler_ =
-        ChunkBuildScheduler::create(queuedIndex_, chunks_, chunkBuildDatas_, mutex_, chunkPackedData_, externalHandles_,
-                                    chunkBuildingBatchSize, chunkBuildingTotalBatches);
+    chunkBuildScheduler_ = ChunkBuildScheduler::create(queuedIndex_, chunks_, chunkBuildDatas_, mutex_,
+                                                       chunkPackedData_, chunkPackedRevision_, externalHandles_,
+                                                       chunkBuildingBatchSize, chunkBuildingTotalBatches);
 }
 
 void Chunks::resetScheduler() {
@@ -1650,9 +1723,9 @@ void Chunks::resetScheduler() {
 
     uint32_t chunkBuildingBatchSize = Renderer::instance().options.chunkBuildingBatchSize;
     uint32_t chunkBuildingTotalBatches = Renderer::instance().options.chunkBuildingTotalBatches;
-    chunkBuildScheduler_ =
-        ChunkBuildScheduler::create(queuedIndex_, chunks_, chunkBuildDatas_, mutex_, chunkPackedData_, externalHandles_,
-                                    chunkBuildingBatchSize, chunkBuildingTotalBatches);
+    chunkBuildScheduler_ = ChunkBuildScheduler::create(queuedIndex_, chunks_, chunkBuildDatas_, mutex_,
+                                                       chunkPackedData_, chunkPackedRevision_, externalHandles_,
+                                                       chunkBuildingBatchSize, chunkBuildingTotalBatches);
 }
 
 void Chunks::setCollectChunkEmission(bool collect) {
@@ -1665,7 +1738,8 @@ void Chunks::setCollectChunkEmission(bool collect) {
 
     auto textures = Renderer::instance().textures();
     auto emission = textures != nullptr ? textures->emission() : nullptr;
-    for (auto &chunkBuildData : chunkBuildDatas_) {
+    for (uint32_t slot = 0; slot < primaryChunkCount_; ++slot) {
+        auto &chunkBuildData = chunkBuildDatas_[slot];
         if (chunkBuildData == nullptr) { continue; }
 
         chunkBuildData->collectChunkEmission = collect;
@@ -1679,7 +1753,10 @@ void Chunks::setCollectChunkEmission(bool collect) {
     }
 
     if (collect) {
-        if (chunkPackedDataBuffers_.empty()) { allocateChunkPackedDataBuffers(); }
+        if (chunkPackedDataBuffers_.empty()) {
+            chunkPackedData_.resize(primaryChunkCount_);
+            allocateChunkPackedDataBuffers();
+        }
         return;
     }
 
@@ -1697,9 +1774,14 @@ void Chunks::resetFrame() {
         context->frameIndex < chunkPackedDataBuffers_.size()) {
         auto &chunkPackedDataBuffer = chunkPackedDataBuffers_[context->frameIndex];
         if (chunkPackedDataBuffer != nullptr) {
-            const size_t chunkPackedDataBytes = chunkPackedData_.size() * sizeof(ChunkPackedData);
-            chunkPackedDataBuffer->uploadToStagingBuffer(chunkPackedData_.data(), chunkPackedDataBytes, 0);
-            Renderer::instance().buffers()->queueImportantWorldUpload(chunkPackedDataBuffer);
+            if (mcvr::replay::captureEnabled()) mcvr::replay::captureChunkLights(chunkPackedData_);
+            auto &uploaded = uploadedChunkPackedRevisions_[context->frameIndex];
+            if (uploaded != chunkPackedRevision_) {
+                const size_t chunkPackedDataBytes = chunkPackedData_.size() * sizeof(ChunkPackedData);
+                chunkPackedDataBuffer->uploadToStagingBuffer(chunkPackedData_.data(), chunkPackedDataBytes, 0);
+                Renderer::instance().buffers()->queueImportantWorldUpload(chunkPackedDataBuffer);
+                uploaded = chunkPackedRevision_;
+            }
         }
     }
 }
@@ -1724,6 +1806,7 @@ void Chunks::invalidateChunk(int64_t handle, int64_t generation) {
     if (!resolved) return;
     const uint32_t id = *resolved;
     if (generation >= 0 && generation < chunks_[id]->desiredVersion) return;
+    noteFlow(Flow::empty);
     auto framework = Renderer::instance().framework();
     auto &frr = framework->frameResourceRetainer();
 
@@ -1735,7 +1818,8 @@ void Chunks::invalidateChunk(int64_t handle, int64_t generation) {
     chunks_[id]->invalidate(generation);
 
     if (!chunks_[id]->publicationHeld)
-        storeChunkPackedData(chunkPackedData_, id, chunks_[id]->x, chunks_[id]->y, chunks_[id]->z, 0, 0, 0);
+        storeChunkPackedData(chunkPackedData_, chunkPackedRevision_, id, chunks_[id]->x, chunks_[id]->y, chunks_[id]->z,
+                             0, 0, 0);
 }
 
 void Chunks::relocateChunk(int64_t handle, int x, int y, int z, int64_t generation) {
@@ -1743,6 +1827,7 @@ void Chunks::relocateChunk(int64_t handle, int x, int y, int z, int64_t generati
     auto resolved = externalHandles_.resolve(handle);
     if (!resolved) return;
     const uint32_t id = *resolved;
+    noteFlow(Flow::relocated);
     if (auto held = heldSections_.find(handle); held != heldSections_.end())
         if (auto group = held->second.lock())
             group->removeSection(handle,
@@ -1760,7 +1845,7 @@ void Chunks::relocateChunk(int64_t handle, int x, int y, int z, int64_t generati
     chunks_[id]->z = z;
     chunks_[id]->invalidate(generation);
 
-    storeChunkPackedData(chunkPackedData_, id, x, y, z, 0, 0, 0);
+    storeChunkPackedData(chunkPackedData_, chunkPackedRevision_, id, x, y, z, 0, 0, 0);
 }
 
 void Chunks::queueChunkBuild(ChunkBuildTask task) {
@@ -1830,7 +1915,10 @@ void Chunks::queueChunkBuild(ChunkBuildTask task) {
         },
         [&](const auto &admission, std::shared_ptr<ChunkBuildData> chunkBuildData) {
             mcvr::failure::throwIfFatal();
-            const bool collectChunkEmission = Renderer::options.collectChunkEmission && task.collectEmission;
+            noteFlow(chunks_[task.id]->settledVersion < 0 ? Flow::initial : Flow::update);
+            if (chunkBuildDatas_[task.id]) noteFlow(Flow::replaceQueued);
+            const bool collectChunkEmission = Renderer::options.collectChunkEmission && task.collectEmission &&
+                                              uint64_t(task.id) < primaryChunkCount_;
             chunkBuildData->collectChunkEmission = collectChunkEmission;
             chunkBuildData->schedulingSource = chunks_[task.id]->space;
             if (!chunks_[task.id]->hasCustomTransform)
@@ -1861,17 +1949,10 @@ int64_t Chunks::allocateExternalChunk() {
     if (allocation.reused) {
         chunks_[id] = Chunk1::create();
         chunkBuildDatas_[id] = nullptr;
-        chunkPackedData_[id] = ChunkPackedData{};
+        storeChunkPackedData(chunkPackedData_, chunkPackedRevision_, id, 0, 0, 0, 0, 0, 0);
     } else {
         chunks_.push_back(Chunk1::create());
         chunkBuildDatas_.push_back(nullptr);
-        chunkPackedData_.emplace_back();
-    }
-
-    if (!allocation.reused && Renderer::options.collectChunkEmission && !chunkPackedDataBuffers_.empty()) {
-        auto &frr = Renderer::instance().framework()->frameResourceRetainer();
-        for (auto &buffer : chunkPackedDataBuffers_) { frr.retain(buffer); }
-        allocateChunkPackedDataBuffers();
     }
 
     return allocation.handle;
@@ -1895,7 +1976,7 @@ void Chunks::releaseExternalChunk(int64_t handle) {
     chunks_[id]->invalidate();
     chunks_[id]->hasCustomTransform = false;
     chunks_[id]->space = 0;
-    chunkPackedData_[id] = ChunkPackedData{};
+    storeChunkPackedData(chunkPackedData_, chunkPackedRevision_, id, 0, 0, 0, 0, 0, 0);
     externalHandles_.release(handle);
 }
 
@@ -1976,7 +2057,8 @@ void Chunks::releaseHandoffSection(int64_t handle, const std::shared_ptr<Chunk1>
         chunk->enqueue(std::move(data));
     else if (empty)
         chunk->invalidate(*empty);
-    storeChunkPackedData(chunkPackedData_, *slot, chunk->x, chunk->y, chunk->z, chunk->geometryCount, chunk->lightCount,
+    storeChunkPackedData(chunkPackedData_, chunkPackedRevision_, *slot, chunk->x, chunk->y, chunk->z,
+                         chunk->geometryCount, chunk->lightCount,
                          chunk->lightBuffer ? chunk->lightBuffer->bufferAddress() : 0);
     if (chunk->releaseAfterHandoff) {
         chunk->releaseAfterHandoff = false;

@@ -19,6 +19,9 @@ class DlssFrameGeneration {
     bool generated() const {
         return generated_;
     }
+    void invalidatePresentationHistory() {
+        reset_ = true;
+    }
     std::shared_ptr<vk::DeviceLocalImage> hudless(uint32_t frameIndex) const {
         return frameIndex < hudless_.size() ? hudless_[frameIndex] : nullptr;
     }
@@ -44,6 +47,6 @@ class DlssFrameGeneration {
     bool backgroundLimitReported_ = false;
     bool attempted_ = false, failed_ = false, reset_ = true, generated_ = false;
     glm::mat4 previousProjection_{1}, previousView_{1};
-    glm::dvec3 previousPosition_{};
+    glm::dvec3 previousPosition_{}, reconstructionOrigin_{};
     inline static std::atomic<int> asyncError_{0};
 };

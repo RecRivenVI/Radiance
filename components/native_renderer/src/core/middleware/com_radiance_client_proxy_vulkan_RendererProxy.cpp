@@ -15,6 +15,7 @@
 #include "core/diagnostics/lifecycle_acceptance.hpp"
 #include "core/diagnostics/audit_sink.hpp"
 #include "core/diagnostics/device_loss_trace.hpp"
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/middleware/jni_string.hpp"
 #include "core/loading/loading_renderer.hpp"
 #include "common/render_abi.hpp"
@@ -279,11 +280,46 @@ JNIEXPORT jstring JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_ba
     });
 }
 
+static VkResult finishExecutedFrame(const std::shared_ptr<Framework> &framework) {
+    if (mcvr::FrameExecution::enabled()) {
+        if (auto result = mcvr::FrameExecution::instance().consume(); result && *result != VK_NOT_READY)
+            return framework->finishPresentation(static_cast<VkResult>(*result));
+    }
+    return VK_SUCCESS;
+}
+
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_acquireContextNative(JNIEnv *env, jclass) {
     return jni::invokeForVkResult(env, "Acquire frame", [] {
         auto framework = Renderer::instance().framework();
-        return framework == nullptr ? VK_NOT_READY : framework->acquireContext();
+        if (!framework) return VK_NOT_READY;
+        const auto previous = finishExecutedFrame(framework);
+        return previous == VK_SUCCESS ? framework->acquireContext() : previous;
     });
+}
+
+JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_executeFrameNative(JNIEnv *env,
+                                                                                              jclass,
+                                                                                              jboolean menuFrame) {
+    return jni::invokeForVkResult(
+        env, "Hand off native frame",
+        [&] {
+            auto framework = Renderer::instance().framework();
+            if (!framework) return VK_NOT_READY;
+            const auto frame = mcvr::profile::frame;
+            mcvr::FrameExecution::instance().dispatch([framework = std::move(framework), menuFrame, frame] {
+                mcvr::profile::frame = frame;
+                if (mcvr::audit::enabled(MCVR_AUDIT_LIFECYCLE)) mcvr::diagnostics::lifecycle::noteSubmitAttempt();
+                const auto result = framework->submitCommand();
+                if (result == VK_SUCCESS && mcvr::audit::enabled(MCVR_AUDIT_LIFECYCLE))
+                    mcvr::diagnostics::lifecycle::noteSuccessfulSubmit();
+                mcvr::StreamlineRuntime::get().marker(sl::PCLMarker::eRenderSubmitEnd);
+                if (result != VK_SUCCESS) return int(result);
+                framework->setMenuFrame(menuFrame == JNI_TRUE);
+                return int(framework->presentToQueue());
+            });
+            return VK_SUCCESS;
+        },
+        jni::BoundaryPolicy::frameHandoff);
 }
 
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_submitCommandNative(JNIEnv *env, jclass) {
@@ -329,6 +365,7 @@ Java_com_radiance_client_proxy_vulkan_RendererProxy_warmupCurrentPipelineNative(
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_fuseWorld(JNIEnv *env, jclass) {
     jni::invokeVoid(env, "Fuse world", [] {
+        mcvr::profile::Scope timing("world.fuse");
         auto framework = Renderer::instance().framework();
         if (framework == nullptr || !framework->isRunning()) return;
         auto context = framework->safeAcquireCurrentContext();
@@ -525,6 +562,14 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_close
             if (!Renderer::is_initialized()) { return VK_SUCCESS; }
             auto framework = Renderer::instance().framework();
             if (framework == nullptr) { return VK_SUCCESS; }
+            if (mcvr::FrameExecution::enabled()) {
+                try {
+                    (void)mcvr::FrameExecution::instance().consume();
+                } catch (...) {
+                    Renderer::instance().close();
+                    throw;
+                }
+            }
             const VkResult priorFailure = framework->lastFailure();
             Renderer::instance().close();
             return priorFailure;
@@ -647,6 +692,11 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_Renderer
         auto &sl = mcvr::StreamlineRuntime::get();
         switch (event) {
             case 0:
+                mcvr::failure::runCheckedStage([&] {
+                    const auto result = finishExecutedFrame(Renderer::instance().framework());
+                    if (result != VK_SUCCESS && result != VK_NOT_READY)
+                        mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "finish presented frame");
+                });
                 sl.beginFrame(Renderer::options.dlssFrameGeneration ? std::max(1, Renderer::options.reflexMode) :
                                                                       Renderer::options.reflexMode,
                               Renderer::instance().framework()->effectiveFrameRateLimit());

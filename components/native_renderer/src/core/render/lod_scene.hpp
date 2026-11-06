@@ -49,6 +49,7 @@ struct LodFrameTables {
     std::vector<std::shared_ptr<LodSection>> sections;
     uint32_t coveredSections = 0;
     uint32_t coverageMask = 0, lightGroupCount = 0, lightCount = 0;
+    bool activeLights = false;
     std::shared_ptr<const StaticChunkScene> nearScene;
     std::shared_ptr<StaticChunkScene> handoffNear;
     uint64_t emptyRevision = 0;

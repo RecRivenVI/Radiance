@@ -23,16 +23,53 @@
 
 #include "fsr_setup.hpp"
 #include <cstring>
+#include <filesystem>
 #include <iostream>
 
 #ifdef MCVR_ENABLE_FFX_UPSCALER
-#    include <ffx_api/ffx_api.hpp>
-#    include <ffx_api/vk/ffx_api_vk.hpp>
+#    include <vk/ffx_api_vk.hpp>
 #endif
 
 namespace mcvr::fsr {
 
 #ifdef MCVR_ENABLE_FFX_UPSCALER
+
+#    ifdef _WIN32
+const ffxFunctions &functions() {
+    static const ffxFunctions api = [] {
+        ffxFunctions table{};
+        HMODULE core = nullptr;
+        std::wstring filename(32768, L'\0');
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                reinterpret_cast<LPCWSTR>(&functions), &core))
+            return table;
+        const auto length = GetModuleFileNameW(core, filename.data(), DWORD(filename.size()));
+        if (!length || length >= filename.size()) return table;
+        filename.resize(length);
+        // GAME moves the writable shader/config directory after SERVICE starts.
+        // SDK binaries belong beside the actually loaded core DLL, not there.
+        const auto directory = std::filesystem::path(filename).parent_path() / "fsr";
+        const auto path = directory / "amd_fidelityfx_loader_vk.dll";
+        // Keep the loader resident: all view contexts and SDK provider pointers
+        // must die before its code is unloaded. Windows releases it at process exit.
+        constexpr auto flags = LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
+        const auto provider = LoadLibraryExW((directory / "amd_fidelityfx_upscaler_vk.dll").c_str(), nullptr, flags);
+        const auto module = provider ? LoadLibraryExW(path.c_str(), nullptr, flags) : nullptr;
+        if (module) ffxLoadFunctions(&table, module);
+        if (!table.CreateContext || !table.DestroyContext || !table.Query || !table.Dispatch || !table.Configure) {
+            mcvr::log::error("Fsr3Upscaler")
+                << "Official Vulkan loader unavailable: " << path << "; error=" << GetLastError() << std::endl;
+            table = {};
+        }
+        return table;
+    }();
+    return api;
+}
+
+bool apiAvailable() {
+    return functions().CreateContext != nullptr;
+}
+#    endif
 
 FfxApiSurfaceFormat vkToFfxFormat(VkFormat format) {
     switch (format) {

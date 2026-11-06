@@ -50,9 +50,13 @@ foreach(ANY_HIT IN ITEMS
     "${MCVR_SOURCE_DIR}/src/shader/world/ray_tracing/internal/advanced/common/default.rahit"
 )
     file(READ "${ANY_HIT}" ANY_HIT_TEXT)
+    set(COVERAGE_SAMPLE "rand(mainRay.seed) >= alpha")
+    if(ANY_HIT MATCHES "vanilla-pt/")
+        set(COVERAGE_SAMPLE "coverageSample(geometryBufferIndex, uint(gl_PrimitiveID), rayBounce(mainRay)) >= alpha")
+    endif()
     foreach(REQUIRED_TEXT IN ITEMS
         "isCoverageAlphaMode(alphaMode)"
-        "rand(mainRay.seed) >= alpha"
+        "${COVERAGE_SAMPLE}"
         "isAdditiveAlphaMode(alphaMode)"
         "ignoreIntersectionEXT"
     )

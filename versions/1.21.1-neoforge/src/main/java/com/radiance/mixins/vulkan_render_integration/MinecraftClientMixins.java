@@ -187,7 +187,7 @@ public class MinecraftClientMixins {
             RendererProxy.submitCommandAndPresent();
             com.radiance.api.audit.DrawingAudit.consumed("native.present");
         }
-        RendererProxy.acquireContext();
+        if (!RendererProxy.nativeFrameWorker()) RendererProxy.acquireContext();
     }
 
     @Redirect(

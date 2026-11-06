@@ -1,6 +1,9 @@
 #pragma once
 #include <cstdint>
 #include "common/shared.hpp"
+namespace mcvr::medium {
+class Mesh;
+}
 #include "core/render/material_faces.hpp"
 #include "core/render/hit_groups.hpp"
 #include <array>
@@ -22,6 +25,7 @@ struct ChunkSceneKey {
 
 struct ChunkSceneMetadata {
     std::shared_ptr<void> owner;
+    std::shared_ptr<const medium::Mesh> mediumMesh;
     uint64_t retainedBytes = 0;
     std::array<std::pair<const void *, uint64_t>, 5> memoryFootprint{};
     faces::ModelRules faces;

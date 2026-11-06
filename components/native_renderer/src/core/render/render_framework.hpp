@@ -39,7 +39,6 @@ class FrameResourceRetainer : public SharedObject<FrameResourceRetainer> {
     // fence has signaled. See mcvr::FrameRetention for the release rule.
     void beginFrame(uint64_t frameSerial, uint64_t completedSerial);
     // Swapchain recreation, device idle: releases everything and adopts the new frame count.
-    void resetFrameCount(uint32_t frameCount);
     void clearAfterGpuIdle(uint64_t currentFrameSerial);
     // Diagnostics: held groups, resources and the age of the oldest group in frames.
     std::string census();
@@ -55,6 +54,7 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     std::weak_ptr<Framework> framework;
 
     uint32_t frameIndex;
+    uint32_t presentImageIndex = 0;
     // Serial of the frame being recorded in this context, and of the last frame submitted with its
     // commandFinishedFence (0 before the first submission).
     uint64_t frameSerial = 0;
@@ -68,10 +68,8 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     std::shared_ptr<vk::Device> device;
     std::shared_ptr<vk::VMA> vma;
     std::shared_ptr<vk::Swapchain> swapchain;
-    std::shared_ptr<vk::SwapchainImage> swapchainImage;
     std::shared_ptr<vk::CommandPool> commandPool;
     std::shared_ptr<vk::Semaphore> imageAcquiredSemaphore = nullptr;
-    std::shared_ptr<vk::Semaphore> commandProcessedSemaphore;
     std::shared_ptr<vk::Fence> commandFinishedFence;
 
     std::shared_ptr<vk::CommandBuffer> uploadCommandBuffer;
@@ -81,6 +79,7 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     std::shared_ptr<vk::CommandBuffer> overlayContinuationBuffer;
     mcvr::DeferredFrameCommands<vk::CommandBuffer> uiPtCommands;
     std::shared_ptr<vk::CommandBuffer> fuseCommandBuffer;
+    std::shared_ptr<vk::CommandBuffer> presentCommandBuffer;
 
     mcvr::profile::GpuFrame auditGpu;
     int auditUpload = -1, auditWorld = -1, auditOverlay = -1, auditFuse = -1;
@@ -92,6 +91,7 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     bool worldRendered = false;
     bool fgGameFrame = false;
     bool fgHudlessCaptured = false;
+    uint32_t presentedSdkFrames = 0;
     mcvr::ui::GuiRole fgGuiRole = mcvr::ui::GuiRole::Foreground;
     mcvr::dlss::GuiFrameState fgGui;
     uint32_t fgBackgroundDependentDraws = 0;
@@ -122,6 +122,11 @@ class Framework : public SharedObject<Framework> {
     VkResult acquireContext();
     VkResult submitCommand();
     VkResult present();
+    VkResult presentToQueue();
+    VkResult finishPresentation(VkResult result);
+    uint64_t frameSerial() const {
+        return frameSerial_;
+    }
     void setMenuFrame(bool value) {
         menuFrame_ = value;
     }
@@ -163,9 +168,11 @@ class Framework : public SharedObject<Framework> {
 
     std::shared_ptr<vk::CommandBuffer> worldAsyncCommandBuffer();
 
-    std::vector<std::shared_ptr<vk::Semaphore>> &commandProcessedSemaphores();
     std::vector<std::shared_ptr<vk::Fence>> &commandFinishedFences();
     std::vector<std::shared_ptr<FrameworkContext>> &contexts();
+    uint32_t mainFrameSlotCount() const {
+        return recordingSlotCount;
+    }
     uint32_t recordingContextCount();
     std::shared_ptr<FrameworkContext> safeAcquireCurrentContext();
 
@@ -181,6 +188,7 @@ class Framework : public SharedObject<Framework> {
   private:
     std::shared_ptr<vk::Semaphore> acquireSemaphore();
     void recycleSemaphore(std::shared_ptr<vk::Semaphore> semaphore);
+    void rebuildPresentationSemaphores();
     VkResult waitForDrawableWindow();
     void limitFrameRate();
     VkResult inactiveResult() const;
@@ -207,13 +215,14 @@ class Framework : public SharedObject<Framework> {
     std::unique_ptr<DisplayOutput> displayOutput_;
     std::shared_ptr<Pipeline> pipeline_;
 
-    std::vector<std::shared_ptr<vk::Semaphore>> commandProcessedSemaphores_;
+    std::vector<std::shared_ptr<vk::Semaphore>> presentReadySemaphores_;
     std::vector<std::shared_ptr<vk::Fence>> commandFinishedFences_;
 
     std::vector<std::shared_ptr<FrameworkContext>> contexts_;
 
     std::shared_ptr<FrameworkContext> currentContext_ = nullptr;
-    uint32_t currentContextIndex_ = 0;
+    static constexpr uint32_t recordingSlotCount = 3;
+    uint32_t nextContextIndex_ = 0;
     std::queue<uint32_t> indexHistory_;
 
     std::queue<std::shared_ptr<vk::Semaphore>> recycledImageAcquiredSemaphores_;

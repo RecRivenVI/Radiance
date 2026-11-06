@@ -3,6 +3,7 @@
 #include "core/logging.hpp"
 #include "core/render/buffers.hpp"
 #include "core/diagnostics/frame_profile.hpp"
+#include "core/diagnostics/scene_replay.hpp"
 
 #include "common/shared.hpp"
 #include "core/render/chunks.hpp"
@@ -625,7 +626,9 @@ void Buffers::setAndUploadWorldUniformBuffer(vk::Data::WorldUBO &ubo) {
     ubo.cameraPos.x = world->getCameraPos().x;
     ubo.cameraPos.y = world->getCameraPos().y;
     ubo.cameraPos.z = world->getCameraPos().z;
-    ubo.cameraPos.w = 0;
+    static const uint32_t samplingSeed = std::random_device{}();
+    ubo.samplingFrameIndex = uint32_t(framework->frameSerial());
+    ubo.samplingSeed = samplingSeed ^ ubo.uiPrimaryOwner;
     if (auto chunks = world->chunks(); chunks != nullptr) {
         ubo.chunkGridInfo = chunks->chunkGridInfo();
         ubo.chunkStorageSectionPos = chunks->chunkStorageSectionPos();
@@ -686,14 +689,14 @@ void Buffers::setAndUploadTextureMappingBuffer(const vk::Data::TextureMapEntry *
     auto &snapshot = textureMappingSnapshots_[context->frameIndex];
     auto textures = Renderer::instance().textures();
     auto &revision = textureMappingRevisions_[context->frameIndex];
+    worldEmission = worldEmission && Renderer::options.collectChunkEmission;
     if (snapshot && textureMappingWorldEmission_[context->frameIndex] == worldEmission &&
         revision == textures->worldMaterialRevision() &&
         std::memcmp(snapshot->entries, entries, sizeof(snapshot->entries)) == 0)
         return;
     if (!snapshot) snapshot = std::make_unique<vk::Data::TextureMapping>();
     std::memcpy(snapshot->entries, entries, sizeof(snapshot->entries));
-    revision = textures->copyWorldMaterials(*snapshot);
-    if (!worldEmission) snapshot->programInfo.x = 0;
+    revision = textures->copyWorldMaterials(*snapshot, worldEmission);
     textureMappingWorldEmission_[context->frameIndex] = worldEmission;
     textureMappingBuffer_[context->frameIndex]->uploadToBuffer(snapshot.get());
 }
@@ -794,6 +797,7 @@ std::shared_ptr<vk::HostVisibleBuffer> Buffers::skyUniformBuffer() {
 }
 
 std::shared_ptr<vk::HostVisibleBuffer> Buffers::textureMappingBuffer() {
+    if (auto frozen = mcvr::replay::replayTextureMapping()) return frozen;
     std::unique_lock<std::recursive_mutex> lck(mtx_);
     auto context = Renderer::instance().framework()->safeAcquireCurrentContext();
     auto &buffer = textureMappingBuffer_[context->frameIndex];
@@ -804,8 +808,7 @@ std::shared_ptr<vk::HostVisibleBuffer> Buffers::textureMappingBuffer() {
         auto textures = Renderer::instance().textures();
         auto &revision = textureMappingRevisions_[context->frameIndex];
         if (revision != textures->worldMaterialRevision()) {
-            revision = textures->copyWorldMaterials(*snapshot);
-            if (!textureMappingWorldEmission_[context->frameIndex]) snapshot->programInfo.x = 0;
+            revision = textures->copyWorldMaterials(*snapshot, textureMappingWorldEmission_[context->frameIndex]);
             constexpr auto offset = offsetof(vk::Data::TextureMapping, programs);
             buffer->uploadToBuffer(snapshot->programs, sizeof(vk::Data::TextureMapping) - offset, offset);
         }

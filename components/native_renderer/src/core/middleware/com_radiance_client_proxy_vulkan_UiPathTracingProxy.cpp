@@ -200,7 +200,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_UiPathTr
                 framework->frameResourceRetainer().retain(old.output);
                 framework->frameResourceRetainer().retain(old.descriptor);
             }
-            scene->compositeFrames.assign(framework->swapchain()->imageCount(), {});
+            scene->compositeFrames.assign(framework->mainFrameSlotCount(), {});
         }
         scene->width = width;
         scene->height = height;
@@ -284,6 +284,10 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
     mainFrame->beginUiPtCommands(); // Uploads and cached-world execution below record here.
     auto sourceUbo = *static_cast<vk::Data::WorldUBO *>(mainBuffers->worldUniformBuffer()->mappedPtr());
     auto sky = *static_cast<vk::Data::SkyUBO *>(mainBuffers->skyUniformBuffer()->mappedPtr());
+    // Preview cameras belong to the isolated preview scene, not the player's fluid.
+    sky.cameraSubmersionType = 0;
+    sky.cameraMediumProbe = 0;
+    sky.cameraMediumSource = {0, 0, -1, 0};
     auto mapping = static_cast<vk::Data::TextureMapping *>(mainBuffers->textureMappingBuffer()->mappedPtr());
     uint32_t requestedWidth = 0, requestedHeight = 0;
     for (auto id : collected) {
@@ -311,7 +315,7 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
         return;
     }
     if (!pipeline) retireReconstructionViews(module, framework, mainFrame);
-    const uint32_t frames = framework->swapchain()->imageCount();
+    const uint32_t frames = framework->mainFrameSlotCount();
     if (state.contexts.empty()) {
         state.viewCount = 2;
         world = World::create(framework);

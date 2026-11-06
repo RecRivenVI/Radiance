@@ -97,6 +97,48 @@ void packing() {
     rejects<std::invalid_argument>([] { mcvr::hitTableBytes(1, 0); }, "zero stride");
 }
 
+void stableBlocks() {
+    mcvr::PackedHitBlocks cache;
+    const std::vector<uint8_t> handles{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    std::vector<uint32_t> palette{2, 0, 1};
+    auto block = std::make_shared<const std::vector<uint32_t>>(std::vector<uint32_t>{0, 1, 2, 0});
+    std::weak_ptr<const std::vector<uint32_t>> weak = block;
+    auto pack = [&](const std::vector<uint32_t> &indices, const std::vector<mcvr::HitRange> &ranges) {
+        auto actual = cache.pack(indices, ranges, palette, handles, 3, 8, 1, 3);
+        require(actual == mcvr::packHitTable(indices, handles, 3, 8, 1, 3),
+                "stable blocks equal full packing including padding and shifted prefix");
+    };
+    pack({1, 2, 0, 1, 2, 0}, {{1, block}});
+    require(cache.generatedBytes == 48 && cache.reusedBytes == 0, "first block is generated");
+    pack({0, 1, 1, 2, 0, 1, 2, 0, 2}, {{3, block}});
+    require(cache.reusedBytes == 32 && cache.generatedBytes == 40, "moving prefix reuses unchanged physical block");
+    palette.push_back(0);
+    pack({2, 0, 1, 2}, {{0, block}});
+    require(cache.reusedBytes == 32 && cache.generatedBytes == 0, "append-only name interning preserves blocks");
+    palette[0] = 1;
+    pack({1, 0, 1, 1}, {{0, block}});
+    require(cache.reusedBytes == 0, "mapping changes invalidate packed handles");
+    auto replacement = std::make_shared<const std::vector<uint32_t>>(std::vector<uint32_t>{1, 0});
+    pack({0, 1}, {{0, replacement}});
+    block.reset();
+    require(weak.expired(), "unused block cannot pin historical CPU identity");
+    pack({0, 1}, {{0, replacement}});
+    require(cache.reusedBytes == 16, "current block persists");
+    rejects<std::invalid_argument>(
+        [&] {
+            cache.pack(std::array{0u, 1u}, std::array{mcvr::HitRange{1, replacement}}, palette, handles, 3, 8, 1, 3);
+        },
+        "out-of-bounds stable range rejected");
+    pack({0, 1}, {{0, replacement}});
+    require(cache.reusedBytes == 0, "failed pack prunes temporary cache");
+    pack({2, 1}, {});
+    require(cache.generatedBytes == 16 && cache.reusedBytes == 0, "uncached dynamic-only path matches");
+    auto bad = std::make_shared<const std::vector<uint32_t>>(std::vector<uint32_t>{99});
+    rejects<std::out_of_range>(
+        [&] { cache.pack(std::array{0u}, std::array{mcvr::HitRange{0, bad}}, palette, handles, 3, 8, 1, 3); },
+        "unknown stable identity rejected");
+}
+
 void versionsAndRetirement() {
     Recording recording;
     Cache cache;
@@ -195,6 +237,7 @@ void failures() {
 
 int main() {
     packing();
+    stableBlocks();
     versionsAndRetirement();
     failures();
     std::cout << "SBT packing/cache/retirement assertions: " << assertions << '\n';

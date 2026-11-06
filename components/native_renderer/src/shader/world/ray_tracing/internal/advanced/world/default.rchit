@@ -98,6 +98,7 @@ indexBuffer;
 layout(location = 0) rayPayloadInEXT MainRay mainRay;
 layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
 hitAttributeEXT vec2 attribs;
+#include "util/medium_boundary_state.glsl"
 
 struct SampledSurface {
     float coverageAlpha;
@@ -635,10 +636,14 @@ void main() {
     rayStoreCoverage(mainRay, surface.coverageAlpha, isCoverageAlphaMode(alphaMode) && surface.mat.transmission <= EPS);
     rayStoreAux(mainRay, hasFftWaterSurface ? vec2(ADV_FFT_WATER_ORIGIN_BIAS, 1.0) : vec2(0.0));
 
-    rayPrepareSurfaceMedium(mainRay, surface.mat.transmission, surface.mat.ior, surface.albedoValue,
+    if (prepareImagingMedium(mainRay, surface.mat.transmission, surface.mat.ior, surface.albedoValue,
         instanceAppearances.values[geometryBufferIndex].materialFlags,
         gl_HitKindEXT == gl_HitKindFrontFacingTriangleEXT,
-        (isWaterMaterial || isLodMaterial(m0)) ? normalMatrix * (baryCoords.x * m0.norm + baryCoords.y * m1.norm + baryCoords.z * m2.norm) : vec3(0.0), actualHitT);
+        (isWaterMaterial || isLodMaterial(m0)) ? normalMatrix * (baryCoords.x * m0.norm + baryCoords.y * m1.norm + baryCoords.z * m2.norm) : vec3(0.0), planeHitWorldPos, surface.geometricNormal, actualHitT, geometryBufferIndex, gl_PrimitiveID,
+        baryCoords.x*p0.pos+baryCoords.y*p1.pos+baryCoords.z*p2.pos,
+        max(vec3(0.000001),0.000000476837158203125 *
+            (abs(p0.pos)*baryCoords.x+abs(p1.pos)*baryCoords.y+abs(p2.pos)*baryCoords.z)),
+        baseGeoNormal, gl_HitTEXT)) return;
 
     if (finishCachedSurface(mainRay, surface.worldPos, worldUBO.cameraPos.xyz, surface.mat.transmission)) return;
     mainRay.scatterRoughness = surface.mat.roughness;
@@ -673,7 +678,7 @@ void main() {
         uint lobeType;
         vec3 bsdf;
         if (currentSurface.mat.transmission > EPS) {
-            bsdf = sampleDielectric(currentSurface.mat, -currentViewDir, currentSurface.shadingNormal,
+            bsdf = sampleDielectric(currentSurface.mat, -currentViewDir, currentSurface.shadingNormal, currentSurface.geometricNormal,
                 mainRay.boundaryEta, mainRay.seed, sampleDir, pdf, lobeType);
         } else {
             bsdf = DisneySample(currentSurface.mat, currentViewDir, currentSurface.shadingNormal, sampleDir, pdf,

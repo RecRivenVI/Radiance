@@ -1839,7 +1839,12 @@ bool ShaderPack::initialize(const BuildConfig &config, std::string &error) {
 
     shaderPack_ = std::move(loadResult.shaderPack);
     staticAttributeValues_ = config.staticAttributes;
-    shaderAttributes_ = ShaderPackLoader::buildAttributeDefinitions(shaderPack_.attributes, config.staticAttributes);
+    if (!Renderer::options.collectChunkEmission) {
+        for (const auto &attribute : shaderPack_.attributes)
+            if (attribute.define.direct == "ADV_ENABLE_RESTIR")
+                staticAttributeValues_[attribute.name] = "render_pipeline.false";
+    }
+    shaderAttributes_ = ShaderPackLoader::buildAttributeDefinitions(shaderPack_.attributes, staticAttributeValues_);
 
     initStageRuntime(rayTracingStageRuntime_, shaderPack_.rayTracingExecution);
     initStageRuntime(postRenderStageRuntime_, shaderPack_.postRenderExecution);

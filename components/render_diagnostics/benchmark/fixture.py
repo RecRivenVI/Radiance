@@ -1,6 +1,6 @@
 """Create a NEW disposable flat benchmark world, never a production-world editor.
 
-Python 3 + nbtlib 2.0.4. Game commands build the fixture on first load. Generation is
+Game commands build the fixture on first load. Generation is
 not a proof those commands executed: retain the game log and validate expected counts.
 """
 from pathlib import Path

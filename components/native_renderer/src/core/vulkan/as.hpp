@@ -20,6 +20,10 @@ class BLAS : public SharedObject<BLAS> {
          VkAccelerationStructureKHR blas,
          std::shared_ptr<DeviceLocalBuffer> blasBuffer);
     ~BLAS();
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    std::vector<VkAccelerationStructureGeometryKHR> captureGeometries;
+    std::vector<uint32_t> capturePrimitiveCounts;
+#endif
 
     std::shared_ptr<DeviceLocalBuffer> blasBuffer();
     VkAccelerationStructureKHR &blas();
@@ -173,7 +177,8 @@ class TLASBuilder : public SharedObject<TLASBuilder> {
                                             uint32_t offset,
                                             VkGeometryInstanceFlagsKHR flag,
                                             const std::shared_ptr<BLAS> &blas);
-        std::shared_ptr<TLASBuilder> endInstanceBuilder(std::shared_ptr<Device> device, std::shared_ptr<VMA> vma);
+        std::shared_ptr<TLASBuilder>
+        endInstanceBuilder(std::shared_ptr<Device> device, std::shared_ptr<VMA> vma, VkBufferUsageFlags usage = 0);
     };
 
   public:

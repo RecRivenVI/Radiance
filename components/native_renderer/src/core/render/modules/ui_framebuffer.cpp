@@ -320,8 +320,7 @@ bool UIModuleContext::switchFramebufferDraw() {
     auto context = frameworkContext.lock();
     auto framework = context->framework.lock();
     auto module = uiModule.lock();
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(context->physicalDevice->vkPhysicalDevice(), &properties);
+    const auto properties = context->physicalDevice->properties();
     if (activeFramebuffer.drawBuffers.size() > properties.limits.maxColorAttachments)
         throw std::runtime_error("Framebuffer draw-buffer count exceeds the device limit");
     activeFramebufferPassKey = passKey(activeFramebuffer);

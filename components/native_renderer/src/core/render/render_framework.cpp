@@ -28,6 +28,7 @@
 #include "core/util/parallel.hpp"
 #include "core/failure_state.hpp"
 
+#include <array>
 #include <cstdlib>
 #include <ctime>
 #include <fstream>
@@ -56,14 +57,13 @@ FrameworkContext::FrameworkContext(std::shared_ptr<Framework> framework, uint32_
       device(framework->device_),
       vma(framework->vma_),
       swapchain(framework->swapchain_),
-      swapchainImage(framework->swapchain_->swapchainImages()[frameIndex]),
       commandPool(framework->mainCommandPool_),
-      commandProcessedSemaphore(framework->commandProcessedSemaphores_[frameIndex]),
       commandFinishedFence(framework->commandFinishedFences_[frameIndex]),
       uploadCommandBuffer(framework->uploadCommandBuffers_[frameIndex]),
       overlayCommandBuffer(framework->overlayCommandBuffers_[frameIndex]),
       worldCommandBuffer(framework->worldCommandBuffers_[frameIndex]),
-      fuseCommandBuffer(framework->fuseCommandBuffers_[frameIndex]) {
+      fuseCommandBuffer(framework->fuseCommandBuffers_[frameIndex]),
+      presentCommandBuffer(vk::CommandBuffer::create(device, commandPool)) {
     if (framework->timestampValidBits_ != 0) {
         VkQueryPoolCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
@@ -121,38 +121,40 @@ void FrameworkContext::fuseFinal() {
     auto finalColor = f->frameGeneration_->record(*f, *this, pipelineContext);
     mcvr::failure::throwIfFatal();
 
-    fuseCommandBuffer->barriersBufferImage(
-        {}, {
-                {
-                    .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                    .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                    .oldLayout = finalColor->imageLayout(),
-                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                    .srcQueueFamilyIndex = mainQueueIndex,
-                    .dstQueueFamilyIndex = mainQueueIndex,
-                    .image = finalColor,
-                    .subresourceRange = vk::wholeColorSubresourceRange,
-                },
-                {
-                    .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                    .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                    .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                    .oldLayout = swapchainImage->imageLayout(),
-                    .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                    .srcQueueFamilyIndex = mainQueueIndex,
-                    .dstQueueFamilyIndex = mainQueueIndex,
-                    .image = swapchainImage,
-                    .subresourceRange = vk::wholeColorSubresourceRange,
-                },
-            });
+    auto &present = presentCommandBuffer;
+    const auto &swapchainImage = f->swapchain_->swapchainImages()[presentImageIndex];
+    const auto copyTiming = auditGpu.begin(present->vkCommandBuffer(), "swapchain-copy");
+    present->barriersBufferImage({},
+                                 {
+                                     {
+                                         .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                         .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                         .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                                         .dstAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                                         .oldLayout = finalColor->imageLayout(),
+                                         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                                         .srcQueueFamilyIndex = mainQueueIndex,
+                                         .dstQueueFamilyIndex = mainQueueIndex,
+                                         .image = finalColor,
+                                         .subresourceRange = vk::wholeColorSubresourceRange,
+                                     },
+                                     {
+                                         .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                         .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                         .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                         .oldLayout = swapchainImage->imageLayout(),
+                                         .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                                         .srcQueueFamilyIndex = mainQueueIndex,
+                                         .dstQueueFamilyIndex = mainQueueIndex,
+                                         .image = swapchainImage,
+                                         .subresourceRange = vk::wholeColorSubresourceRange,
+                                     },
+                                 });
 
     finalColor->imageLayout() = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
     swapchainImage->imageLayout() = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 
-    // TODO: add to command buffer
     VkImageBlit imageBlit{};
     imageBlit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
     imageBlit.srcSubresource.mipLevel = 0;
@@ -168,37 +170,37 @@ void FrameworkContext::fuseFinal() {
     imageBlit.dstOffsets[1] = {static_cast<int>(swapchainImage->width()), static_cast<int>(swapchainImage->height()),
                                1};
 
-    vkCmdBlitImage(fuseCommandBuffer->vkCommandBuffer(), finalColor->vkImage(), finalColor->imageLayout(),
+    vkCmdBlitImage(present->vkCommandBuffer(), finalColor->vkImage(), finalColor->imageLayout(),
                    swapchainImage->vkImage(), swapchainImage->imageLayout(), 1, &imageBlit, VK_FILTER_LINEAR);
 
-    fuseCommandBuffer->barriersBufferImage(
-        {}, {{
-                 .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                 .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                 .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                 .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                 .oldLayout = finalColor->imageLayout(),
-                 .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-                 .srcQueueFamilyIndex = mainQueueIndex,
-                 .dstQueueFamilyIndex = mainQueueIndex,
-                 .image = finalColor,
-                 .subresourceRange = vk::wholeColorSubresourceRange,
-             },
-             {
-                 .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                 .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                 .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
-                 .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
-                 .oldLayout = swapchainImage->imageLayout(),
-                 .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
-                 .srcQueueFamilyIndex = mainQueueIndex,
-                 .dstQueueFamilyIndex = mainQueueIndex,
-                 .image = swapchainImage,
-                 .subresourceRange = vk::wholeColorSubresourceRange,
-             }});
+    present->barriersBufferImage({}, {{
+                                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                          .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                          .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                          .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                          .oldLayout = finalColor->imageLayout(),
+                                          .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                                          .srcQueueFamilyIndex = mainQueueIndex,
+                                          .dstQueueFamilyIndex = mainQueueIndex,
+                                          .image = finalColor,
+                                          .subresourceRange = vk::wholeColorSubresourceRange,
+                                      },
+                                      {
+                                          .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                          .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                          .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                                          .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                                          .oldLayout = swapchainImage->imageLayout(),
+                                          .newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                                          .srcQueueFamilyIndex = mainQueueIndex,
+                                          .dstQueueFamilyIndex = mainQueueIndex,
+                                          .image = swapchainImage,
+                                          .subresourceRange = vk::wholeColorSubresourceRange,
+                                      }});
 
     finalColor->imageLayout() = VK_IMAGE_LAYOUT_GENERAL;
     swapchainImage->imageLayout() = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+    auditGpu.end(present->vkCommandBuffer(), copyTiming);
 }
 
 Framework::Framework() {}
@@ -225,24 +227,29 @@ void Framework::init(GLFWwindow *window) {
         timestampPeriodNs_ = physicalDevice_->properties().limits.timestampPeriod;
     }
 
-    uint32_t imageCount = swapchain_->imageCount();
-
     // create command buffer for each context
-    for (int i = 0; i < imageCount; i++) {
+    for (uint32_t i = 0; i < recordingSlotCount; ++i) {
         uploadCommandBuffers_.emplace_back(vk::CommandBuffer::create(device_, mainCommandPool_));
         overlayCommandBuffers_.emplace_back(vk::CommandBuffer::create(device_, mainCommandPool_));
         worldCommandBuffers_.emplace_back(vk::CommandBuffer::create(device_, mainCommandPool_));
         fuseCommandBuffers_.emplace_back(vk::CommandBuffer::create(device_, mainCommandPool_));
+        commandFinishedFences_.push_back(vk::Fence::create(device_, true));
     }
     worldAsyncCommandBuffer_ = vk::CommandBuffer::create(device_, asyncCommandPool_);
 
-    for (int i = 0; i < imageCount; i++) { commandFinishedFences_.push_back(vk::Fence::create(device_, true)); }
-
-    for (int i = 0; i < imageCount; i++) { commandProcessedSemaphores_.push_back(vk::Semaphore::create(device_)); }
-
-    for (int i = 0; i < imageCount; i++) { contexts_.push_back(FrameworkContext::create(shared_from_this(), i)); }
+    rebuildPresentationSemaphores();
+    for (uint32_t i = 0; i < recordingSlotCount; ++i)
+        contexts_.push_back(FrameworkContext::create(shared_from_this(), i));
 
     pipeline_ = Pipeline::create(shared_from_this());
+}
+
+void Framework::rebuildPresentationSemaphores() {
+    // A slot fence only proves command completion. Presentation releases a
+    // semaphore when the same image is acquired and its acquire wait completes.
+    presentReadySemaphores_.clear();
+    for (uint32_t i = 0; i < swapchain_->imageCount(); ++i)
+        presentReadySemaphores_.push_back(vk::Semaphore::create(device_));
 }
 
 Framework::~Framework() {
@@ -295,12 +302,14 @@ VkResult Framework::acquireContext() {
     }
     if (acquireAttempt.suboptimal()) { suboptimalSwapchain_ = true; }
 
-    std::shared_ptr<vk::Fence> fence = contexts_[imageIndex]->commandFinishedFence;
+    const uint32_t slot = nextContextIndex_;
+    const auto &context = contexts_[slot];
+    const auto &fence = context->commandFinishedFence;
     {
         mcvr::profile::Scope auditWait("frame-fence-wait");
         const auto fenceStart = mcvr::fgdiag::start();
         result = vkWaitForFences(device_->vkDevice(), 1, &fence->vkFence(), true, UINT64_MAX);
-        mcvr::diagnostics::device_loss::note("frame-fence-wait", result, imageIndex, 0, (uint64_t)fence->vkFence());
+        mcvr::diagnostics::device_loss::note("frame-fence-wait", result, slot, imageIndex, (uint64_t)fence->vkFence());
         mcvr::fgdiag::elapsed(mcvr::fgdiag::MainFence, fenceStart);
     }
     if (result != VK_SUCCESS) {
@@ -308,14 +317,14 @@ VkResult Framework::acquireContext() {
         currentContext_ = nullptr;
         return recordFailure(result, "vkWaitForFences(frame)");
     }
-    if (contexts_[imageIndex]->frameSubmitted)
-        mcvr::chunkTrace::note("frame-complete", -1, -1, contexts_[imageIndex]->chunkTraceSerial);
-    result = completeGpuProfile(contexts_[imageIndex]);
+    if (context->frameSubmitted) mcvr::chunkTrace::note("frame-complete", -1, -1, context->chunkTraceSerial);
+    result = completeGpuProfile(context);
     if (result != VK_SUCCESS) { return result; }
-    currentContextIndex_ = imageIndex;
-    currentContext_ = contexts_[imageIndex];
+    nextContextIndex_ = (slot + 1) % recordingSlotCount;
+    currentContext_ = context;
+    currentContext_->presentImageIndex = imageIndex;
     currentContext_->preWorldCommandBuffer.reset();
-    currentContext_->overlayCommandBuffer = overlayCommandBuffers_[imageIndex];
+    currentContext_->overlayCommandBuffer = overlayCommandBuffers_[slot];
     currentContext_->worldRenderRequired = false;
     currentContext_->worldInputsFinished = false;
     currentContext_->worldRendered = false;
@@ -330,8 +339,6 @@ VkResult Framework::acquireContext() {
     currentContext_->uiPtCommands.newFrame();
     ++currentContext_->uiPtRecordingGeneration;
     if (mcvr::chunkTrace::enabled) currentContext_->chunkTraceSerial = ++mcvr::chunkTrace::serial;
-    indexHistory_.push(imageIndex);
-    if (indexHistory_.size() > swapchain_->imageCount()) indexHistory_.pop();
     // One queue signals fences in submission order, so any signaled context fence proves every frame
     // submitted before it complete, whichever swapchain image those frames used. This context's fence
     // was just waited; the others are only polled.
@@ -344,7 +351,7 @@ VkResult Framework::acquireContext() {
     currentContext_->frameSerial = ++frameSerial_;
     frameResourceRetainer_->beginFrame(frameSerial_, completedSerial);
     mcvr::diagnostics::recordFrame(
-        "acquire", imageIndex, currentContext_->frameSubmitted,
+        "acquire", slot, currentContext_->frameSubmitted,
         mcvr::diagnostics::handleValue(currentContext_->commandFinishedFence->vkFence()),
         mcvr::diagnostics::handleValue(currentContext_->overlayCommandBuffer->vkCommandBuffer()));
 
@@ -358,6 +365,7 @@ VkResult Framework::acquireContext() {
     currentContext_->worldCommandBuffer->begin();
     currentContext_->overlayCommandBuffer->begin();
     currentContext_->fuseCommandBuffer->begin();
+    currentContext_->presentCommandBuffer->begin();
     currentContext_->auditGpu.reset(device_->vkDevice(), currentContext_->uploadCommandBuffer->vkCommandBuffer(),
                                     timestampValidBits_ != 0);
     if (currentContext_->auditGpu.lastResult == VK_ERROR_DEVICE_LOST)
@@ -436,8 +444,8 @@ VkResult Framework::submitCommand() {
 
     submitStages.next("submit.command-end");
     if (currentContext_->frameTimestampQueryPool != VK_NULL_HANDLE) {
-        vkCmdWriteTimestamp(currentContext_->fuseCommandBuffer->vkCommandBuffer(), VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                            currentContext_->frameTimestampQueryPool, 1);
+        vkCmdWriteTimestamp(currentContext_->presentCommandBuffer->vkCommandBuffer(),
+                            VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, currentContext_->frameTimestampQueryPool, 1);
     }
 
     currentContext_->auditGpu.owner = mcvr::profile::frame;
@@ -452,32 +460,33 @@ VkResult Framework::submitCommand() {
     currentContext_->uiPtCommands.end();
     currentContext_->overlayCommandBuffer->end();
     currentContext_->fuseCommandBuffer->end();
+    currentContext_->presentCommandBuffer->end();
 
     submitStages.next("submit.submission");
-    std::vector<VkSemaphore> waitSemaphores = {currentContext_->imageAcquiredSemaphore->vkSemaphore()};
-    std::vector<VkPipelineStageFlags> waitStageMasks = {VK_PIPELINE_STAGE_ALL_COMMANDS_BIT};
-    std::vector<VkSemaphore> signalSemaphores = {currentContext_->commandProcessedSemaphore->vkSemaphore()};
-    std::vector<VkCommandBuffer> commandbuffers = {
-        currentContext_->uploadCommandBuffer->vkCommandBuffer(),
-        currentContext_->worldCommandBuffer->vkCommandBuffer(),
-        currentContext_->overlayCommandBuffer->vkCommandBuffer(),
-        currentContext_->fuseCommandBuffer->vkCommandBuffer(),
+    auto &frame = *currentContext_;
+    std::array<VkCommandBuffer, 6> offscreen{};
+    uint32_t count = 0;
+    offscreen[count++] = frame.uploadCommandBuffer->vkCommandBuffer();
+    if (frame.preWorldCommandBuffer) offscreen[count++] = frame.preWorldCommandBuffer->vkCommandBuffer();
+    offscreen[count++] = frame.worldCommandBuffer->vkCommandBuffer();
+    if (frame.uiPtCommands.active()) offscreen[count++] = frame.uiPtCommands.buffer()->vkCommandBuffer();
+    offscreen[count++] = frame.overlayCommandBuffer->vkCommandBuffer();
+    offscreen[count++] = frame.fuseCommandBuffer->vkCommandBuffer();
+    const VkCommandBuffer presentCopy = frame.presentCommandBuffer->vkCommandBuffer();
+    const VkPipelineStageFlags acquireStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    // One submission call covers both batches and the fence. Recording a second
+    // batch scopes the acquire wait without introducing a partial-submit state.
+    const VkSubmitInfo batches[] = {
+        {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = count, .pCommandBuffers = offscreen.data()},
+        {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+         .waitSemaphoreCount = 1,
+         .pWaitSemaphores = &frame.imageAcquiredSemaphore->vkSemaphore(),
+         .pWaitDstStageMask = &acquireStage,
+         .commandBufferCount = 1,
+         .pCommandBuffers = &presentCopy,
+         .signalSemaphoreCount = 1,
+         .pSignalSemaphores = &presentReadySemaphores_[frame.presentImageIndex]->vkSemaphore()},
     };
-
-    if (currentContext_->uiPtCommands.active())
-        commandbuffers.insert(commandbuffers.begin() + 2, currentContext_->uiPtCommands.buffer()->vkCommandBuffer());
-    if (currentContext_->preWorldCommandBuffer)
-        commandbuffers.insert(commandbuffers.begin() + 1, currentContext_->preWorldCommandBuffer->vkCommandBuffer());
-
-    VkSubmitInfo vkSubmitInfo = {};
-    vkSubmitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    vkSubmitInfo.waitSemaphoreCount = waitSemaphores.size();
-    vkSubmitInfo.pWaitSemaphores = waitSemaphores.data();
-    vkSubmitInfo.pWaitDstStageMask = waitStageMasks.data();
-    vkSubmitInfo.commandBufferCount = commandbuffers.size();
-    vkSubmitInfo.pCommandBuffers = commandbuffers.data();
-    vkSubmitInfo.signalSemaphoreCount = signalSemaphores.size();
-    vkSubmitInfo.pSignalSemaphores = signalSemaphores.data();
 
     std::shared_ptr<vk::Fence> fence = currentContext_->commandFinishedFence;
     mcvr::failure::throwIfFatal();
@@ -486,18 +495,24 @@ VkResult Framework::submitCommand() {
     {
         mcvr::profile::Scope auditWait("queue-submit");
         const auto submitStart = mcvr::fgdiag::start();
-        result = vkQueueSubmit(device_->mainVkQueue(), 1, &vkSubmitInfo, fence->vkFence());
-        if (mcvr::diagnostics::device_loss::enabled())
-            for (uint32_t i = 0; i < commandbuffers.size(); ++i)
+        result = vkQueueSubmit(device_->mainVkQueue(), 2, batches, fence->vkFence());
+        if (mcvr::diagnostics::device_loss::enabled()) {
+            for (uint32_t i = 0; i < count; ++i)
                 mcvr::diagnostics::device_loss::note("frame-queue-submit", result, currentContext_->frameIndex, i,
-                                                     (uint64_t)commandbuffers[i], (uint64_t)fence->vkFence(), 0,
+                                                     (uint64_t)offscreen[i], (uint64_t)fence->vkFence(), 0,
                                                      (uint64_t)device_->mainVkQueue());
+            mcvr::diagnostics::device_loss::note("frame-present-copy-submit", result, frame.frameIndex, count,
+                                                 (uint64_t)presentCopy, (uint64_t)fence->vkFence(), 0,
+                                                 (uint64_t)device_->mainVkQueue());
+        }
         mcvr::fgdiag::elapsed(mcvr::fgdiag::MainSubmit, submitStart);
     }
     if (result != VK_SUCCESS) { return recordFailure(result, "vkQueueSubmit(frame)"); }
     submitStages.next("submit.commit");
     currentContext_->frameSubmitted = true;
     currentContext_->submittedSerial = currentContext_->frameSerial;
+    indexHistory_.push(frame.frameIndex);
+    if (indexHistory_.size() > recordingSlotCount) indexHistory_.pop();
     currentContext_->auditGpu.submitted = currentContext_->auditGpu.recording;
     if (auto world = Renderer::instance().world(); world && currentContext_->worldRendered) {
         world->entities()->commitCachedCloudBuild();
@@ -651,6 +666,10 @@ void Framework::captureFrameGenerationHudless(FrameworkContext &frame,
 
 VkResult Framework::present() {
     mcvr::profile::Scope auditProfile("present-other");
+    return finishPresentation(presentToQueue());
+}
+
+VkResult Framework::presentToQueue() {
     mcvr::diagnostics::device_loss::note("frame-present-begin");
     if (!running_.load(std::memory_order_acquire)) { return inactiveResult(); }
     if (currentContext_ == nullptr) { return recordFailure(VK_ERROR_INITIALIZATION_FAILED, "present(no context)"); }
@@ -658,11 +677,12 @@ VkResult Framework::present() {
     VkPresentInfoKHR presentInfo = {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &currentContext_->commandProcessedSemaphore->vkSemaphore();
+    const auto &ready = presentReadySemaphores_[currentContext_->presentImageIndex];
+    presentInfo.pWaitSemaphores = &ready->vkSemaphore();
 
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain_->vkSwapchain();
-    presentInfo.pImageIndices = &currentContext_->frameIndex;
+    presentInfo.pImageIndices = &currentContext_->presentImageIndex;
 
     VkResult result;
     {
@@ -670,15 +690,22 @@ VkResult Framework::present() {
         const auto presentStart = mcvr::fgdiag::start();
         mcvr::StreamlineRuntime::get().marker(sl::PCLMarker::ePresentStart);
         result = vkQueuePresentKHR(device_->mainVkQueue(), &presentInfo);
-        mcvr::diagnostics::device_loss::note(
-            "frame-queue-present", result, currentContext_->frameIndex, 0, (uint64_t)swapchain_->vkSwapchain(),
-            (uint64_t)currentContext_->commandProcessedSemaphore->vkSemaphore(), 0, (uint64_t)device_->mainVkQueue());
+        mcvr::diagnostics::device_loss::note("frame-queue-present", result, currentContext_->frameIndex,
+                                             currentContext_->presentImageIndex, (uint64_t)swapchain_->vkSwapchain(),
+                                             (uint64_t)ready->vkSemaphore(), 0, (uint64_t)device_->mainVkQueue());
         mcvr::fgdiag::elapsed(mcvr::fgdiag::FirstPresent, presentStart);
     }
+    mcvr::StreamlineRuntime::get().marker(sl::PCLMarker::ePresentEnd);
+    if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR && result != VK_ERROR_OUT_OF_DATE_KHR)
+        return recordFailure(result, "vkQueuePresentKHR");
+    currentContext_->presentedSdkFrames = mcvr::StreamlineRuntime::get().presentedFrames();
+    return result;
+}
+
+VkResult Framework::finishPresentation(VkResult result) {
+    if (!running_.load(std::memory_order_acquire)) return inactiveResult();
     const bool firstAccepted = result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
-    auto &sl = mcvr::StreamlineRuntime::get();
-    sl.marker(sl::PCLMarker::ePresentEnd);
-    const auto outputCount = sl.presentedFrames();
+    const auto outputCount = currentContext_->presentedSdkFrames;
     if (mcvr::audit::enabled(MCVR_AUDIT_CAPTURE)) {
         auto nativeWindow = window_->window();
         auto evidence = mcvr::log::info("RenderFramework");
@@ -739,9 +766,6 @@ VkResult Framework::present() {
         // Still presentable; repeated SUBOPTIMAL reports do not trigger full rebuilds.
         limitFrameRate();
         return VK_SUCCESS;
-    } else if (result != VK_SUCCESS) {
-        mcvr::log::error("RenderFramework") << "failed to submit present command buffer" << std::endl;
-        return recordFailure(result, "vkQueuePresentKHR");
     }
 
     limitFrameRate();
@@ -864,8 +888,12 @@ VkResult Framework::recreate(bool forcePresentation, bool checkSurface) {
                 return profileResult;
             }
         }
-        frameGeneration_.reset();
-        displayOutput_.reset();
+        if (presentation && fgStateChanged) {
+            // Destroy the proxy while its plugin is still hooked. Unloading first
+            // hides destruction from DLSS-G and leaves its single-swapchain state alive.
+            frameGeneration_.reset();
+            swapchain_->release();
+        }
         if (presentation && !mcvr::optionalFeatureRequestSatisfied(
                                 mcvr::StreamlineRuntime::get().setFGLoaded(Renderer::options.dlssFrameGeneration))) {
             mcvr::log::error("RenderFramework") << "Cannot apply the requested DLSS-G plugin state" << std::endl;
@@ -873,41 +901,25 @@ VkResult Framework::recreate(bool forcePresentation, bool checkSurface) {
             return VK_ERROR_INITIALIZATION_FAILED;
         }
         const auto oldExtent = swapchain_->vkExtent();
+        const auto oldFormat = swapchain_->displayProfile().surface.format;
+        const auto oldEncoding = swapchain_->displayProfile().encoding;
         const uint32_t oldCount = swapchain_->imageCount();
         if (presentation) {
-            // No command is pending now. Drop image views before destroying their swapchain.
-            for (auto &context : contexts_) context->swapchainImage.reset();
             swapchain_->reconstruct();
+            rebuildPresentationSemaphores();
         }
         const uint32_t size = swapchain_->imageCount();
         const auto extent = swapchain_->vkExtent();
-        const bool resizeTargets =
-            oldCount != size || oldExtent.width != extent.width || oldExtent.height != extent.height;
-        if (oldCount != size) {
-            currentContext_ = nullptr;
-            currentContextIndex_ = 0;
-            contexts_.clear();
-            uploadCommandBuffers_.clear();
-            overlayCommandBuffers_.clear();
-            worldCommandBuffers_.clear();
-            fuseCommandBuffers_.clear();
-            commandFinishedFences_.clear();
-            commandProcessedSemaphores_.clear();
-            indexHistory_ = {};
-            frameResourceRetainer_->resetFrameCount(size);
-            for (uint32_t i = 0; i < size; ++i) {
-                uploadCommandBuffers_.push_back(vk::CommandBuffer::create(device_, mainCommandPool_));
-                overlayCommandBuffers_.push_back(vk::CommandBuffer::create(device_, mainCommandPool_));
-                worldCommandBuffers_.push_back(vk::CommandBuffer::create(device_, mainCommandPool_));
-                fuseCommandBuffers_.push_back(vk::CommandBuffer::create(device_, mainCommandPool_));
-                commandFinishedFences_.push_back(vk::Fence::create(device_, true));
-                commandProcessedSemaphores_.push_back(vk::Semaphore::create(device_));
-            }
-            for (uint32_t i = 0; i < size; ++i) contexts_.push_back(FrameworkContext::create(shared_from_this(), i));
-        } else if (presentation) {
-            for (uint32_t i = 0; i < size; ++i) contexts_[i]->swapchainImage = swapchain_->swapchainImages()[i];
-        }
+        const bool resizeTargets = oldExtent.width != extent.width || oldExtent.height != extent.height;
+        const bool displayChanged = oldFormat != swapchain_->displayProfile().surface.format ||
+                                    oldEncoding != swapchain_->displayProfile().encoding;
+        if (resizeTargets || displayChanged) displayOutput_.reset();
+        if (resizeTargets || displayChanged || worldChanged)
+            frameGeneration_.reset();
+        else if (presentation && frameGeneration_)
+            frameGeneration_->invalidatePresentationHistory();
         if (resizeTargets || worldChanged) {
+            indexHistory_ = {};
             pipeline_->recreate(shared_from_this(), resizeTargets, worldChanged, preparingInitialWorld_);
             Renderer::instance().buffers()->invalidateWorldHistory();
             Renderer::instance().textures()->bindAllTextures();
@@ -1319,17 +1331,13 @@ std::shared_ptr<vk::CommandBuffer> Framework::worldAsyncCommandBuffer() {
     return worldAsyncCommandBuffer_;
 }
 
-std::vector<std::shared_ptr<vk::Semaphore>> &Framework::commandProcessedSemaphores() {
-    return commandProcessedSemaphores_;
-}
-
 std::vector<std::shared_ptr<vk::Fence>> &Framework::commandFinishedFences() {
     return commandFinishedFences_;
 }
 
 uint32_t Framework::recordingContextCount() {
     if (auto scope = SceneRecordingScope::active()) return static_cast<uint32_t>(scope->contexts.size());
-    return swapchain_->imageCount();
+    return static_cast<uint32_t>(contexts_.size());
 }
 
 std::vector<std::shared_ptr<FrameworkContext>> &Framework::contexts() {
@@ -1371,8 +1379,8 @@ void Framework::recycleSemaphore(std::shared_ptr<vk::Semaphore> semaphore) {
     recycledImageAcquiredSemaphores_.push(semaphore);
 }
 
-FrameResourceRetainer::FrameResourceRetainer(std::shared_ptr<Framework> framework)
-    : framesInFlight_(framework->swapchain_->imageCount()) {}
+FrameResourceRetainer::FrameResourceRetainer(std::shared_ptr<Framework>)
+    : framesInFlight_(Framework::recordingSlotCount) {}
 
 void FrameResourceRetainer::beginFrame(uint64_t frameSerial, uint64_t completedSerial) {
     decltype(retention_.clear()) released;
@@ -1382,15 +1390,6 @@ void FrameResourceRetainer::beginFrame(uint64_t frameSerial, uint64_t completedS
         released = retention_.beginFrame(frameSerial, completedSerial, framesInFlight_);
     }
     // Destroyed outside the lock: releasing a resource may retain another.
-}
-
-void FrameResourceRetainer::resetFrameCount(uint32_t frameCount) {
-    decltype(retention_.clear()) released;
-    {
-        std::unique_lock<std::recursive_mutex> lck(mtx_);
-        released = retention_.clear();
-        framesInFlight_ = frameCount;
-    }
 }
 
 void FrameResourceRetainer::clearAfterGpuIdle(uint64_t currentFrameSerial) {

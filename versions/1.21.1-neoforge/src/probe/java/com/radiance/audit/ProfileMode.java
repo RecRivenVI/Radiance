@@ -4,9 +4,11 @@ package com.radiance.audit;
 enum ProfileMode {
     FRAME_ONLY(0, false, false),
     TIMED(1, true, false),
+    ALLOCATION_TIMED(17, true, false),
+    FLOW_AUDIT(9, true, false),
     CONTENT_AUDIT(7, true, false),
     PRODUCERS(1, true, true),
-    CPU_SAMPLES(1, true, false),
+    CPU_SAMPLES(17, true, false),
     JFR_ONLY(0, false, false);
 
     final int nativeFlags;

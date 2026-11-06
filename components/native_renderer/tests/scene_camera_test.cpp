@@ -86,6 +86,34 @@ int main() {
         } catch (const std::invalid_argument &) { invalid = true; }
         if (!invalid) throw std::runtime_error("zero physical extent accepted");
 
+        // Reconstruct exactly the same clip-to-previous transform near the
+        // origin and at both world borders, including fractional translation,
+        // camera rotation and view-bob translation. Casting absolute positions
+        // to float first loses this 1/8-block motion at the border.
+        for (const auto anchor :
+             {glm::dvec3(0, 80, 0), glm::dvec3(29999000, 80, -29999000), glm::dvec3(-29999000, -40, 29999000)}) {
+            const auto lastCamera = anchor + glm::dvec3(.125, 0, -.25);
+            const auto camera = lastCamera + glm::dvec3(.125, .0625, .125);
+            const auto lastRelative = glm::translate(glm::mat4(1), glm::vec3(0, .02f, 0)) *
+                                      glm::rotate(glm::mat4(1), .12f, glm::vec3(0, 1, 0));
+            const auto relative = glm::translate(glm::mat4(1), glm::vec3(.01f, .025f, 0)) *
+                                  glm::rotate(glm::mat4(1), .125f, glm::vec3(0, 1, 0));
+            const auto oldView = reconstructionView(lastRelative, lastCamera, anchor);
+            const auto view = reconstructionView(relative, camera, anchor);
+            const auto projection = glm::perspective(1.f, 16.f / 9.f, .1f, 10000.f);
+            const glm::vec4 point(.75f, .3f, -8.f, 1);
+            const auto clip = projection * view * point;
+            const auto oldClip = projection * oldView * point;
+            const auto projected = projection * oldView * glm::inverse(view) * glm::inverse(projection) * clip;
+            if (glm::length(glm::vec2(projected / projected.w - oldClip / oldClip.w)) > 1e-6f)
+                throw std::runtime_error("stable-origin reconstruction disagrees with projection");
+            const auto reference = relative * glm::vec4(glm::vec3(glm::dvec3(point) - (camera - anchor)), 1);
+            if (glm::length(view * point - reference) > 1e-6f)
+                throw std::runtime_error("fractional far-coordinate camera translation was lost");
+            if (glm::length(glm::vec2(oldClip / oldClip.w - clip / clip.w)) < 1e-4f)
+                throw std::runtime_error("moving reconstruction camera incorrectly remained stationary");
+        }
+
         for (const auto scale : {glm::vec3(30, -30, 30), glm::vec3(21, -17, 35), glm::vec3(1)}) {
             auto view = glm::translate(glm::mat4(1), glm::vec3(300, 250, -12000)) * glm::scale(glm::mat4(1), scale) *
                         glm::rotate(glm::mat4(1), 0.61f, glm::normalize(glm::vec3(1, 2, 0.5)));

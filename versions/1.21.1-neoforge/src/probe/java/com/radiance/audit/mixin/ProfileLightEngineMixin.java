@@ -12,8 +12,10 @@ public abstract class ProfileLightEngineMixin {
     @WrapMethod(method = "runLightUpdates")
     private int audit$run(Operation<Integer> original) {
         // span() ignores logical-server and worker calls, even on a physical client.
-        try (var ignored = FrameProfiler.span(Stage.LIGHT_UPDATES)) {
-            return original.call();
+        try (var ignored = FrameProfiler.span(Stage.LIGHT_PROPAGATION)) {
+            int processed = original.call();
+            FrameProfiler.lightWork(Stage.LIGHT_PROPAGATION, processed);
+            return processed;
         }
     }
 }

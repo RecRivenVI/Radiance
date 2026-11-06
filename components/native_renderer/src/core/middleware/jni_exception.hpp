@@ -3,6 +3,7 @@
 #include "core/all_extern.hpp"
 #include "core/diagnostics/alloc_trace.hpp"
 #include "core/failure_state.hpp"
+#include "core/render/frame_execution.hpp"
 
 #include <jni.h>
 
@@ -11,7 +12,7 @@
 #include <utility>
 
 namespace jni {
-enum class BoundaryPolicy { normal, initialization, allowAfterFatal };
+enum class BoundaryPolicy { normal, initialization, allowAfterFatal, frameHandoff };
 
 inline void throwRuntimeException(JNIEnv *env, const char *operation, const char *message) noexcept {
     if (env == nullptr || env->ExceptionCheck()) { return; }
@@ -37,7 +38,7 @@ inline void recordFailure(const std::exception &exception, BoundaryPolicy policy
 }
 
 inline void preflight(BoundaryPolicy policy) {
-    if (policy == BoundaryPolicy::normal) mcvr::failure::throwIfFatal();
+    if (policy == BoundaryPolicy::normal || policy == BoundaryPolicy::frameHandoff) mcvr::failure::throwIfFatal();
 }
 
 inline void recordUnknownFailure(BoundaryPolicy policy, const char *operation) noexcept {
@@ -54,6 +55,7 @@ jint invokeForVkResult(JNIEnv *env,
                        BoundaryPolicy policy = BoundaryPolicy::normal) noexcept {
     try {
         mcvr::diag::AllocTraceTagScope tagScope(operation);
+        mcvr::FrameExecution::Producer producer(policy != BoundaryPolicy::frameHandoff, operation);
         preflight(policy);
         return static_cast<jint>(std::forward<Function>(function)());
     } catch (const std::exception &exception) {
@@ -73,6 +75,7 @@ void invokeVoid(JNIEnv *env,
                 BoundaryPolicy policy = BoundaryPolicy::normal) noexcept {
     try {
         mcvr::diag::AllocTraceTagScope tagScope(operation);
+        mcvr::FrameExecution::Producer producer(policy != BoundaryPolicy::frameHandoff, operation);
         preflight(policy);
         std::forward<Function>(function)();
     } catch (const std::exception &exception) {
@@ -92,6 +95,7 @@ Result invoke(JNIEnv *env,
               BoundaryPolicy policy = BoundaryPolicy::normal) noexcept {
     try {
         mcvr::diag::AllocTraceTagScope tagScope(operation);
+        mcvr::FrameExecution::Producer producer(policy != BoundaryPolicy::frameHandoff, operation);
         preflight(policy);
         return static_cast<Result>(std::forward<Function>(function)());
     } catch (const std::exception &exception) {

@@ -13,6 +13,9 @@
 #include "core/render/cpu_preparation_batch.hpp"
 
 #include "common/shared.hpp"
+namespace mcvr::medium {
+class Mesh;
+}
 #include "common/singleton.hpp"
 #include "core/all_extern.hpp"
 #include "core/vulkan/all_core_vulkan.hpp"
@@ -112,6 +115,7 @@ struct WorldMeshBuildTask {
 
 struct EntityBuildData : public SharedObject<EntityBuildData> {
     std::vector<uint32_t> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
     std::vector<glm::vec4> geometryDrawColours;
     std::vector<glm::vec4> geometryEyeColours;
     uint64_t surfaceLayoutKey = 0;
@@ -217,6 +221,7 @@ struct Entity : public SharedObject<Entity> {
     uint32_t uiSceneOwner = 0;
     std::vector<std::vector<glm::vec4>> waterExclusions;
     std::vector<uint32_t> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
     std::vector<glm::vec4> geometryDrawColours;
     std::vector<glm::vec4> geometryEyeColours;
     uint64_t surfaceLayoutKey = 0;
@@ -338,6 +343,10 @@ class Entities : public SharedObject<Entities> {
     friend World;
 
   public:
+    mcvr::CpuPreparationBatch *cpuPreparation() const {
+        return cpuPreparation_.get();
+    }
+
     uint64_t surfaceProgram(uint64_t generation, std::span<const uint32_t> spirv);
     uint64_t surfaceData(uint64_t generation, const void *data, size_t bytes);
     void releaseSurface(uint64_t generation, uint64_t handle);
@@ -376,6 +385,11 @@ class Entities : public SharedObject<Entities> {
                                                std::span<const mcvr::rigid::ModelBinding> bindings,
                                                std::span<const uint64_t> selected,
                                                std::span<const uint64_t> removed);
+    // Replaces one retained selection group; an empty span ends it. Valid outside a scene frame.
+    void retainRigidSelection(uint64_t group, std::span<const uint64_t> ids);
+    void clearRetainedRigidSelections();
+    // Selects every retained member that still has an accepted version into the open frame.
+    size_t selectRetainedRigidInstances();
     std::shared_ptr<RigidInstanceBatch> rigidInstanceBatch();
     void recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &commands);
     void commitRigidModels();
@@ -423,6 +437,8 @@ class Entities : public SharedObject<Entities> {
     };
     mcvr::scene::InstanceStore<ResidentInstance> persistentInstances_;
     mcvr::scene::ResourcePins<const RigidModelResource *> persistentModelPins_{64u * 1024 * 1024};
+    std::vector<const ResidentInstance *> rigidSelectionScratch_;
+    mcvr::scene::RetainedSelections<ResidentInstance> retainedSelections_;
     std::optional<ResidentInstance> removePersistentInstance(uint64_t id);
     std::vector<RigidInstance> rigidInstances_;
     std::vector<std::shared_ptr<RigidModelResource>> rigidUsed_;

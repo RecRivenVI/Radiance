@@ -2,6 +2,8 @@
 #include <stdexcept>
 #include <thread>
 #include <memory>
+#include <sstream>
+#include <vector>
 int main() {
     auto storage = std::make_unique<radiance::audit::profile::Queue>();
     auto &queue = *storage;
@@ -29,4 +31,56 @@ int main() {
     for (char c : streamed) if (c == '\n') ++lines;
     if (lines != 1000 || streamed.find(",9,dropped,") != std::string::npos)
         throw std::runtime_error("concurrent draining lost or duplicated an event");
+    std::atomic<bool> readerHeld{false}, releaseReader{false};
+    std::thread busyReader([&] {
+        std::lock_guard held(queue.reader);
+        readerHeld = true;
+        while (!releaseReader.load()) std::this_thread::yield();
+    });
+    while (!readerHeld.load()) std::this_thread::yield();
+    const auto deferred = queue.drain();
+    queue.add(91, 0, "while-reading", 3, 2);
+    releaseReader = true;
+    busyReader.join();
+    if (!deferred.empty()) throw std::runtime_error("busy reader must defer without waiting");
+    if (queue.drain() != "91,0,while-reading,3,2\n")
+        throw std::runtime_error("reader contention must neither block producers nor discard records");
+    constexpr size_t workers = 8, perWorker = 4096;
+    std::atomic<size_t> finished{0};
+    std::vector<std::thread> producers;
+    for (size_t worker = 0; worker < workers; ++worker)
+        producers.emplace_back([&, worker] {
+            for (size_t i = 0; i < perWorker; ++i) {
+                const auto id = worker * perWorker + i;
+                queue.add(id, 0, "parallel", id, id);
+            }
+            ++finished;
+        });
+    streamed.clear();
+    while (finished.load() != workers) {
+        streamed += queue.drain();
+        std::this_thread::yield();
+    }
+    for (auto &worker : producers) worker.join();
+    streamed += queue.drain();
+    std::vector<bool> seen(workers * perWorker);
+    size_t recorded = 0, lost = 0;
+    std::istringstream input(streamed);
+    std::string row;
+    while (std::getline(input, row)) {
+        std::replace(row.begin(), row.end(), ',', ' ');
+        std::istringstream columns(row);
+        uint64_t id, inclusive, self;
+        uint32_t domain;
+        std::string label;
+        if (!(columns >> id >> domain >> label >> inclusive >> self))
+            throw std::runtime_error("partial concurrent record");
+        if (domain == 9 && label == "dropped") { lost += inclusive; continue; }
+        if (id >= seen.size() || seen[id] || inclusive != id || self != id)
+            throw std::runtime_error("overwritten or duplicate concurrent record");
+        seen[id] = true;
+        ++recorded;
+    }
+    if (recorded + lost != workers * perWorker || !queue.drain().empty())
+        throw std::runtime_error("every concurrent event must be recorded once or explicitly counted as lost");
 }

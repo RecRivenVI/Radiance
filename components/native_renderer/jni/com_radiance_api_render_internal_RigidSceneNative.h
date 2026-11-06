@@ -23,6 +23,30 @@ JNIEXPORT void JNICALL Java_com_radiance_api_render_internal_RigidSceneNative_re
 JNIEXPORT jlongArray JNICALL Java_com_radiance_api_render_internal_RigidSceneNative_submit
   (JNIEnv *, jclass, jint, jint, jint, jlong, jint, jlong, jint, jint, jint, jlong, jint, jlong, jint, jlong, jint);
 
+/*
+ * Class:     com_radiance_api_render_internal_RigidSceneNative
+ * Method:    retain
+ * Signature: (JJI)V
+ */
+JNIEXPORT void JNICALL Java_com_radiance_api_render_internal_RigidSceneNative_retain
+  (JNIEnv *, jclass, jlong, jlong, jint);
+
+/*
+ * Class:     com_radiance_api_render_internal_RigidSceneNative
+ * Method:    clearRetained
+ * Signature: ()V
+ */
+JNIEXPORT void JNICALL Java_com_radiance_api_render_internal_RigidSceneNative_clearRetained
+  (JNIEnv *, jclass);
+
+/*
+ * Class:     com_radiance_api_render_internal_RigidSceneNative
+ * Method:    selectRetained
+ * Signature: ()I
+ */
+JNIEXPORT jint JNICALL Java_com_radiance_api_render_internal_RigidSceneNative_selectRetained
+  (JNIEnv *, jclass);
+
 #ifdef __cplusplus
 }
 #endif

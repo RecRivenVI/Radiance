@@ -1,4 +1,5 @@
-render_pipeline.module.ray_tracing.attribute.num_ray_bounces=Num Ray Bounces
+render_pipeline.module.ray_tracing.attribute.num_reflections=Reflection Limit
+render_pipeline.module.ray_tracing.attribute.num_refractions=Refraction Limit
 render_pipeline.module.ray_tracing.attribute.pbr_sampling_mode=PBR Sampling Mode
 render_pipeline.module.ray_tracing.attribute.emission_size_xz=Emission Radius XZ
 render_pipeline.module.ray_tracing.attribute.emission_size_y=Emission Radius Y

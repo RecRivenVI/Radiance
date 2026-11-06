@@ -21,7 +21,8 @@ class DLSSModule : public WorldModule, public SharedObject<DLSSModule> {
 
   public:
     constexpr static std::string_view NAME = "render_pipeline.module.dlss.name";
-    constexpr static uint32_t inputImageNum = 8;
+    constexpr static uint32_t inputImageNum = 9;
+    constexpr static uint32_t srInputImageNum = 8;
     constexpr static uint32_t outputImageNum = 4;
 
     static bool initNGXContext();
@@ -65,6 +66,10 @@ class DLSSModule : public WorldModule, public SharedObject<DLSSModule> {
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> srDepthImages_;
     std::vector<std::shared_ptr<vk::DescriptorTable>> srDepthTables_;
     std::shared_ptr<vk::ComputePipeline> srDepthPipeline_;
+    std::vector<std::shared_ptr<vk::DeviceLocalImage>> transparencyImages_;
+    std::vector<std::shared_ptr<vk::DeviceLocalImage>> colorBeforeTransparencyImages_;
+    std::vector<std::shared_ptr<vk::DescriptorTable>> transparencyTables_;
+    std::shared_ptr<vk::ComputePipeline> transparencyPipeline_;
 
     // input
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> hdrImages_;

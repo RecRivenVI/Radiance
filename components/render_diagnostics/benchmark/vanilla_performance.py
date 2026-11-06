@@ -12,9 +12,9 @@ import threading
 import tomllib
 import time
 import zipfile
-import ctypes
-
 import gpu_monitor
+import memory_diagnostics
+from memory_guard import check_global_stop, device_lost, guarded_process, physical_reserve
 import profile_quality
 from takeover_experiment import ROOT, TARGET, WORKSPACE_SOFT_LIMIT_GIB, digest, probe_jar, recycle, storage_preflight, write
 from takeover_city import assert_stopped, loaded_core
@@ -42,38 +42,21 @@ def other_games(pid):
 
 def monitor(case, stop, own_pid, jcmd=None):
     reader = None
-    process_handle = None
     try:
-        class MemoryCounters(ctypes.Structure):
-            _fields_ = [('cb', ctypes.c_ulong), ('PageFaultCount', ctypes.c_ulong)] + [
-                (key, ctypes.c_size_t) for key in ('PeakWorkingSetSize','WorkingSetSize',
-                'QuotaPeakPagedPoolUsage','QuotaPagedPoolUsage','QuotaPeakNonPagedPoolUsage',
-                'QuotaNonPagedPoolUsage','PagefileUsage','PeakPagefileUsage','PrivateUsage')]
-        kernel = ctypes.WinDLL('kernel32', use_last_error=True)
-        psapi = ctypes.WinDLL('psapi', use_last_error=True)
-        kernel.OpenProcess.argtypes = [ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong]
-        kernel.OpenProcess.restype = ctypes.c_void_p
-        kernel.CloseHandle.argtypes = [ctypes.c_void_p]
-        psapi.GetProcessMemoryInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(MemoryCounters), ctypes.c_ulong]
-        process_handle = kernel.OpenProcess(0x410, False, own_pid)
-        if not process_handle: raise ctypes.WinError(ctypes.get_last_error())
         reader = gpu_monitor.Reader()
         last_phase = None
         phase_visits = {}
-        with (case / 'noise.jsonl').open('x', encoding='utf8') as stream:
+        with memory_diagnostics.process_memory(own_pid) as process_memory, (case / 'noise.jsonl').open('x', encoding='utf8') as stream:
             games, next_games = [], 0
-            while not stop.is_set():
+            for _ in range(1200):
+                if stop.is_set():
+                    break
                 if time.monotonic() >= next_games:
                     games = other_games(own_pid)
                     next_games = time.monotonic() + 5
-                memory = MemoryCounters()
-                memory.cb = ctypes.sizeof(memory)
-                process_memory = None
-                if psapi.GetProcessMemoryInfo(process_handle, ctypes.byref(memory), memory.cb):
-                    process_memory = dict(workingSet=memory.WorkingSetSize,peakWorkingSet=memory.PeakWorkingSetSize,
-                                          privateBytes=memory.PrivateUsage,peakCommit=memory.PeakPagefileUsage)
-                stream.write(json.dumps(dict(time=datetime.datetime.now(datetime.timezone.utc).isoformat(),
-                                            gpu=reader.sample(), otherGames=games, processMemory=process_memory)) + '\n')
+                stream.write(json.dumps(dict(time=memory_diagnostics.timestamp(), gpu=reader.sample(),
+                                            otherGames=games, processMemory=process_memory(),
+                                            systemMemory=memory_diagnostics.system_memory())) + '\n')
                 stream.flush()
                 lifecycle_file = case / 'lifecycle.jsonl'
                 if jcmd and lifecycle_file.is_file():
@@ -92,8 +75,6 @@ def monitor(case, stop, own_pid, jcmd=None):
     finally:
         if reader:
             reader.close()
-        if process_handle:
-            kernel.CloseHandle(process_handle)
 
 
 def validate_sources(source, allow_unobserved=False):
@@ -156,7 +137,7 @@ def analyze(case, width, height, distance, allow_empty=False, movement=False):
         memory = [r for r in allocations if start <= r[0] <= end]
         data.update(sceneState=dict(zip(signature, next(iter(states)))), movement=movement,
                     cameraRange={k:[min(float(r[k]) for r in frames),max(float(r[k]) for r in frames)]
-                                 for k in ('camera_x','camera_y','camera_z')},
+                                 for k in ('camera_x','camera_y','camera_z','camera_yaw','camera_pitch')},
                     nativeAllocationBytes=profile_quality.distribution([r[1] for r in memory]),
                     nativeAllocationCount=profile_quality.distribution([r[2] for r in memory]),
                     baseGpu=dict(completedFrames=completed, buckets=len(buckets),
@@ -184,7 +165,8 @@ def analyze(case, width, height, distance, allow_empty=False, movement=False):
 def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_probe=None, fixture=None, settings=None,
         memory_max='8G', memory_min=None, baseline=None, loading_detail=False, loading_movement=False,
         loading_interactions=False, workspace_limit_gib=WORKSPACE_SOFT_LIMIT_GIB, extra_product=None, input_names=(), movement=False,
-        lifecycle=False, allocation_census=False, controller_only=False, aftermath=True):
+        lifecycle=False, allocation_census=False, controller_only=False, aftermath=True,
+        diagnostics=None, temporary_storage_waiver=False):
     global PRODUCT
     if product is not None:
         PRODUCT=Path(product).resolve()
@@ -192,10 +174,11 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
     distance, resolution = map(int, label.removeprefix('r').split('-'))
     width, height = {720:(1280,720),1080:(1920,1080),1440:(2560,1440),2160:(3840,2160)}[resolution]
     fixture = Path(fixture).resolve() if fixture is not None else FIXTURE
+    check_global_stop(ROOT, RESULT)
     assert_stopped()
     if (RESULT / 'STOP.json').exists() or CLIENT.exists():
         raise RuntimeError('Previous retained failure/client requires analysis; no automatic retry')
-    occupancy = storage_preflight(workspace_limit_gib=workspace_limit_gib)
+    occupancy = storage_preflight(workspace_limit_gib=workspace_limit_gib, temporary_waiver=temporary_storage_waiver)
     # Account the actual packaged payload and fixed fixture, not a second full
     # client distribution: libraries/classpath are already shared read-only.
     with zipfile.ZipFile(PRODUCT) as bundle, zipfile.ZipFile(fixture) as world:
@@ -209,7 +192,10 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
     if settings is not None:
         with zipfile.ZipFile(settings) as configuration:
             reserve += sum(v.file_size for v in configuration.infolist())
-    if occupancy['workspace'] + reserve > workspace_limit_gib * 1024**3 or occupancy['validations'] + reserve > 8 * 1024**3:
+    if temporary_storage_waiver:
+        physical_reserve(VALIDATION, reserve)
+    elif (workspace_limit_gib is not None and occupancy['workspace'] + reserve > workspace_limit_gib * 1024**3
+          or occupancy['validations'] + reserve > 8 * 1024**3):
         raise RuntimeError('Insufficient owned-client storage reserve')
     probe = Path(frozen_probe).resolve() if frozen_probe is not None else probe_jar()
     if not probe.is_relative_to(ROOT) or not probe.is_file(): raise ValueError('Frozen probe is not a repository artifact')
@@ -279,7 +265,10 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
     moddev = ROOT / f'versions/{TARGET}/build/moddev'
     agent = ROOT / 'components/render_diagnostics/build/benchmark-support/radiance-benchmark-agent.jar'
     aftermath_library = ROOT / 'components/render_diagnostics/build/native/aftermath/RelWithDebInfo/radiance-aftermath-agent.dll'
-    aftermath_agent = aftermath
+    env = dict(os.environ, MCVR_DEVICE_LOSS_TRACE='1', MCVR_LOCAL_AFTERMATH='1' if aftermath else '0',
+               RADIANCE_CHUNK_TRACE='1' if loading_interactions else '0', RADIANCE_CHUNK_PERF='1',
+               RADIANCE_CHUNK_CENSUS='1' if allocation_census else os.environ.get('RADIANCE_CHUNK_CENSUS','0'))
+    aftermath_agent = aftermath if diagnostics is None else memory_diagnostics.diagnostic_environment(env, diagnostics)
     args = [str(java), f'-javaagent:{agent}']
     if aftermath_agent:
         args.append(f'-agentpath:{aftermath_library}=gpu-diagnostics')
@@ -315,36 +304,37 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
              *([f'-Xms{memory_min}'] if memory_min else []),
              f'@{moddev / "packagedClientRunProgramArgs.txt"}', '--username', 'RecRivenVI',
              '--width', str(width), '--height', str(height)]
-    env = dict(os.environ, MCVR_DEVICE_LOSS_TRACE='1', MCVR_LOCAL_AFTERMATH='1' if aftermath_agent else '0',
-               RADIANCE_CHUNK_TRACE='1' if loading_interactions else '0', RADIANCE_CHUNK_PERF='1',
-               RADIANCE_CHUNK_CENSUS='1' if allocation_census else os.environ.get('RADIANCE_CHUNK_CENSUS','0'))
     env.pop('MOD_CLASSES', None)
     write(case / 'launch.json', dict(args=args, frozenProduct=str(PRODUCT.relative_to(ROOT)),product=digest(PRODUCT),group=group,
           probe=digest(probe), fixture=str(fixture.relative_to(ROOT)), distance=distance,
           width=width, height=height, storage=occupancy, normalPriority=True, affinity='unchanged',
           memoryMax=memory_max,memoryMin=memory_min, sourceInputs=source_inputs, movement=movement,
-          lifecycle=lifecycle, allocationCensus=allocation_census,controllerOnly=controller_only,aftermath=bool(aftermath_agent)))
+          lifecycle=lifecycle, allocationCensus=allocation_census,controllerOnly=controller_only,
+          aftermath=bool(aftermath_agent), diagnostics=diagnostics, executionModes=memory_diagnostics.execution_modes(env)))
     if settings is not None:
         write(case / 'settings-input.json', dict(sha256=digest(settings),
               overrides=[f'{width}x{height} framebuffer', f'renderDistance={distance}', 'master volume=0', 'pauseOnLostFocus=false', 'fullscreen=false'],
               files={p.relative_to(CLIENT).as_posix():digest(p) for p in CLIENT.rglob('*')
                      if p.is_file() and (p.name=='options.txt' or p.is_relative_to(CLIENT/'radiance'))}))
     stop = threading.Event()
-    observer = None
+    observers = []
     process = None
     try:
-        with (case / 'console.log').open('x', encoding='utf8') as console:
-            process = subprocess.Popen(args, cwd=CLIENT, env=env, stdout=console, stderr=subprocess.STDOUT)
+        with (case / 'console.log').open('x', encoding='utf8') as console, guarded_process(
+                case, args, cwd=CLIENT, env=env, stdout=console, stderr=subprocess.STDOUT) as process:
             write(case / 'process.json', dict(pid=process.pid, started=time.time()))
-            observer = threading.Thread(target=monitor, args=(case, stop, process.pid, java.with_name('jcmd.exe') if lifecycle else None))
-            observer.start()
+            observers = [threading.Thread(target=monitor, args=(case, stop, process.pid, java.with_name('jcmd.exe') if lifecycle else None), daemon=True),
+                         threading.Thread(target=memory_diagnostics.observe, args=(case, stop, process.pid), daemon=True)]
+            for observer in observers:
+                observer.start()
             until, verified = time.monotonic() + (1160 if lifecycle else 660), False
             while process.poll() is None and time.monotonic() < until:
                 latest = CLIENT / 'logs/latest.log'
                 log = latest.read_text(encoding='utf8', errors='replace') if latest.is_file() else ''
                 log += (case / 'console.log').read_text(encoding='utf8', errors='replace')
-                if 'VK_ERROR_DEVICE_LOST' in log:
-                    write(RESULT / 'STOP.json', dict(case=str(case), deviceLost=True, automaticRetry=False))
+                if device_lost(log):
+                    if not (case / 'DEVICE_LOST.json').exists():
+                        write(case / 'DEVICE_LOST.json', dict(case=str(case), deviceLost=True, automaticRetry=False))
                     until = min(until, time.monotonic() + 30)
                 if not verified and ('CITY_COMPARISON world-ready' in log or 'LOADING_CHAIN world-ready' in log):
                     loaded_core(process.pid, CLIENT, PRODUCT, case / 'loaded-core.json')
@@ -353,10 +343,13 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
             if process.poll() is None:
                 raise RuntimeError('Bounded run timed out; retain client, no retry')
         log = (case / 'console.log').read_text(encoding='utf8', errors='replace')
+        lost = device_lost(log) or (case / 'DEVICE_LOST.json').exists()
+        if lost and not (case / 'DEVICE_LOST.json').exists():
+            write(case / 'DEVICE_LOST.json', dict(case=str(case), deviceLost=True, automaticRetry=False))
         completed = ('MINIMAL_CITY normal-stop' if controller_only else 'CITY_LIFECYCLE normal-stop' if lifecycle else
                      'LOADING_CHAIN normal-stop' if plan == 'loading' else 'CITY_COMPARISON reload-complete normal-stop')
-        if process.returncode or not verified or completed not in log or 'All dimensions are saved' not in log or any(
-                token in log for token in ('VK_ERROR_DEVICE_LOST', 'CITY_COMPARISON FAIL', 'LOADING_CHAIN FAIL', 'CITY_LIFECYCLE FAIL', 'MINIMAL_CITY FAIL', 'MCVR fatal')):
+        if process.returncode or lost or not verified or completed not in log or 'All dimensions are saved' not in log or any(
+                token in log for token in ('CITY_COMPARISON FAIL', 'LOADING_CHAIN FAIL', 'CITY_LIFECYCLE FAIL', 'MINIMAL_CITY FAIL', 'MCVR fatal')):
             raise RuntimeError('Client failed; preserve evidence and stop group')
         # Retain only raw data used by this diagnosis; generated clients and shader copies retire.
         shutil.copytree(CLIENT / 'logs', case / 'logs')
@@ -399,7 +392,7 @@ def run(label, plan='vanilla', product=None, group=None, seconds=30, frozen_prob
         raise
     finally:
         stop.set()
-        if observer:
+        for observer in observers:
             observer.join(timeout=16)
 
 

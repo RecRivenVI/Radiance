@@ -8,6 +8,8 @@
 #include <filesystem>
 #include <fstream>
 #include <chrono>
+#include <algorithm>
+#include <cstdlib>
 
 namespace mcvr::diagnostics {
 // Temporary, opt-in capture. Retained until the recorded frame's fence retires.
@@ -50,8 +52,17 @@ struct PonderCapture {
               const std::shared_ptr<vk::CommandBuffer> &commands,
               const char *name,
               const std::shared_ptr<vk::DeviceLocalImage> &source) {
-        const size_t bytes =
-            static_cast<size_t>(source->width()) * source->height() * vk::formatToByte(source->vkFormat());
+        uint32_t width = source->width(), height = source->height(), x = 0, y = 0;
+        if (const auto text = std::getenv("RADIANCE_CAPTURE_CENTER_FRACTION")) {
+            const float fraction = std::strtof(text, nullptr);
+            if (fraction > 0.0f && fraction < 1.0f) {
+                width = std::max(1u, uint32_t(width * fraction));
+                height = std::max(1u, uint32_t(height * fraction));
+                x = (source->width() - width) / 2;
+                y = (source->height() - height) / 2;
+            }
+        }
+        const size_t bytes = static_cast<size_t>(width) * height * vk::formatToByte(source->vkFormat());
         auto buffer = vk::HostVisibleBuffer::create(framework->vma(), device, bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT);
         const auto original = source->imageLayout();
         auto transition = [&](VkImageLayout before, VkImageLayout after) {
@@ -72,13 +83,16 @@ struct PonderCapture {
         transition(original, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkBufferImageCopy region{};
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
-        region.imageExtent = {source->width(), source->height(), 1};
+        region.imageOffset = {int32_t(x), int32_t(y), 0};
+        region.imageExtent = {width, height, 1};
         vkCmdCopyImageToBuffer(commands->vkCommandBuffer(), source->vkImage(), VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                                buffer->vkBuffer(), 1, &region);
         transition(VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, original);
         std::ofstream manifest(directory / "images.tsv", std::ios::app);
-        manifest << name << '\t' << source->width() << '\t' << source->height() << '\t'
-                 << static_cast<int>(source->vkFormat()) << '\t' << bytes << '\n';
+        manifest << name << '\t' << width << '\t' << height << '\t' << static_cast<int>(source->vkFormat()) << '\t'
+                 << bytes << '\n';
+        std::ofstream(directory / "image-regions.tsv", std::ios::app)
+            << name << '\t' << source->width() << '\t' << source->height() << '\t' << x << '\t' << y << '\n';
         images.push_back({name, buffer, source});
     }
 
@@ -129,6 +143,7 @@ struct PonderCapture {
         // Render-thread only. Explicit request files keep world, UI and FG captures independent.
         const bool fg = std::string_view(backend) == "FG";
         const bool display = std::string_view(backend) == "DISPLAY";
+        const bool nrd = std::string_view(backend) == "NRD";
         const bool ui = SceneRecordingScope::active() != nullptr;
         struct Request {
             bool accepted = false;
@@ -136,11 +151,12 @@ struct PonderCapture {
             std::weak_ptr<Buffers> selected;
             std::filesystem::path root;
         };
-        static Request requests[4];
-        auto &[accepted, frame, selected, root] = requests[display ? 3 : fg ? 1 : (ui ? 0 : 2)];
+        static Request requests[5];
+        auto &[accepted, frame, selected, root] = requests[nrd ? 4 : display ? 3 : fg ? 1 : (ui ? 0 : 2)];
         const char *singleFrame = std::getenv("RADIANCE_CAPTURE_SINGLE_FRAME");
         const auto limit = display || fg || (singleFrame && std::string_view(singleFrame) == "1") ? 1u : 8u;
-        const char *request = display ? "radiance-display-capture.request" :
+        const char *request = nrd     ? "radiance-nrd-capture.request" :
+                              display ? "radiance-display-capture.request" :
                               fg      ? "radiance-fg-capture.request" :
                                         (ui ? "radiance-ponder-capture.request" : "radiance-world-capture.request");
         // A completed burst (or a destroyed scene) can accept a new request.
@@ -150,7 +166,8 @@ struct PonderCapture {
             std::error_code ec;
             if (!std::filesystem::exists(request, ec)) return {};
             const auto stamp = std::chrono::system_clock::now().time_since_epoch().count();
-            root = std::filesystem::path(display ? "radiance-display-captures" :
+            root = std::filesystem::path(nrd     ? "radiance-nrd-captures" :
+                                         display ? "radiance-display-captures" :
                                          fg      ? "radiance-fg-captures" :
                                                    (ui ? "radiance-ponder-captures" : "radiance-world-captures")) /
                    std::to_string(stamp);
@@ -177,6 +194,7 @@ struct PonderCapture {
             std::ofstream file(capture->directory / name);
             file.precision(9);
             file << "jitter " << ubo->cameraJitter.x << ' ' << ubo->cameraJitter.y << '\n';
+            file << "seed " << ubo->seed << '\n';
             file << "uiOwner " << ubo->uiPrimaryOwner << '\n';
             for (const auto &matrix : {ubo->cameraViewMat, ubo->cameraEffectedViewMat, ubo->cameraProjMat}) {
                 for (int r = 0; r < 4; ++r) {
@@ -187,6 +205,9 @@ struct PonderCapture {
         };
         writeUbo("current-camera.txt", buffers->worldUniformBuffer());
         writeUbo("previous-camera.txt", buffers->lastWorldUniformBuffer());
+        const auto *sampling = static_cast<const vk::Data::WorldUBO *>(buffers->worldUniformBuffer()->mappedPtr());
+        std::ofstream(capture->directory / "sampling.txt")
+            << "frame " << sampling->samplingFrameIndex << "\nseed " << sampling->samplingSeed << '\n';
         framework->frameResourceRetainer().retain(capture);
         return capture;
     }

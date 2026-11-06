@@ -1,4 +1,5 @@
-render_pipeline.module.ray_tracing.attribute.num_ray_bounces=光线反射次数
+render_pipeline.module.ray_tracing.attribute.num_reflections=反射次数
+render_pipeline.module.ray_tracing.attribute.num_refractions=折射次数
 render_pipeline.module.ray_tracing.attribute.pbr_sampling_mode=PBR采样模式
 render_pipeline.module.ray_tracing.attribute.emission_size_xz=发光收集XZ半径
 render_pipeline.module.ray_tracing.attribute.emission_size_y=发光收集Y半径

@@ -4,6 +4,8 @@
 #define ADV_DIRECT_LIGHT_RESERVOIR_GLSL
 
 #include "common/light_neighborhood.glsl"
+#include "util/source_material_maps.glsl"
+#include "util/surface_overlay.glsl"
 #include "util/water_clip.glsl"
 
 #ifndef ADV_DIRECT_LIGHT_STRENGTH
@@ -201,8 +203,9 @@ vec3 sampleTrianglePoint(vec3 a, vec3 b, vec3 c, vec2 xi) {
     return a * bary0 + b * bary1 + c * bary2;
 }
 
-vec3 areaLightWorldToScene(vec3 worldPos) {
-    return worldPos - vec3(worldUBO.cameraPos.xyz);
+vec3 areaLightScenePoint(uint sourceChunk, vec3 localPoint) {
+    ChunkLightData chunk = chunkPackedData[sourceChunk];
+    return vec3(dvec3(chunk.x, chunk.y, chunk.z) - worldUBO.cameraPos.xyz) + localPoint;
 }
 
 bool pointOnAreaLightTriangle(vec3 point, vec3 a, vec3 b, vec3 c) {
@@ -231,41 +234,62 @@ bool pointOnAreaLightTriangle(vec3 point, vec3 a, vec3 b, vec3 c) {
            w >= -ADV_AREA_LIGHT_RESERVOIR_SOURCE_BARYCENTRIC_EPSILON;
 }
 
-// Reconstruct the sampled emitter's actual atlas coordinates. Interior water
-// must not return through ReSTIR as an invisible but still illuminating source.
-bool excludedWaterEmitter(ChunkPackedLight light, vec3 point) {
-    if (floatBitsToUint(waterExclusion.records[0].x) == 0u ||
-        !excludedWaterPosition(areaLightWorldToScene(point))) return false;
-    uint textureID = (floatBitsToUint(light.normal.w) >> 8u) & 4095u;
-    int flagID = mapping.entries[textureID].flag;
-    if (flagID < 0) return false;
+bool sampleChunkEmitter(ChunkPackedLight light, vec3 point, vec3 scenePoint, out vec3 radiance) {
+    radiance = light.radiance.xyz;
+    uint source = floatBitsToUint(light.normal.w);
+    bool evaluateTexture = (source & CHUNK_EMITTER_TEXTURE_EVAL_BIT) != 0u;
+    bool checkWater = floatBitsToUint(waterExclusion.records[0].x) != 0u && excludedWaterPosition(scenePoint);
+    if (!evaluateTexture && !checkWater) return true;
+    uint textureID = (source >> 8u) & 4095u;
+    TextureMapEntry maps = mapping.entries[textureID];
+    checkWater = checkWater && maps.flag >= 0;
+    if (!evaluateTexture && !checkWater) return true;
     vec3 a = light.p1.xyz - light.p0Area.xyz, b = light.p2.xyz - light.p0Area.xyz;
     vec3 delta = point - light.p0Area.xyz;
     float aa = dot(a,a), ab = dot(a,b), bb = dot(b,b);
     float denom = aa*bb-ab*ab;
-    if (abs(denom) < 1e-12) return false;
+    if (abs(denom) < 1e-12) return !evaluateTexture;
     float v = (bb*dot(delta,a)-ab*dot(delta,b))/denom;
     float w = (aa*dot(delta,b)-ab*dot(delta,a))/denom;
     vec2 uv = (1.0-v-w)*vec2(light.p1.w,light.p2.w)
         + v*vec2(light.p3.w,light.sourceIDData.z)
         + w*vec2(light.sourceIDData.w,light.radiance.w);
-    uint flag = uint(round(textureLod(textures[nonuniformEXT(flagID)],uv,0.0).r*255.0));
-    return (flag & 1u) != 0u;
+    if (checkWater) {
+        uint flag = uint(round(textureLod(textures[nonuniformEXT(maps.flag)],uv,0.0).r*255.0));
+        if ((flag & 1u) != 0u) return false;
+    }
+    if (evaluateTexture) {
+        // The clipped region proposes a point. Its actual material, not the
+        // region average, determines emission and validates reused samples.
+        maps = sourceMaterialMaps(maps, uv, 0.0);
+        if (maps.specular < 0) return false;
+        float intensity = labPbrEmission(textureLod(textures[nonuniformEXT(maps.specular)], uv, 0.0).a);
+        if (intensity <= 0.0) return false;
+        vec3 color = textureLod(textures[nonuniformEXT(textureID)], uv, 0.0).rgb;
+        if ((source & CHUNK_EMITTER_NEUTRAL_OVERLAY_BIT) != 0u) {
+            vec4 overlay = sampleTexture(textures[nonuniformEXT(worldUBO.overlayTextureID)], ivec2(0, 10), 0, false);
+            color = applySurfaceOverlay(color, overlay.rgb, 1.0 - overlay.a);
+        }
+        radiance = color * intensity;
+    }
+    return true;
 }
 
 bool areaLightMatchesReservoirSource(AreaLightReservoir reservoir, ChunkPackedLight light) {
-    if (excludedWaterEmitter(light, reservoir.point)) return false;
+    vec3 radiance;
+    if (!sampleChunkEmitter(light, reservoir.point,
+                            areaLightScenePoint(reservoir.sourceChunkIndex, reservoir.point), radiance)) return false;
     vec3 reservoirNormal = normalizeF(reservoir.normal, vec3(0.0, 1.0, 0.0));
-    uint sourceFaces = effectiveMaterialFaces(floatBitsToUint(light.normal.w));
+    uint source = floatBitsToUint(light.normal.w);
+    uint sourceFaces = effectiveMaterialFaces(source);
     if (sourceFaces == (materialCullFrontBit | materialCullBackBit)) return false;
-    vec3 lightNormal = emissionVisibleNormal(floatBitsToUint(light.normal.w),
-        normalizeF(light.normal.xyz, vec3(0.0, 1.0, 0.0)));
+    vec3 lightNormal = emissionVisibleNormal(source, normalizeF(light.normal.xyz, vec3(0.0, 1.0, 0.0)));
     float alignment = dot(lightNormal, reservoirNormal);
     if (sourceFaces == 0u) alignment = abs(alignment);
     if (alignment < ADV_AREA_LIGHT_RESERVOIR_SOURCE_NORMAL_THRESHOLD) { return false; }
     vec3 emissionTolerance = ADV_AREA_LIGHT_RESERVOIR_SOURCE_EMISSION_RELATIVE_EPSILON *
-                             max(max(abs(light.radiance.xyz), abs(reservoir.emission)), vec3(1.0));
-    if (!all(lessThanEqual(abs(light.radiance.xyz - reservoir.emission), emissionTolerance))) { return false; }
+                             max(max(abs(radiance), abs(reservoir.emission)), vec3(1.0));
+    if (!all(lessThanEqual(abs(radiance - reservoir.emission), emissionTolerance))) { return false; }
 
     vec3 p0 = light.p0Area.xyz;
     vec3 p1 = light.p1.xyz;
@@ -310,7 +334,7 @@ bool tryGetAreaLightNeighborhoodIndex(vec3 scenePos, out uint centerChunkIndex) 
     centerChunkIndex = ADV_INVALID_AREA_LIGHT_SOURCE_INDEX;
     int resolvedCenterChunkIndex = -1;
     ivec3 centerChunkOrigin = ivec3(0);
-    ivec3 sectionCoordinate = ivec3(floor((scenePos + vec3(worldUBO.cameraPos.xyz)) / 16.0));
+    ivec3 sectionCoordinate = ivec3(floor((dvec3(scenePos) + worldUBO.cameraPos.xyz) / 16.0));
     if (!tryGetChunkIndexFromSectionCoordinate(sectionCoordinate, worldUBO, resolvedCenterChunkIndex, centerChunkOrigin)) {
         return false;
     }
@@ -366,8 +390,7 @@ vec3 evaluateAreaLightSampleContribution(SampledSurface surface,
         return vec3(0.0);
     }
 
-    vec3 sampledPointScene = areaLightWorldToScene(sampledPoint);
-    vec3 lightVector = sampledPointScene - surface.worldPos;
+    vec3 lightVector = sampledPoint - surface.worldPos;
     float distance2 = dot(lightVector, lightVector);
     if (!isFiniteFloat(distance2) || distance2 <= 1e-8) { return vec3(0.0); }
 
@@ -477,10 +500,12 @@ bool areaSampleLights(SampledSurface surface,
     vec3 lightNormal;
     float areaPdf;
     sampleAreaLightPoint(light, candidateSeed, sampledPoint, lightNormal, areaPdf);
-    if (excludedWaterEmitter(chunkLight, sampledPoint)) return false;
+    vec3 scenePoint = areaLightScenePoint(sourceChunkIndex, sampledPoint);
+    vec3 radiance;
+    if (!sampleChunkEmitter(chunkLight, sampledPoint, scenePoint, radiance)) return false;
     uint sourceFaces = effectiveMaterialFaces(floatBitsToUint(chunkLight.normal.w));
     if (sourceFaces == (materialCullBackBit | materialCullFrontBit)) return false;
-    if (sourceFaces == 0u && dot(lightNormal, surface.worldPos - areaLightWorldToScene(sampledPoint)) < 0.0) {
+    if (sourceFaces == 0u && dot(lightNormal, surface.worldPos - scenePoint) < 0.0) {
         lightNormal = -lightNormal;
     }
     if (areaPdf <= 1e-8) { return false; }
@@ -488,7 +513,7 @@ bool areaSampleLights(SampledSurface surface,
     float targetFunction = 0.0;
     evaluateAreaLightSampleContribution(surface, viewDir, referenceUv, referenceWorldPos, atlasUvMin, atlasUvMax,
                                         dPduWorld, dPdvWorld, baseGeoNormal, traceLocalHeight, normalTextureID,
-                                        maxDepthWorld, light.emission.rgb, sampledPoint, lightNormal, true,
+                                        maxDepthWorld, radiance, scenePoint, lightNormal, true,
                                         targetFunction);
     if (targetFunction <= 1e-8) { return false; }
 
@@ -497,7 +522,7 @@ bool areaSampleLights(SampledSurface surface,
 
     lightSample.point = sampledPoint;
     lightSample.normal = lightNormal;
-    lightSample.emission = light.emission.rgb;
+    lightSample.emission = radiance;
     lightSample.targetFunction = targetFunction;
     lightSample.contributionWeight = 1.0 / proposalPdf;
     lightSample.confidence = 1.0;

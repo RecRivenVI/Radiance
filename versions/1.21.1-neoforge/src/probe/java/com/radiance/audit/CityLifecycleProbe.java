@@ -110,15 +110,17 @@ final class CityLifecycleProbe {
                 }
                 case "steady" -> {
                     if (elapsed(now, 20)) {
-                        if (!mc.player.getAbilities().flying)
+                        if (!mc.player.getAbilities().mayfly)
                             throw new IllegalStateException(
-                                    "Frozen city must already be in creative flight");
+                                    "Frozen city must permit the diagnostic flight");
                         var uuid = mc.player.getUUID();
                         var server = mc.getSingleplayerServer();
                         operation =
                                 server.submit(
                                         () -> {
                                             var p = server.getPlayerList().getPlayer(uuid);
+                                            p.getAbilities().flying = true;
+                                            p.onUpdateAbilities();
                                             p.teleportTo(
                                                     p.serverLevel(), originX, 384, originZ, -90, 0);
                                         });

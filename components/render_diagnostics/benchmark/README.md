@@ -15,7 +15,7 @@ Use Java 21 and the repository wrapper:
 python -X utf8 -m unittest discover -s Modules/RadianceAudit/benchmark -p test_fixture.py
 ```
 
-Python tooling uses `nbtlib==2.0.4`. The launcher is PowerShell 7. Build outputs are in the Audit
+Python tooling uses the dependencies in [requirements.txt](requirements.txt). The launcher is PowerShell 7. Build outputs are in the Audit
 module's `build/libs`. The normal Radiance/MCVR artifacts are not rebuilt by these Java-only targets.
 The NeoForge adapter uses the existing compile toolchain; no fork classes or native collector are
 included. The Fabric entry uses the loader's static-method entrypoint adapter, so it does not need

@@ -52,10 +52,10 @@ void DlssFrameGeneration::blurHudless(Framework &f,
         !std::isfinite(parameters.radius * parameters.radiusMultiplier))
         throw std::invalid_argument("Invalid FG background blur parameters");
     if (hudlessBlurScratch_.empty()) {
-        hudlessBlurScratch_.resize(f.swapchain()->imageCount());
-        hudlessBlurTables_.resize(f.swapchain()->imageCount());
-        hudlessBlurWeighted_.resize(f.swapchain()->imageCount());
-        hudlessWeightTables_.resize(f.swapchain()->imageCount());
+        hudlessBlurScratch_.resize(f.mainFrameSlotCount());
+        hudlessBlurTables_.resize(f.mainFrameSlotCount());
+        hudlessBlurWeighted_.resize(f.mainFrameSlotCount());
+        hudlessWeightTables_.resize(f.mainFrameSlotCount());
         hudlessBlurSampler_ = vk::Sampler::create(f.device(), VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_NEAREST,
                                                   VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE);
     }
@@ -146,7 +146,7 @@ void DlssFrameGeneration::captureHudless(Framework &f,
                                          FrameworkContext &frame,
                                          const std::shared_ptr<vk::DeviceLocalImage> &color) {
     if (!DLSSModule::fgAvailable || failed_) return;
-    if (hudless_.empty()) hudless_.resize(f.swapchain()->imageCount());
+    if (hudless_.empty()) hudless_.resize(f.mainFrameSlotCount());
     auto &image = hudless_[frame.frameIndex];
     if (!image)
         image = vk::DeviceLocalImage::create(
@@ -157,7 +157,7 @@ void DlssFrameGeneration::captureHudless(Framework &f,
     const auto savedLayout = color->imageLayout();
     // World post-processing owns RGB, not GUI coverage. Establish alpha only at
     // the world/GUI boundary; arbitrary shader packs may leave world alpha at 1.
-    if (coverageResetTables_.empty()) coverageResetTables_.resize(f.swapchain()->imageCount());
+    if (coverageResetTables_.empty()) coverageResetTables_.resize(f.mainFrameSlotCount());
     auto &resetTable = coverageResetTables_[frame.frameIndex];
     if (!resetTable) {
         resetTable =
@@ -212,7 +212,7 @@ bool DlssFrameGeneration::initialize(Framework &f,
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     auto shader = vk::Shader::create(
         device_, (Renderer::folderPath / "shaders/world/upscaler/dlss_device_depth_comp.spv").string());
-    for (uint32_t i = 0; i < f.swapchain()->imageCount(); ++i) {
+    for (uint32_t i = 0; i < f.mainFrameSlotCount(); ++i) {
         auto table =
             vk::DescriptorTableBuilder{}
                 .beginDescriptorLayoutSet()
@@ -239,7 +239,7 @@ bool DlssFrameGeneration::initialize(Framework &f,
         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
     auto uiShader = vk::Shader::create(
         device_, (Renderer::folderPath / "shaders/world/upscaler/dlss_ui_coverage_comp.spv").string());
-    for (uint32_t i = 0; i < f.swapchain()->imageCount(); ++i) {
+    for (uint32_t i = 0; i < f.mainFrameSlotCount(); ++i) {
         auto table = vk::DescriptorTableBuilder{}
                          .beginDescriptorLayoutSet()
                          .beginDescriptorLayoutSetBinding()
@@ -382,13 +382,15 @@ DlssFrameGeneration::record(Framework &f, FrameworkContext &frame, const std::sh
         return color;
     }
     const glm::dvec3 position(ubo.cameraPos);
-    const auto translation = glm::translate(glm::mat4(1), glm::vec3(position - previousPosition_));
+    const bool restart = reset_ || glm::length(position - previousPosition_) > 64.0 ||
+                         glm::length(position - reconstructionOrigin_) > mcvr::view::reconstructionOriginRange;
+    if (restart) reconstructionOrigin_ = position;
+    // Depth and motion describe the effected camera, including view bobbing.
+    // Keep both matrices in one stable local space, as in RR and SR.
+    const auto view = mcvr::view::reconstructionView(ubo.cameraEffectedViewMat, position, reconstructionOrigin_);
     const auto previous =
-        previousProjection_ * previousView_ * translation * ubo.cameraViewMatInv * ubo.cameraProjMatInv;
-    auto constants =
-        mcvr::slConstants(viewFrame.inputSize, viewFrame.current.cameraJitter, viewFrame.current.cameraViewMat, p,
-                          previous, reset_ || glm::length(position - previousPosition_) > 64.0);
-    constants.cameraPos = {float(position.x), float(position.y), float(position.z)};
+        restart ? glm::mat4(1) : previousProjection_ * previousView_ * glm::inverse(view) * ubo.cameraProjMatInv;
+    auto constants = mcvr::slConstants(viewFrame.inputSize, viewFrame.current.cameraJitter, view, p, previous, restart);
     if (!sl.check(sl.slSetConstants(constants, *token, viewport), "FG constants")) {
         failed_ = true;
         sl.disableFG();
@@ -446,7 +448,7 @@ DlssFrameGeneration::record(Framework &f, FrameworkContext &frame, const std::sh
         return color;
     }
     previousProjection_ = p;
-    previousView_ = ubo.cameraViewMat;
+    previousView_ = view;
     previousPosition_ = position;
     generated_ = true;
     reset_ = false;

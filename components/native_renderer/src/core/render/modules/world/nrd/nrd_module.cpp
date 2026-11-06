@@ -1,8 +1,10 @@
 #include "core/render/view_frame.hpp"
+#include "core/diagnostics/ponder_capture.hpp"
 #include "core/logging.hpp"
 #include "nrd_module.hpp"
 #include "core/render/buffers.hpp"
 #include "core/render/pipeline.hpp"
+#include "core/render/modules/world/ray_tracing/ray_tracing_module.hpp"
 #include "core/render/render_framework.hpp"
 #include "core/render/renderer.hpp"
 #include <algorithm>
@@ -54,16 +56,6 @@ void NrdModule::updateReblurSettings() {
     settings.roughnessFraction = std::clamp(settings.roughnessFraction, 0.0f, 1.0f);
     settings.planeDistanceSensitivity = std::clamp(settings.planeDistanceSensitivity, 0.0f, 1.0f);
 
-    settings.specularProbabilityThresholdsForMvModification[0] =
-        std::clamp(settings.specularProbabilityThresholdsForMvModification[0], 0.0f, 1.0f);
-    settings.specularProbabilityThresholdsForMvModification[1] =
-        std::clamp(settings.specularProbabilityThresholdsForMvModification[1], 0.0f, 1.0f);
-    if (settings.specularProbabilityThresholdsForMvModification[0] >
-        settings.specularProbabilityThresholdsForMvModification[1]) {
-        std::swap(settings.specularProbabilityThresholdsForMvModification[0],
-                  settings.specularProbabilityThresholdsForMvModification[1]);
-    }
-
     settings.fireflySuppressorMinRelativeScale = std::clamp(settings.fireflySuppressorMinRelativeScale, 1.0f, 3.0f);
     settings.minMaterialForDiffuse = std::max(settings.minMaterialForDiffuse, 0.0f);
     settings.minMaterialForSpecular = std::max(settings.minMaterialForSpecular, 0.0f);
@@ -91,9 +83,9 @@ void NrdModule::init(std::shared_ptr<Framework> framework, std::shared_ptr<World
     clearRadianceImages_.resize(size);
     baseEmissionImages_.resize(size);
     fogImages_.resize(size);
-    diffuseHitDepthImages_.resize(size);
     specularHitDepthImages_.resize(size);
     refractionRadianceImages_.resize(size);
+    for (auto &images : opticalGuideImages_) images.resize(size);
     denoisedRadianceImages_.resize(size);
     denoisedDiffuseRadianceImages_.resize(size);
     denoisedSpecularRadianceImages_.resize(size);
@@ -108,7 +100,8 @@ bool NrdModule::setOrCreateInputImages(std::vector<std::shared_ptr<vk::DeviceLoc
     auto createImage = [&](uint32_t index) {
         images[index] = vk::DeviceLocalImage::create(
             framework->device(), framework->vma(), false, width_, height_, 1, formats[index],
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                (index >= 13 ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0));
     };
 
     for (uint32_t i = 0; i < images.size(); i++) {
@@ -133,9 +126,9 @@ bool NrdModule::setOrCreateInputImages(std::vector<std::shared_ptr<vk::DeviceLoc
     clearRadianceImages_[frameIndex] = images[8];
     baseEmissionImages_[frameIndex] = images[9];
     fogImages_[frameIndex] = images[10];
-    diffuseHitDepthImages_[frameIndex] = images[11];
-    specularHitDepthImages_[frameIndex] = images[12];
-    refractionRadianceImages_[frameIndex] = images[13];
+    specularHitDepthImages_[frameIndex] = images[11];
+    refractionRadianceImages_[frameIndex] = images[12];
+    for (size_t i = 0; i < opticalGuideImages_.size(); ++i) opticalGuideImages_[i][frameIndex] = images[13 + i];
 
     return true;
 }
@@ -164,6 +157,8 @@ void NrdModule::build() {
     for (auto &history : histories_) {
         history.wrapper_ = NrdWrapper::create(framework, width_, height_);
         history.wrapper_->setREBLURSettings(reblurSettings_);
+        history.transmissionWrapper_ = NrdWrapper::create(framework, width_, height_, nrd::Denoiser::REBLUR_SPECULAR);
+        history.transmissionWrapper_->setREBLURSettings(reblurSettings_);
     }
 
     initDescriptorTables();
@@ -265,14 +260,6 @@ void NrdModule::setAttributes(int attributeCount, std::vector<std::string> &attr
             reblurSettings_.roughnessFraction = parseFloat(value, reblurSettings_.roughnessFraction);
         } else if (key == "render_pipeline.module.nrd.attribute.plane_distance_sensitivity") {
             reblurSettings_.planeDistanceSensitivity = parseFloat(value, reblurSettings_.planeDistanceSensitivity);
-        } else if (key ==
-                   "render_pipeline.module.nrd.attribute.specular_probability_thresholds_for_mv_modification_min") {
-            reblurSettings_.specularProbabilityThresholdsForMvModification[0] =
-                parseFloat(value, reblurSettings_.specularProbabilityThresholdsForMvModification[0]);
-        } else if (key ==
-                   "render_pipeline.module.nrd.attribute.specular_probability_thresholds_for_mv_modification_max") {
-            reblurSettings_.specularProbabilityThresholdsForMvModification[1] =
-                parseFloat(value, reblurSettings_.specularProbabilityThresholdsForMvModification[1]);
         } else if (key == "render_pipeline.module.nrd.attribute.firefly_suppressor_min_relative_scale") {
             reblurSettings_.fireflySuppressorMinRelativeScale =
                 parseFloat(value, reblurSettings_.fireflySuppressorMinRelativeScale);
@@ -306,10 +293,7 @@ void NrdModule::bindTexture(std::shared_ptr<vk::Sampler> sampler,
                             int index) {}
 
 void NrdModule::onResourceReload() {
-    for (auto &history : histories_) {
-        history.nrdFrameIndex_ = 0;
-        history.lastRefractionHistoryFrameIndex_ = -1;
-    }
+    for (auto &history : histories_) { history.nrdFrameIndex_ = 0; }
 }
 
 void NrdModule::preClose() {
@@ -322,15 +306,16 @@ void NrdModule::initDescriptorTables() {
 
     composeDescriptorTables_.resize(size);
     prepareDescriptorTables_.resize(size);
+    transmission_.resize(size);
 
     for (uint32_t i = 0; i < size; ++i) {
-        {
+        for (int layer = 0; layer < 2; ++layer) {
             auto builder = vk::DescriptorTableBuilder{};
             auto &set0BindingBuilder = builder
                                            .beginDescriptorLayoutSet() // set 0
                                            .beginDescriptorLayoutSetBinding();
 
-            for (int j = 0; j < 12; j++) {
+            for (int j = 0; j < 17; j++) {
                 set0BindingBuilder.defineDescriptorLayoutSetBinding({
                     .binding = static_cast<uint32_t>(j),
                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -365,8 +350,14 @@ void NrdModule::initDescriptorTables() {
                 .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT,
             });
 
-            prepareDescriptorTables_[i] =
-                set2BindingBuilder.endDescriptorLayoutSetBinding().endDescriptorLayoutSet().build(framework->device());
+            auto table = set2BindingBuilder.endDescriptorLayoutSetBinding()
+                             .endDescriptorLayoutSet()
+                             .definePushConstant({VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(glm::vec4)})
+                             .build(framework->device());
+            if (layer == 0)
+                prepareDescriptorTables_[i] = table;
+            else
+                transmission_[i].prepare = table;
         }
 
         {
@@ -375,7 +366,7 @@ void NrdModule::initDescriptorTables() {
                                            .beginDescriptorLayoutSet() // set 0
                                            .beginDescriptorLayoutSetBinding();
 
-            for (int j = 0; j < 9; j++) {
+            for (int j = 0; j < 13; j++) {
                 set0BindingBuilder.defineDescriptorLayoutSetBinding({
                     .binding = static_cast<uint32_t>(j),
                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -389,7 +380,7 @@ void NrdModule::initDescriptorTables() {
                                            .beginDescriptorLayoutSet() // set 1
                                            .beginDescriptorLayoutSetBinding();
 
-            for (int j = 0; j < 7; j++) {
+            for (int j = 0; j < 4; j++) {
                 set1BindingBuilder.defineDescriptorLayoutSetBinding({
                     .binding = static_cast<uint32_t>(j),
                     .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
@@ -433,18 +424,7 @@ void NrdModule::initImages() {
     nrdLinearDepthImages_.resize(size);
     denoisedDiffuseRadianceImages_.resize(size);
     denoisedSpecularRadianceImages_.resize(size);
-    refractionHistoryRadianceImages_.resize(size);
-    refractionHistoryDepthImages_.resize(size);
     userTexturePools_.resize(size);
-
-    for (uint32_t i = 0; i < size; i++) {
-        refractionHistoryRadianceImages_[i] = vk::DeviceLocalImage::create(
-            framework->device(), framework->vma(), false, width_, height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
-            VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-        refractionHistoryDepthImages_[i] =
-            vk::DeviceLocalImage::create(framework->device(), framework->vma(), false, width_, height_, 1,
-                                         VK_FORMAT_R16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
-    }
 
     for (uint32_t i = 0; i < size; i++) {
         userTexturePools_[i] =
@@ -459,9 +439,8 @@ void NrdModule::initImages() {
         prepareDescriptorTables_[i]->bindImage(normalRoughnessImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 6);
         prepareDescriptorTables_[i]->bindImage(linearDepthImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 7);
         prepareDescriptorTables_[i]->bindImage(clearRadianceImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 8);
-        prepareDescriptorTables_[i]->bindImage(diffuseHitDepthImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 9);
-        prepareDescriptorTables_[i]->bindImage(specularHitDepthImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 10);
-        prepareDescriptorTables_[i]->bindImage(refractionRadianceImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 11);
+        prepareDescriptorTables_[i]->bindImage(specularHitDepthImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 9);
+        prepareDescriptorTables_[i]->bindImage(refractionRadianceImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 10);
 
         nrdDiffuseRadianceImages_[i] = vk::DeviceLocalImage::create(
             framework->device(), framework->vma(), false, width_, height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
@@ -518,53 +497,53 @@ void NrdModule::initImages() {
             denoisedSpecularRadianceImages_[i];
 
         composeDescriptorTables_[i]->bindImage(denoisedRadianceImages_[i], VK_IMAGE_LAYOUT_GENERAL, 1, 2);
-
-        uint32_t fallbackPrevIndex = (i + 1) % size;
-        composeDescriptorTables_[i]->bindImage(refractionHistoryRadianceImages_[fallbackPrevIndex],
-                                               VK_IMAGE_LAYOUT_GENERAL, 1, 3);
-        composeDescriptorTables_[i]->bindImage(refractionHistoryDepthImages_[fallbackPrevIndex],
-                                               VK_IMAGE_LAYOUT_GENERAL, 1, 4);
-        composeDescriptorTables_[i]->bindImage(refractionHistoryRadianceImages_[i], VK_IMAGE_LAYOUT_GENERAL, 1, 5);
-        composeDescriptorTables_[i]->bindImage(refractionHistoryDepthImages_[i], VK_IMAGE_LAYOUT_GENERAL, 1, 6);
+        auto &transmission = transmission_[i];
+        transmission.pool =
+            std::make_shared<std::array<std::shared_ptr<vk::DeviceLocalImage>, size_t(nrd::ResourceType::MAX_NUM)>>();
+        std::array<std::shared_ptr<vk::DeviceLocalImage>, 17> source{directRadianceImages_[i],
+                                                                     diffuseIndirectRadianceImages_[i],
+                                                                     specularIndirectRadianceImages_[i],
+                                                                     diffuseAlbedoMetallicImages_[i],
+                                                                     specularAlbedoImages_[i],
+                                                                     motionVectorImages_[i],
+                                                                     normalRoughnessImages_[i],
+                                                                     linearDepthImages_[i],
+                                                                     clearRadianceImages_[i],
+                                                                     specularHitDepthImages_[i],
+                                                                     refractionRadianceImages_[i],
+                                                                     opticalGuideImages_[0][i],
+                                                                     opticalGuideImages_[1][i],
+                                                                     opticalGuideImages_[2][i],
+                                                                     opticalGuideImages_[3][i],
+                                                                     opticalGuideImages_[4][i],
+                                                                     opticalGuideImages_[5][i]};
+        for (uint32_t b = 0; b < source.size(); ++b)
+            transmission.prepare->bindImage(source[b], VK_IMAGE_LAYOUT_GENERAL, 0, b);
+        for (uint32_t b = 11; b < source.size(); ++b)
+            prepareDescriptorTables_[i]->bindImage(source[b], VK_IMAGE_LAYOUT_GENERAL, 0, b);
+        const std::array<VkFormat, 5> formats{VK_FORMAT_R16G16B16A16_SFLOAT, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                              VK_FORMAT_R16G16_SFLOAT, NrdWrapper::getNormalRoughnessFormat(),
+                                              VK_FORMAT_R16_SFLOAT};
+        const std::array<nrd::ResourceType, 5> types{
+            nrd::ResourceType::IN_DIFF_RADIANCE_HITDIST, nrd::ResourceType::IN_SPEC_RADIANCE_HITDIST,
+            nrd::ResourceType::IN_MV, nrd::ResourceType::IN_NORMAL_ROUGHNESS, nrd::ResourceType::IN_VIEWZ};
+        for (uint32_t b = 0; b < formats.size(); ++b) {
+            transmission.inputs[b] =
+                vk::DeviceLocalImage::create(framework->device(), framework->vma(), false, width_, height_, 1,
+                                             formats[b], VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+            transmission.prepare->bindImage(transmission.inputs[b], VK_IMAGE_LAYOUT_GENERAL, 1, b);
+            transmission.pool->at(size_t(types[b])) = transmission.inputs[b];
+        }
+        transmission.output = vk::DeviceLocalImage::create(framework->device(), framework->vma(), false, width_,
+                                                           height_, 1, VK_FORMAT_R16G16B16A16_SFLOAT,
+                                                           VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        transmission.pool->at(size_t(nrd::ResourceType::OUT_SPEC_RADIANCE_HITDIST)) = transmission.output;
+        composeDescriptorTables_[i]->bindImage(transmission.output, VK_IMAGE_LAYOUT_GENERAL, 1, 3);
+        composeDescriptorTables_[i]->bindImage(opticalGuideImages_[0][i], VK_IMAGE_LAYOUT_GENERAL, 0, 9);
+        composeDescriptorTables_[i]->bindImage(opticalGuideImages_[2][i], VK_IMAGE_LAYOUT_GENERAL, 0, 10);
+        composeDescriptorTables_[i]->bindImage(opticalGuideImages_[4][i], VK_IMAGE_LAYOUT_GENERAL, 0, 11);
+        composeDescriptorTables_[i]->bindImage(opticalGuideImages_[5][i], VK_IMAGE_LAYOUT_GENERAL, 0, 12);
     }
-
-    auto commandPool = vk::CommandPool::create(framework->physicalDevice(), framework->device());
-    auto commandBuffer = vk::CommandBuffer::create(framework->device(), commandPool);
-    commandBuffer->begin(VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT);
-
-    for (uint32_t i = 0; i < size; i++) {
-        auto clearImage = [&](const std::shared_ptr<vk::DeviceLocalImage> &image, const VkClearColorValue &clearValue) {
-            commandBuffer->barriersBufferImage({},
-                                               {{
-                                                   .srcStageMask = VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT,
-                                                   .srcAccessMask = 0,
-                                                   .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                                                   .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                                   .oldLayout = image->imageLayout(),
-                                                   .newLayout = VK_IMAGE_LAYOUT_GENERAL,
-                                                   .srcQueueFamilyIndex = framework->physicalDevice()->mainQueueIndex(),
-                                                   .dstQueueFamilyIndex = framework->physicalDevice()->mainQueueIndex(),
-                                                   .image = image,
-                                                   .subresourceRange = vk::wholeColorSubresourceRange,
-                                               }});
-            image->imageLayout() = VK_IMAGE_LAYOUT_GENERAL;
-            vkCmdClearColorImage(commandBuffer->vkCommandBuffer(), image->vkImage(), VK_IMAGE_LAYOUT_GENERAL,
-                                 &clearValue, 1, &vk::wholeColorSubresourceRange);
-        };
-
-        const VkClearColorValue clearRefraction = {{0.0f, 0.0f, 0.0f, 0.0f}};
-        const VkClearColorValue clearDepth = {{65504.0f, 0.0f, 0.0f, 0.0f}};
-        clearImage(refractionHistoryRadianceImages_[i], clearRefraction);
-        clearImage(refractionHistoryDepthImages_[i], clearDepth);
-    }
-
-    commandBuffer->end();
-    VkResult result = commandBuffer->submitMainQueueIndividual(framework->device());
-    if (result != VK_SUCCESS) {
-        framework->recordFailure(result, "vkQueueSubmit(NRD history clear)");
-        return;
-    }
-    if (framework->waitRenderQueueIdle() != VK_SUCCESS) { return; }
 }
 
 void NrdModule::initPipeline() {
@@ -601,7 +580,6 @@ NrdModuleContext::NrdModuleContext(std::shared_ptr<FrameworkContext> frameworkCo
       clearRadianceImage(nrdModule->clearRadianceImages_[frameworkContext->frameIndex]),
       baseEmissionImage(nrdModule->baseEmissionImages_[frameworkContext->frameIndex]),
       fogImage(nrdModule->fogImages_[frameworkContext->frameIndex]),
-      diffuseHitDepthImage(nrdModule->diffuseHitDepthImages_[frameworkContext->frameIndex]),
       specularHitDepthImage(nrdModule->specularHitDepthImages_[frameworkContext->frameIndex]),
       refractionRadianceImage(nrdModule->refractionRadianceImages_[frameworkContext->frameIndex]),
       nrdDiffuseRadianceImage(nrdModule->nrdDiffuseRadianceImages_[frameworkContext->frameIndex]),
@@ -611,8 +589,6 @@ NrdModuleContext::NrdModuleContext(std::shared_ptr<FrameworkContext> frameworkCo
       nrdLinearDepthImage(nrdModule->nrdLinearDepthImages_[frameworkContext->frameIndex]),
       denoisedDiffuseRadianceImage(nrdModule->denoisedDiffuseRadianceImages_[frameworkContext->frameIndex]),
       denoisedSpecularRadianceImage(nrdModule->denoisedSpecularRadianceImages_[frameworkContext->frameIndex]),
-      refractionHistoryRadianceImage(nrdModule->refractionHistoryRadianceImages_[frameworkContext->frameIndex]),
-      refractionHistoryDepthImage(nrdModule->refractionHistoryDepthImages_[frameworkContext->frameIndex]),
       prepareDescriptorTable(nrdModule->prepareDescriptorTables_[frameworkContext->frameIndex]),
       composeDescriptorTable(nrdModule->composeDescriptorTables_[frameworkContext->frameIndex]),
       userTexturePool(nrdModule->userTexturePools_[frameworkContext->frameIndex]),
@@ -676,6 +652,20 @@ void NrdModuleContext::render() {
 
     // config nrd
     {
+        auto &history = module->histories_.at(viewFrame.view);
+        const glm::dvec3 position(viewFrame.current.cameraPos);
+        if (history.nrdFrameIndex_ == 0 ||
+            glm::length(position - history.reconstructionOrigin) > mcvr::view::reconstructionOriginRange) {
+            history.reconstructionOrigin = position;
+            history.nrdFrameIndex_ = 0;
+        }
+        const auto currentView = mcvr::view::reconstructionView(viewFrame.current.cameraEffectedViewMat, position,
+                                                                history.reconstructionOrigin);
+        const auto previousView =
+            history.nrdFrameIndex_ == 0 ?
+                currentView :
+                mcvr::view::reconstructionView(viewFrame.previous->cameraEffectedViewMat,
+                                               glm::dvec3(viewFrame.previous->cameraPos), history.reconstructionOrigin);
         nrd::CommonSettings commonSettings = {};
         glm::mat4 nrdViewToClip = viewFrame.current.cameraProjMat;
         glm::mat4 nrdViewToClipPrev = viewFrame.previous->cameraProjMat;
@@ -686,10 +676,8 @@ void NrdModuleContext::render() {
 
         std::memcpy(commonSettings.viewToClipMatrix, glm::value_ptr(nrdViewToClip), sizeof(glm::mat4));
         std::memcpy(commonSettings.viewToClipMatrixPrev, glm::value_ptr(nrdViewToClipPrev), sizeof(glm::mat4));
-        std::memcpy(commonSettings.worldToViewMatrix, glm::value_ptr(viewFrame.current.cameraEffectedViewMat),
-                    sizeof(glm::mat4));
-        std::memcpy(commonSettings.worldToViewMatrixPrev, glm::value_ptr(viewFrame.previous->cameraEffectedViewMat),
-                    sizeof(glm::mat4));
+        std::memcpy(commonSettings.worldToViewMatrix, glm::value_ptr(currentView), sizeof(glm::mat4));
+        std::memcpy(commonSettings.worldToViewMatrixPrev, glm::value_ptr(previousView), sizeof(glm::mat4));
 
         commonSettings.resourceSize[0] = static_cast<uint16_t>(module->width_);
         commonSettings.resourceSize[1] = static_cast<uint16_t>(module->height_);
@@ -722,6 +710,8 @@ void NrdModuleContext::render() {
 
         module->histories_.at(viewFrame.view).wrapper_->setCommonSettings(commonSettings);
         module->histories_.at(viewFrame.view).wrapper_->setUserPoolTexture(userTexturePool);
+        history.transmissionWrapper_->setCommonSettings(commonSettings);
+        history.transmissionWrapper_->setUserPoolTexture(module->transmission_.at(slot).pool);
         module->histories_.at(viewFrame.view).nrdFrameIndex_++;
     }
 
@@ -739,9 +729,10 @@ void NrdModuleContext::render() {
         addBarrier(imageBarriers, normalRoughnessImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, linearDepthImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, clearRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
-        addBarrier(imageBarriers, diffuseHitDepthImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, specularHitDepthImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, refractionRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
+        for (auto &images : module->opticalGuideImages_)
+            addBarrier(imageBarriers, images[slot], VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, nrdDiffuseRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, nrdSpecularRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, nrdMotionVectorImage, VK_IMAGE_LAYOUT_GENERAL);
@@ -752,8 +743,35 @@ void NrdModuleContext::render() {
 
         worldCommandBuffer->bindDescriptorTable(prepareDescriptorTable, VK_PIPELINE_BIND_POINT_COMPUTE)
             ->bindComputePipeline(module->preparePipeline_);
+        const auto &parameters = module->reblurSettings_.hitDistanceParameters;
+        const glm::vec4 normalization(parameters.A, parameters.B, parameters.C, 0.0f);
+        vkCmdPushConstants(worldCommandBuffer->vkCommandBuffer(), prepareDescriptorTable->vkPipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(normalization), &normalization);
         vkCmdDispatch(worldCommandBuffer->vkCommandBuffer(), (module->width_ + 15) / 16, (module->height_ + 15) / 16,
                       1);
+    }
+
+    {
+        auto &transmission = module->transmission_.at(slot);
+        transmission.prepare->bindBuffer(worldUBOBuffer, 2, 0);
+        std::vector<vk::CommandBuffer::ImageMemoryBarrier> barriers;
+        for (auto &image : transmission.inputs) addBarrier(barriers, image, VK_IMAGE_LAYOUT_GENERAL);
+        worldCommandBuffer->barriersBufferImage({}, barriers);
+        worldCommandBuffer->bindDescriptorTable(transmission.prepare, VK_PIPELINE_BIND_POINT_COMPUTE)
+            ->bindComputePipeline(module->preparePipeline_);
+        const auto &p = module->reblurSettings_.hitDistanceParameters;
+        const glm::vec4 normalization(p.A, p.B, p.C, 1.0f);
+        vkCmdPushConstants(worldCommandBuffer->vkCommandBuffer(), transmission.prepare->vkPipelineLayout(),
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(normalization), &normalization);
+        vkCmdDispatch(worldCommandBuffer->vkCommandBuffer(), (module->width_ + 15) / 16, (module->height_ + 15) / 16,
+                      1);
+        barriers.clear();
+        for (auto &image : transmission.inputs) addBarrier(barriers, image, VK_IMAGE_LAYOUT_GENERAL);
+        addBarrier(barriers, transmission.output, VK_IMAGE_LAYOUT_GENERAL);
+        worldCommandBuffer->barriersBufferImage({}, barriers);
+        nrd::Identifier id = nrd::Identifier(nrd::Denoiser::REBLUR_SPECULAR);
+        module->histories_.at(viewFrame.view)
+            .transmissionWrapper_->denoise(&id, 1, worldCommandBuffer->vkCommandBuffer());
     }
 
     // denoise
@@ -773,26 +791,6 @@ void NrdModuleContext::render() {
 
     // composition
     {
-        const uint32_t historyImageCount = module->worldPipeline_.lock()->framesPerView();
-        const uint32_t viewBase = (context->frameIndex / historyImageCount) * historyImageCount;
-        const uint32_t currentFrameIndex = context->frameIndex;
-        uint32_t prevFrameIndex = viewBase + (currentFrameIndex + historyImageCount - 1) % historyImageCount;
-        if (module->histories_.at(viewFrame.view).lastRefractionHistoryFrameIndex_ >= 0) {
-            prevFrameIndex =
-                static_cast<uint32_t>(module->histories_.at(viewFrame.view).lastRefractionHistoryFrameIndex_);
-        }
-        if (prevFrameIndex == currentFrameIndex && historyImageCount > 1) {
-            prevFrameIndex = viewBase + (currentFrameIndex + 1) % historyImageCount;
-        }
-
-        auto refractionHistoryRadianceImagePrev = module->refractionHistoryRadianceImages_[prevFrameIndex];
-        auto refractionHistoryDepthImagePrev = module->refractionHistoryDepthImages_[prevFrameIndex];
-
-        composeDescriptorTable->bindImage(refractionHistoryRadianceImagePrev, VK_IMAGE_LAYOUT_GENERAL, 1, 3);
-        composeDescriptorTable->bindImage(refractionHistoryDepthImagePrev, VK_IMAGE_LAYOUT_GENERAL, 1, 4);
-        composeDescriptorTable->bindImage(refractionHistoryRadianceImage, VK_IMAGE_LAYOUT_GENERAL, 1, 5);
-        composeDescriptorTable->bindImage(refractionHistoryDepthImage, VK_IMAGE_LAYOUT_GENERAL, 1, 6);
-
         std::vector<vk::CommandBuffer::ImageMemoryBarrier> imageBarriers;
         addBarrier(imageBarriers, diffuseAlbedoMetallicImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, specularAlbedoImage, VK_IMAGE_LAYOUT_GENERAL);
@@ -802,14 +800,13 @@ void NrdModuleContext::render() {
         addBarrier(imageBarriers, baseEmissionImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, fogImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, refractionRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
+        for (auto &images : module->opticalGuideImages_)
+            addBarrier(imageBarriers, images[slot], VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, motionVectorImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, denoisedDiffuseRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, denoisedSpecularRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
-        addBarrier(imageBarriers, refractionHistoryRadianceImagePrev, VK_IMAGE_LAYOUT_GENERAL);
-        addBarrier(imageBarriers, refractionHistoryDepthImagePrev, VK_IMAGE_LAYOUT_GENERAL);
-        addBarrier(imageBarriers, refractionHistoryRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
-        addBarrier(imageBarriers, refractionHistoryDepthImage, VK_IMAGE_LAYOUT_GENERAL);
         addBarrier(imageBarriers, denoisedRadianceImage, VK_IMAGE_LAYOUT_GENERAL);
+        addBarrier(imageBarriers, module->transmission_.at(slot).output, VK_IMAGE_LAYOUT_GENERAL);
 
         worldCommandBuffer->barriersBufferImage({}, imageBarriers);
 
@@ -821,8 +818,49 @@ void NrdModuleContext::render() {
 
         vkCmdDispatch(worldCommandBuffer->vkCommandBuffer(), (module->width_ + 15) / 16, (module->height_ + 15) / 16,
                       1);
-
-        module->histories_.at(viewFrame.view).lastRefractionHistoryFrameIndex_ =
-            static_cast<int32_t>(currentFrameIndex);
+    }
+    if (auto capture = mcvr::diagnostics::PonderCapture::begin(framework, Renderer::instance().buffers(), "NRD")) {
+        for (const auto &[name, image] :
+             std::initializer_list<std::pair<const char *, std::shared_ptr<vk::DeviceLocalImage>>>{
+                 {"direct", directRadianceImage},
+                 {"diffuse", diffuseIndirectRadianceImage},
+                 {"specular", specularIndirectRadianceImage},
+                 {"transmission", refractionRadianceImage},
+                 {"clear", clearRadianceImage},
+                 {"emission", baseEmissionImage},
+                 {"motion", motionVectorImage},
+                 {"nrd-motion", nrdMotionVectorImage},
+                 {"normal-roughness", normalRoughnessImage},
+                 {"depth", linearDepthImage},
+                 {"diffuse-albedo", diffuseAlbedoMetallicImage},
+                 {"specular-albedo", specularAlbedoImage},
+                 {"specular-distance", specularHitDepthImage},
+                 {"nrd-diffuse-input", nrdDiffuseRadianceImage},
+                 {"nrd-specular-input", nrdSpecularRadianceImage},
+                 {"nrd-diffuse-output", denoisedDiffuseRadianceImage},
+                 {"nrd-specular-output", denoisedSpecularRadianceImage},
+                 {"denoised", denoisedRadianceImage}}) {
+            capture->copy(framework, worldCommandBuffer, name, image);
+        }
+        // Module contexts precede WorldPipelineContext construction. Resolve the
+        // completed owning pipeline's slot rather than that initial weak link.
+        const auto owner = module->worldPipeline_.lock();
+        for (const auto &worldContext : owner->contexts().at(context->frameIndex)->worldModuleContexts) {
+            if (auto rayContext = std::dynamic_pointer_cast<RayTracingModuleContext>(worldContext)) {
+                capture->copy(framework, worldCommandBuffer, "raw-pt", rayContext->hdrNoisyOutputImage);
+                break;
+            }
+        }
+        capture->copy(framework, worldCommandBuffer, "transmission-guide", module->opticalGuideImages_[2][slot]);
+        capture->copy(framework, worldCommandBuffer, "transmission-motion-depth", module->opticalGuideImages_[3][slot]);
+        capture->copy(framework, worldCommandBuffer, "reflection-guide", module->opticalGuideImages_[0][slot]);
+        capture->copy(framework, worldCommandBuffer, "reflection-motion-depth", module->opticalGuideImages_[1][slot]);
+        capture->copy(framework, worldCommandBuffer, "reflection-material-factor",
+                      module->opticalGuideImages_[4][slot]);
+        capture->copy(framework, worldCommandBuffer, "transmission-material-factor",
+                      module->opticalGuideImages_[5][slot]);
+        capture->copy(framework, worldCommandBuffer, "nrd-transmission-input", module->transmission_[slot].inputs[1]);
+        capture->copy(framework, worldCommandBuffer, "nrd-transmission-output", module->transmission_[slot].output);
+        capture->sealCommands(worldCommandBuffer);
     }
 }

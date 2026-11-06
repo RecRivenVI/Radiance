@@ -3,6 +3,8 @@
 
 #include "shader/world/nrd/nrd_glsl_compat.glsl"
 #include "common/shared.hpp"
+#include "shader/util/reconstruction_material.glsl"
+#include "shader/util/reconstruction_guides.glsl"
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -16,13 +18,15 @@ layout(set = 0, binding = 6, rgba16f) uniform readonly image2D refractionRadianc
 layout(set = 0, binding = 7, rg16f) uniform readonly image2D motionVectorImage;
 layout(set = 0, binding = 8, rgba16f) uniform readonly image2D fogImage;
 
+layout(set = 0, binding = 9, rgba16f) uniform readonly image2D reflectionGuideImage;
+layout(set = 0, binding = 10, rgba16f) uniform readonly image2D transmissionGuideImage;
+layout(set = 0, binding = 11, rgba8) uniform readonly image2D reflectionMaterialFactorImage;
+layout(set = 0, binding = 12, rgba8) uniform readonly image2D transmissionMaterialFactorImage;
+layout(set = 1, binding = 3, rgba16f) uniform readonly image2D denoisedTransmissionImage;
+
 layout(set = 1, binding = 0, rgba16f) uniform readonly image2D denoisedDiffuseRadianceImage;
 layout(set = 1, binding = 1, rgba16f) uniform readonly image2D denoisedSpecularRadianceImage;
 layout(set = 1, binding = 2, rgba16f) uniform writeonly image2D denoisedRadianceImage;
-layout(set = 1, binding = 3, rgba16f) uniform readonly image2D refractionHistoryRadianceImagePrev;
-layout(set = 1, binding = 4, r16f) uniform readonly image2D refractionHistoryDepthImagePrev;
-layout(set = 1, binding = 5, rgba16f) uniform writeonly image2D refractionHistoryRadianceImage;
-layout(set = 1, binding = 6, r16f) uniform writeonly image2D refractionHistoryDepthImage;
 
 layout(set = 2, binding = 0) uniform WorldUniform {
     WorldUBO worldUBO;
@@ -30,17 +34,6 @@ layout(set = 2, binding = 0) uniform WorldUniform {
 layout(set = 2, binding = 1) uniform SkyUniform {
     SkyUBO skyUBO;
 };
-
-const float kMinDiffuseAlbedo = 0.05;
-const float kMinSpecularAlbedo = 0.04;
-
-vec3 remodulateDiffuse(vec3 radiance, vec3 albedo) {
-    return radiance * max(albedo, vec3(kMinDiffuseAlbedo));
-}
-
-vec3 remodulateSpecular(vec3 radiance, vec3 albedo) {
-    return radiance * max(albedo, vec3(kMinSpecularAlbedo));
-}
 
 void main() {
     ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
@@ -52,10 +45,19 @@ void main() {
     vec3 diffRadiance = REBLUR_BackEnd_UnpackRadianceAndNormHitDist(diffData).rgb;
     vec3 specRadiance = REBLUR_BackEnd_UnpackRadianceAndNormHitDist(specData).rgb;
 
-    vec3 diffAlbedo = imageLoad(diffuseAlbedoMetallicImage, pixel).rgb;
-    vec3 specAlbedo = imageLoad(specularAlbedoImage, pixel).rgb;
-    diffRadiance = remodulateDiffuse(diffRadiance, diffAlbedo);
-    specRadiance = remodulateSpecular(specRadiance, specAlbedo);
+    vec3 diffuseFactor, specularFactor;
+    reconstructionMaterialFactors(imageLoad(diffuseAlbedoMetallicImage, pixel),
+        imageLoad(specularAlbedoImage, pixel).rgb, imageLoad(normalRoughnessImage, pixel).w, imageLoad(refractionRadianceImage, pixel).a != 0.0,
+        diffuseFactor, specularFactor);
+    if (reconstructionGuideValid(imageLoad(reflectionGuideImage, pixel))) {
+        diffuseFactor = reconstructionStoredFactor(imageLoad(reflectionMaterialFactorImage, pixel));
+        specularFactor = diffuseFactor;
+    }
+    diffRadiance *= diffuseFactor;
+    specRadiance *= specularFactor;
+    if (reconstructionGuideValid(imageLoad(transmissionGuideImage, pixel)))
+        specRadiance += REBLUR_BackEnd_UnpackRadianceAndNormHitDist(imageLoad(denoisedTransmissionImage, pixel)).rgb
+            * reconstructionStoredFactor(imageLoad(transmissionMaterialFactorImage, pixel));
 
     vec4 clear = imageLoad(clearRadianceImage, pixel);
     vec3 clearRadiance = clear.rgb * clear.a;

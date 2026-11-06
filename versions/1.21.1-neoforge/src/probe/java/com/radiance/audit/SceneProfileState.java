@@ -17,9 +17,10 @@ record SceneProfileState(
         long gameTime,
         long dayTime,
         float rain,
-        float thunder) {
+        float thunder,
+        double submittedFovY) {
     static final String HEADER =
-            "dimension,camera_x,camera_y,camera_z,camera_yaw,camera_pitch,player_eye_y,horizon_y,world_min_y,world_max_y,game_time,day_time,rain,thunder";
+            "dimension,camera_x,camera_y,camera_z,camera_yaw,camera_pitch,player_eye_y,horizon_y,world_min_y,world_max_y,game_time,day_time,rain,thunder,submitted_fov_y";
 
     SceneProfileState {
         if (!dimension.matches("[a-z0-9_.:/-]+"))
@@ -41,13 +42,14 @@ record SceneProfileState(
                 -1,
                 -1,
                 Float.NaN,
-                Float.NaN);
+                Float.NaN,
+                Double.NaN);
     }
 
     String csv() {
         return String.format(
                 Locale.ROOT,
-                "%s,%.9f,%.9f,%.9f,%.5f,%.5f,%.9f,%.9f,%d,%d,%d,%d,%.5f,%.5f",
+                "%s,%.9f,%.9f,%.9f,%.5f,%.5f,%.9f,%.9f,%d,%d,%d,%d,%.5f,%.5f,%.6f",
                 dimension,
                 x,
                 y,
@@ -61,6 +63,7 @@ record SceneProfileState(
                 gameTime,
                 dayTime,
                 rain,
-                thunder);
+                thunder,
+                submittedFovY);
     }
 }

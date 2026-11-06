@@ -69,7 +69,10 @@ bool StreamlineRuntime::initialize(const std::filesystem::path &directory) {
     preferences.numFeaturesToLoad = std::size(features);
     preferences.logMessageCallback = [](sl::LogType type, const char *message) {
         try {
-            mcvr::log::error("StreamlineRuntime")
+            const auto level = type == sl::LogType::eError ? mcvr::log::Level::Error :
+                               type == sl::LogType::eWarn  ? mcvr::log::Level::Warn :
+                                                             mcvr::log::Level::Info;
+            mcvr::log::stream(level, "StreamlineRuntime", level == mcvr::log::Level::Info ? std::cout : std::cerr)
                 << "[Streamline:" << int(type) << "] " << (message ? message : "") << std::endl;
         } catch (...) {
             // Never let a C++ exception cross the Streamline callback boundary.
@@ -78,7 +81,8 @@ bool StreamlineRuntime::initialize(const std::filesystem::path &directory) {
     if (!check(init(preferences, sl::kSDKVersion), "slInit")) return false;
     initialized_ = true;
     vkCreateInstance = reinterpret_cast<PFN_vkCreateInstance>(instanceProc_(nullptr, "vkCreateInstance"));
-    mcvr::log::info("StreamlineRuntime") << "Streamline 2.14.1 initialized; OTA disabled" << std::endl;
+    mcvr::log::info("StreamlineRuntime") << "Streamline " << SL_VERSION_MAJOR << '.' << SL_VERSION_MINOR << '.'
+                                         << SL_VERSION_PATCH << " initialized; OTA disabled" << std::endl;
     return true;
 #else
     return false;
@@ -196,6 +200,8 @@ OptionalFeatureLoadResult StreamlineRuntime::setFGLoaded(bool loaded) {
         return OptionalFeatureLoadResult::Failed;
     }
     fgLoaded_ = loaded;
+    slDLSSGSetOptions = nullptr;
+    slDLSSGGetState = nullptr;
     if (loaded && slGetFeatureFunction) {
         void *setOptions{};
         void *getState{};

@@ -21,4 +21,12 @@ public final class RigidSceneNative {
             int selectedCount,
             long removed,
             int removedCount);
+
+    /** Replaces one retained selection group with {@code count} accepted identities; 0 ends it. */
+    public static native void retain(long group, long ids, int count);
+
+    public static native void clearRetained();
+
+    /** Selects every retained member that still has an accepted version; returns that count. */
+    public static native int selectRetained();
 }

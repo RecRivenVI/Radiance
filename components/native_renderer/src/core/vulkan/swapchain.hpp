@@ -22,6 +22,7 @@ class Swapchain : public SharedObject<Swapchain> {
     ~Swapchain();
 
     void reconstruct();
+    void release();
     VkSwapchainKHR &vkSwapchain();
     VkExtent2D &vkExtent();
     VkExtent2D &vkMaxExtent();

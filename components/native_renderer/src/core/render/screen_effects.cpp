@@ -113,7 +113,7 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
                                           .beginAttachment()
                                           .defineAttachment(scratch.image)
                                           .endAttachment()
-                                          .build(framework->device(), module->overlayPostRenderPass_);
+                                          .build(framework->device(), module->overlayPostUnormRenderPass_);
             }
             targets.push_back(scratch);
         }
@@ -177,14 +177,17 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
         }
         table->bindBufferRange(buffers->overlayPostUniformBuffer(), 1, 1, 0,
                                buffers->overlayPostUniformDescriptorRange());
-        const auto key = std::tuple{pass.program, image->width(), image->height()};
+        const auto format = image->vkFormat();
+        const auto &renderPass =
+            format == VK_FORMAT_R8G8B8A8_UNORM ? module->overlayPostUnormRenderPass_ : module->overlayPostRenderPass_;
+        const auto key = std::tuple{pass.program, image->width(), image->height(), format};
         if (!module->effectPipelines_.contains(key)) {
             auto shaders = pass.program < MAX_OVERLAY_POST_PIPELINE_TYPE ?
                                module->overlayPostPipelineShaders_.at(OverlayPostPipelineType(pass.program)) :
                                module->effectPrograms_.at(pass.program)->shaders;
             module->effectPipelines_[key] =
                 vk::GraphicsPipelineBuilder{}
-                    .defineRenderPass(module->overlayPostRenderPass_, 0)
+                    .defineRenderPass(renderPass, 0)
                     .beginShaderStage()
                     .defineShaderStage(shaders.vertexShader, VK_SHADER_STAGE_VERTEX_BIT)
                     .defineShaderStage(shaders.fragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -207,7 +210,7 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
         const auto pipeline = module->effectPipelines_.at(key);
         framework->frameResourceRetainer().retain(pipeline);
         transition(image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        context->overlayCommandBuffer->beginRenderPass({.renderPass = module->overlayPostRenderPass_,
+        context->overlayCommandBuffer->beginRenderPass({.renderPass = renderPass,
                                                         .framebuffer = target.framebuffer,
                                                         .renderAreaExtent = {image->width(), image->height()},
                                                         .clearValues = {{.color = {0, 0, 0, 0}}}});

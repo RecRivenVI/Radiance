@@ -14,6 +14,8 @@ import tomllib
 import zipfile
 
 import fixture
+import memory_diagnostics
+from memory_guard import check_global_stop, device_lost, guarded_process, physical_reserve
 from entity_takeover import extract
 from takeover_experiment import ROOT, TARGET, EXTRA_ROOT, WORKSPACE_SOFT_LIMIT_GIB, WORKSPACE_HARD_LIMIT_GIB, digest, recycle, storage_preflight, write
 
@@ -28,7 +30,8 @@ def world_probe_jar():
     # the active probe and its changed poll seam must both have been compiled.
     base = ROOT / f'versions/{TARGET}'
     classes = base / 'build/classes/java/probe'
-    for relative in ('com/radiance/audit/WorldMaterialsProbe', 'com/radiance/audit/EndSeaWorldMaterialProbe', 'com/radiance/audit/DisplayOutputProbe',
+    for relative in ('com/radiance/audit/WorldMaterialsProbe', 'com/radiance/audit/SceneStoreProbe', 'com/radiance/audit/FluidBoundaryProbe', 'com/radiance/audit/EndSeaWorldMaterialProbe', 'com/radiance/audit/DisplayOutputProbe',
+                     'com/radiance/audit/NativeSceneReplayProbe',
                      'com/radiance/audit/mixin/MinecraftAuditMixin'):
         source = base / ('src/probe/java/' + relative + '.java')
         compiled = classes / (relative + '.class')
@@ -94,23 +97,51 @@ def normal_fixture_pack(client, case):
                                           heightByte=255, emissionByte=255, materials=['diffuse', 'metal']))
 
 
-def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shader_preflight=None, workspace_limit_gib=WORKSPACE_SOFT_LIMIT_GIB, algorithm="vanilla-pt", external_limit_gib=8, settings_input=None):
+def medium_fixture_pack(client, case):
+    from PIL import Image
+    destination = client/'resourcepacks/medium-boundary-fixture.zip'
+    destination.parent.mkdir(parents=True,exist_ok=True)
+    with zipfile.ZipFile(destination,'w',zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('pack.mcmeta',json.dumps(dict(pack=dict(pack_format=34,description='Owned rough normal-mapped glass boundary fixture'))))
+        for suffix,colour in (('_n',(94,128,255,255)),('_s',(128,10,0,255))):
+            data=io.BytesIO();Image.new('RGBA',(16,16),colour).save(data,format='PNG')
+            archive.writestr('assets/minecraft/textures/block/cyan_stained_glass'+suffix+'.png',data.getvalue())
+    options=client/'options.txt';lines=options.read_text(encoding='utf8').splitlines()
+    packs=next((json.loads(line.partition(':')[2]) for line in lines if line.startswith('resourcePacks:')),[])
+    packs.append('file/'+destination.name)
+    options.write_text('\n'.join(line for line in lines if not line.startswith('resourcePacks:'))+'\nresourcePacks:'+json.dumps(packs)+'\n',encoding='utf8')
+    write(case/'medium-fixture.json',dict(sha256=digest(destination),normal=[94,128,255,255],specular=[128,10,0,255],albedo='Unmodified cyan stained glass texture'))
+
+
+def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shader_preflight=None, workspace_limit_gib=WORKSPACE_SOFT_LIMIT_GIB, algorithm="vanilla-pt", external_limit_gib=8, settings_input=None, settings_archive=None,
+        diagnostics=None, temporary_storage_waiver=False, profile_seconds=0, profile_delay_seconds=0):
+    check_global_stop(ROOT, RESULT)
+    if not 0 <= profile_seconds <= 120 or not 0 <= profile_delay_seconds <= 120:
+        raise ValueError('Profile duration must be within the existing probe limit')
     if shader_pack is not None:
         report=json.loads(shader_preflight.read_text()) if shader_preflight else {}
         if not report.get('passed') or report.get('packSha256')!=digest(shader_pack):
             raise RuntimeError('Startup isolation requires a passing preflight for this exact pack')
-    occupancy = storage_preflight(validation_limit_gib=8, workspace_limit_gib=workspace_limit_gib, external_limit_gib=external_limit_gib)
-    if workspace_limit_gib is not None and occupancy['workspace'] + 500_000_000 > WORKSPACE_HARD_LIMIT_GIB * 1024**3:
-        raise RuntimeError('Insufficient workspace hard-limit reserve for an owned client')
-    if occupancy['validations'] + 500_000_000 > 8 * 1024**3:
-        raise RuntimeError('Insufficient validation reserve')
+    occupancy = storage_preflight(validation_limit_gib=8, workspace_limit_gib=workspace_limit_gib,
+                                  external_limit_gib=external_limit_gib, temporary_waiver=temporary_storage_waiver)
+    if temporary_storage_waiver:
+        physical_reserve(VALIDATION, 2 * 1024**3)
+    else:
+        if workspace_limit_gib is not None and occupancy['workspace'] + 500_000_000 > WORKSPACE_HARD_LIMIT_GIB * 1024**3:
+            raise RuntimeError('Insufficient workspace hard-limit reserve for an owned client')
+        if occupancy['validations'] + 500_000_000 > 8 * 1024**3:
+            raise RuntimeError('Insufficient validation reserve')
     if CLIENT.exists() or (RESULT / 'DEVICE_LOST.json').exists():
         raise RuntimeError('Retained client or device-loss boundary; inspect before continuing')
     case = RESULT / (label + '-' + mode + '-' + time.strftime('%Y%m%d-%H%M%S'))
     case.mkdir(parents=True, exist_ok=False)
     fixture.REPOSITORY_RUN = VALIDATION / 'instance'
     fixture.create(CLIENT, '1.21.1', modded=False, tier=1)
-    extract(VALIDATION / 'result/settings-template.zip', CLIENT)
+    settings_source = Path(settings_archive).resolve() if settings_archive is not None else VALIDATION/'result/settings-template.zip'
+    if settings_archive is not None and not settings_source.is_relative_to(ROOT/'validations'):
+        raise ValueError('A frozen settings archive must be owned validation data')
+    extract(settings_source, CLIENT)
+    write(case/'frozen-settings-input.json',dict(path=str(settings_source),sha256=digest(settings_source)))
     if settings_input is not None:
         if mode != 'levitite-stress':
             raise ValueError('The registered gameplay settings override is limited to the effect benchmark')
@@ -157,25 +188,31 @@ def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shade
         settings.write_text(text,encoding='utf8')
 
     write(case/'algorithm.json',dict(builtIn=algorithm))
-    write(case/'settings-input.json',dict(source='settings-template.zip',sha256=digest(settings)))
-    if mode in ('surfaces','normals','endsea','endsea-end','endsea-far','display'):
+    write(case/'settings-input.json',dict(source=str(settings_source),sha256=digest(settings)))
+    if mode in ('surfaces','normals','media','endsea','endsea-end','endsea-far','display'):
         text=settings.read_text(encoding='utf8')
         controls=dict(exposure_up_speed='1.0',exposure_down_speed='3.0',
                       log2_luminance_min='-20.0',max_exposure='65536.0')
         shader_controls={}
-        if mode in ('surfaces','normals','endsea','endsea-end','endsea-far','display'):
+        if mode in ('surfaces','normals','media','endsea','endsea-end','endsea-far','display'):
             with zipfile.ZipFile(core) as product:
                 with zipfile.ZipFile(io.BytesIO(product.read('shaders/world/ray_tracing/'+algorithm+'.zip'))) as pack:
                     attributes=json.loads(pack.read('configs.json'))['attributes']
             moon=next(a for a in attributes if a['name'].endswith('.attribute.moon_radiance'))
-            shader_controls={moon['name']:moon['default_value'],
-                             'render_pipeline.module.ray_tracing.attribute.num_ray_bounces':'8'}
+            budgets={a['name']:a['default_value'] for a in attributes
+                     if a['name'].endswith(('.attribute.num_reflections', '.attribute.num_refractions'))}
+            if not budgets:
+                budgets={'render_pipeline.module.ray_tracing.attribute.num_ray_bounces':'8'}
+            shader_controls={moon['name']:moon['default_value'], **budgets}
             shader_settings=CLIENT/('radiance/shaders/world/ray_tracing/'+algorithm+'.zip.txt')
             properties=shader_settings.read_text(encoding='utf8')
             for key,value in shader_controls.items():
                 properties,count=re.subn(r'(?m)^'+re.escape(key)+r'=[^\n]*$',
                                          lambda _:key+'='+value,properties)
-                if count!=1:raise RuntimeError('Controlled shader material configuration absent: '+key)
+                if count==0 and key in budgets:
+                    properties=properties.rstrip()+'\n'+key+'='+value+'\n'
+                elif count!=1:
+                    raise RuntimeError('Controlled shader material configuration absent: '+key)
             shader_settings.write_text(properties,encoding='utf8')
         for name,value in controls.items():
             expression=r'(name: render_pipeline.module.tone_mapping.attribute.'+name+r'\n\s+type: [^\n]+\n\s+value: )[^\n]+'
@@ -193,10 +230,14 @@ def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shade
     options = CLIENT / 'options.txt'
     lines = [line for line in options.read_text().splitlines()
              if not line.startswith(('soundCategory_master:', 'soundCategory_music:', 'pauseOnLostFocus:'))]
+    if os.environ.get('RADIANCE_SCENE_CAPTURE'):
+        lines = ['renderDistance:8' if line.startswith('renderDistance:') else line for line in lines]
     options.write_text('\n'.join(lines) + '\nsoundCategory_master:0.0\nsoundCategory_music:0.0\npauseOnLostFocus:false\n', encoding='utf8')
     if mode == 'normals':
         normal_fixture_pack(CLIENT, case)
-    if mode == 'display':
+    if mode == 'media':
+        medium_fixture_pack(CLIENT, case)
+    if mode in ('display', 'lights'):
         display_fixture_pack(CLIENT, case)
     mods = CLIENT / 'mods'
     mods.mkdir()
@@ -219,7 +260,8 @@ def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shade
         local = tomllib.loads((ROOT / 'local.toml').read_text(encoding='utf8'))
         registry = tomllib.loads((ROOT / 'inputs.toml').read_text(encoding='utf8'))
         inputs = ('create', 'sable', 'aeronautics_bundled')
-        if mode not in ('endsea-end','endsea-far', 'handoff','levitite','levitite-ponder','levitite-stress'): inputs += ('voxy',)
+        if mode not in ('endsea-end','endsea-far', 'handoff','levitite','levitite-ponder','levitite-stress','scene-store','scene-store-auxiliary') and not os.environ.get('RADIANCE_SCENE_CAPTURE'):
+            inputs += ('voxy',)
         for name in inputs:
             path = Path(local['inputs'][name])
             if digest(path) not in registry[name]['sha256']:
@@ -250,11 +292,15 @@ def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shade
             '--username', 'RecRivenVI', '--width', '1920', '--height', '1080']
     if mode != 'startup':
         args += ['--quickPlaySingleplayer', 'Audit Benchmark']
+    if profile_seconds:
+        args[1:1] = ['-Dradiance.audit.profileControl=true', '-Dradiance.audit.nativePerformance=true']
     if settings_input is not None:
         args.insert(1, '-Dradiance.audit.expectedRenderingConfig=' + str(case/'expected-rendering.json'))
         args.insert(1, '-Xms512M')
         args[next(i for i,value in enumerate(args) if value.startswith('-Xmx'))] = '-Xmx16G'
     env = dict(os.environ, MCVR_DEVICE_LOSS_TRACE='1', MCVR_LOCAL_AFTERMATH='1')
+    if diagnostics is not None and not memory_diagnostics.diagnostic_environment(env, diagnostics):
+        args = [value for value in args if not value.startswith('-agentpath:')]
     if mode == 'levitite-stress':
         env['RADIANCE_CHUNK_PERF'] = '1'
     if mode == 'levitite':
@@ -265,29 +311,41 @@ def run(mode, label, core, extra=None, reuse_cache=None, shader_pack=None, shade
         if os.environ.get('RADIANCE_DISPLAY_CONTROLS_ONLY')=='1':args.insert(1,'-Dradiance.audit.displayControlsOnly=true')
         args.insert(1, '-Dradiance.audit.capture=true')
     env.pop('MOD_CLASSES', None)
-    write(case / 'launch.json', dict(args=args, storage=occupancy,externalLimitGiB=external_limit_gib,workspaceLimitSuspended=workspace_limit_gib is None,pipelineSha256=digest(settings),shaderAttributesSha256=digest(shader_settings),runnerSha256=digest(Path(__file__)),
+    write(case / 'launch.json', dict(args=args, storage=occupancy,externalLimitGiB=external_limit_gib,workspaceLimitSuspended=workspace_limit_gib is None or temporary_storage_waiver,diagnostics=diagnostics,pipelineSha256=digest(settings),shaderAttributesSha256=digest(shader_settings),runnerSha256=digest(Path(__file__)),
+                                   executionModes=memory_diagnostics.execution_modes(env),
                                    products=[dict(path=str(p), sha256=digest(p)) for p in products]))
-    with (case / 'console.log').open('x', encoding='utf8') as output:
-        process = subprocess.Popen(args, cwd=CLIENT, env=env, stdout=output, stderr=subprocess.STDOUT)
+    with (case / 'console.log').open('x', encoding='utf8') as output, guarded_process(
+            case, args, cwd=CLIENT, env=env, stdout=output, stderr=subprocess.STDOUT) as process:
         write(case / 'process.json', dict(pid=process.pid))
         stopped = threading.Event()
-        observers = []
-        if mode == 'levitite-stress':
+        observers = [threading.Thread(target=memory_diagnostics.observe, args=(case, stopped, process.pid), daemon=True)]
+        if mode in ('levitite-stress', 'media') or os.environ.get('RADIANCE_SCENE_CAPTURE'):
             from vanilla_performance import monitor
             from renderer_campaign import observe_wddm
-            observers = [threading.Thread(target=monitor, args=(case, stopped, process.pid)),
-                         threading.Thread(target=observe_wddm, args=(case,))]
-            for observer in observers:
-                observer.start()
+            observers.extend([threading.Thread(target=monitor, args=(case, stopped, process.pid), daemon=True),
+                              threading.Thread(target=observe_wddm, args=(case, stopped), daemon=True)])
+        for observer in observers:
+            observer.start()
         try:
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + (480 if mode.startswith('scene-store') else 300)
+            profile_requested = False
+            profile_ready_at = None
             while process.poll() is None and time.monotonic() < deadline:
                 log = CLIENT / 'logs/latest.log'
                 content = log.read_text(encoding='utf8', errors='replace') if log.is_file() else ''
                 content += (case / 'console.log').read_text(encoding='utf8', errors='replace')
-                if 'VK_ERROR_DEVICE_LOST' in content:
-                    write(RESULT / 'DEVICE_LOST.json', dict(case=str(case), automaticRetry=False))
+                if device_lost(content):
+                    if not (case / 'DEVICE_LOST.json').exists():
+                        write(case / 'DEVICE_LOST.json', dict(case=str(case), automaticRetry=False))
                     deadline = min(deadline, time.monotonic() + 30)
+                elif profile_seconds and not profile_requested and 'Starting integrated minecraft server' in content:
+                    if profile_ready_at is None:
+                        profile_ready_at = time.monotonic() + profile_delay_seconds
+                    if time.monotonic() >= profile_ready_at:
+                        path = case / 'profile-request.properties'
+                        path.write_text(f'id=world-materials\nlabel={mode}\nseconds={profile_seconds}\n'
+                                        f'requestedAt={time.time_ns() // 1_000_000}\n', encoding='utf8')
+                        profile_requested = True
                 time.sleep(1)
             if process.poll() is None:
                 raise RuntimeError('Owned bounded session timed out; retained for diagnosis')
@@ -379,6 +437,36 @@ def verify_display_output(case):
     write(case/'display-encoding-result.json',dict(passed=True,captures=results,visualAcceptance='pending-real-display'))
 
 
+def scene_store_counts(log, auxiliary_only=False):
+    rows = {}
+    required = {'static':0, 'move-turn':0, 'place-break':4, 'chest':2, 'section-reload':2,
+                'packs':5, 'dimension':2, 'auxiliary':1, 'sable':1}
+    if auxiliary_only:
+        required = {'auxiliary':1}
+    keys = ('frames', 'nonempty', 'spaces', 'geometry', 'appearance')
+    sample = re.compile(r'\[MCVR/SceneStore\]: verify view=(\w+) ' +
+                        ' '.join(key+r'=(\d+)' for key in keys) + r' at=(\d+)')
+    native = [(match[1], int(match[7]), tuple(map(int, match.groups()[1:6]))) for match in sample.finditer(log)]
+    starts = dict(re.findall(r'SCENE_STORE begin (\S+) at=(\d+)', log))
+    for name, events, end in re.findall(r'SCENE_STORE end (\S+) events=(\d+) frames=\d+ at=(\d+)', log):
+        view = 'auxiliary' if name == 'auxiliary' else 'main'
+        observed = sorted((at, counts) for kind,at,counts in native if kind == view and int(starts[name]) < at < int(end))
+        first, last = (observed[0][1], observed[-1][1]) if observed else ((0,)*5, (0,)*5)
+        row = dict(zip(keys, (high-low for low,high in zip(first,last))))
+        row['events'] = int(events)
+        row['passed'] = (row['frames'] >= 600 and row['events'] >= required[name]
+                         and (name == 'auxiliary' or row['nonempty'] >= 600)
+                         and (name != 'sable' or row['spaces'] >= 600))
+        if name == 'auxiliary':
+            main = sorted((at, counts[1]) for kind,at,counts in native
+                          if kind == 'main' and int(starts[name]) < at < int(end))
+            row['mainNonempty'] = main[-1][1]-main[0][1] if main else 0
+            row['passed'] = row['passed'] and row['mainNonempty'] >= 600
+        rows[name] = row
+    return dict(scenes=rows, passed=rows.keys()==required.keys() and all(r['passed'] for r in rows.values())
+                and 'Rigid scene store mismatch' not in log)
+
+
 def retain_completed_run(case, exit_code):
     # Read evidence back before recycling its environment. Fault evidence is never discarded.
     evidence_hashes = {}
@@ -412,22 +500,29 @@ def retain_completed_run(case, exit_code):
         shutil.copyfile(path,destination)
         if digest(destination)!=digest(path):raise RuntimeError('Screenshot copy verification failed')
     report = case / 'world-materials.json'
-    device_lost = 'VK_ERROR_DEVICE_LOST' in (case/'console.log').read_text(encoding='utf8', errors='replace')
-    if device_lost:
-        write(RESULT/'DEVICE_LOST.json', dict(case=str(case), automaticRetry=False))
+    lost = device_lost((case/'console.log').read_text(encoding='utf8', errors='replace')) or (case/'DEVICE_LOST.json').exists()
+    if lost:
+        if not (case / 'DEVICE_LOST.json').exists():
+            write(case/'DEVICE_LOST.json', dict(case=str(case), automaticRetry=False))
     selected=re.search(r'attribute.shader_pack_path\n\s+type: string\n\s+value: ([^\n]+)',(CLIENT/'radiance/pipeline.yaml').read_text(encoding='utf8'))
     requested='shader-packs/startup-isolation.zip' if (case/'shader-isolation.json').exists() else 'shaders/world/ray_tracing/'+json.loads((case/'algorithm.json').read_text())['builtIn']+'.zip'
     actual=selected[1].strip().strip("\"'") if selected else None
     algorithm_matches=actual==requested
     write(case/'algorithm-result.json',dict(requested=requested,actual=actual,matches=algorithm_matches))
-    passed = report.is_file() and json.loads(report.read_text())['passed'] and not device_lost and algorithm_matches
+    passed = report.is_file() and json.loads(report.read_text())['passed'] and not lost and algorithm_matches
+    mode = json.loads(report.read_text()).get('mode') if report.is_file() else None
+    if mode in ('scene-store', 'scene-store-auxiliary'):
+        counts = scene_store_counts((case/'console.log').read_text(encoding='utf8', errors='replace'),
+                                    auxiliary_only=mode == 'scene-store-auxiliary')
+        write(case/'scene-store-result.json', counts)
+        passed = passed and counts['passed']
     if passed and 'displayScenes' in json.loads(report.read_text()):
         verify_display_output(case)
     if (case/'gameplay-settings-input.json').exists() and not (case/'effective-levitite-stress.json').is_file():
         passed = False
     write(case / 'summary.json', dict(exitCode=exit_code, passed=passed,
                                     automaticRetry=False, visualAcceptance='pending'))
-    if device_lost:
+    if lost:
         raise RuntimeError('Device loss preserved; retain the client and stop the entire case group')
     recycle(CLIENT, VALIDATION)
     print(case, flush=True)
@@ -437,7 +532,7 @@ def retain_completed_run(case, exit_code):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('mode', choices=('startup', 'end','surfaces','normals','handoff','levitite','levitite-ponder','levitite-stress','endsea','endsea-end','endsea-far','height','environment','display'))
+    parser.add_argument('mode', choices=('startup', 'end','surfaces','normals','media','handoff','levitite','levitite-ponder','levitite-stress','endsea','endsea-end','endsea-far','height','environment','display','scene-store','scene-store-auxiliary'))
     parser.add_argument('label')
     parser.add_argument('core', type=Path)
     parser.add_argument('--extra', type=Path)
@@ -446,9 +541,10 @@ if __name__ == '__main__':
     parser.add_argument('--algorithm', choices=('vanilla-pt','advanced'), default='vanilla-pt')
     parser.add_argument('--reuse-cache', type=Path)
     parser.add_argument('--settings-input')
+    parser.add_argument('--settings-archive',type=Path,help='Frozen settings archive in project validation data')
     parser.add_argument('--shader-pack', type=Path)
     parser.add_argument('--shader-preflight', type=Path)
     parser.add_argument('--workspace-limit-gib', type=int, choices=range(1,WORKSPACE_HARD_LIMIT_GIB+1), default=WORKSPACE_SOFT_LIMIT_GIB,
                         help='Defaults to the soft limit; above-soft use requires cleanup and user approval')
     arguments = parser.parse_args()
-    run(arguments.mode, arguments.label, arguments.core, arguments.extra, arguments.reuse_cache, arguments.shader_pack, arguments.shader_preflight, None if arguments.workspace_limit_suspended else arguments.workspace_limit_gib, arguments.algorithm, arguments.external_limit_gib, arguments.settings_input)
+    run(arguments.mode, arguments.label, arguments.core, arguments.extra, arguments.reuse_cache, arguments.shader_pack, arguments.shader_preflight, None if arguments.workspace_limit_suspended else arguments.workspace_limit_gib, arguments.algorithm, arguments.external_limit_gib, arguments.settings_input, arguments.settings_archive)

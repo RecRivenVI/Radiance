@@ -36,16 +36,22 @@ NVIDIA DLSS
 
 Streamline
 文件：dlss/ 中的运行库许可与第三方声明；固定版本原文副本同时保留在 licenses/
-来源：2.14.1
+来源：Streamline，https://github.com/NVIDIA-RTX/Streamline
 许可：licenses/nvidia_streamline-nvidia.txt；第三方声明见 licenses/nvidia_streamline_third_party-notices.md
 
 Intel XeSS
 文件：运行库同时携带 XESS_LICENCE.txt
 许可：见 licenses/intel_xess-intel.txt
 
+AMD FidelityFX Vulkan
+文件：fsr/ 中的官方 Vulkan 加载器与超分辨率运行库；SVGF 使用的固定 Sobol／蓝噪声采样表
+来源：AMD FidelityFX SDK，https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+版权声明：Copyright (C) Advanced Micro Devices, Inc. All rights reserved.
+许可：二进制再分发条款及源文件例外，licenses/amd_fidelityfx-amd.txt；采样表 MIT，licenses/fidelityfx_sssr-mit.txt
+
 SPIRV-Reflect
 文件：native_renderer 中编译的屏幕程序接口反射器
-来源：FidelityFX SDK / SPIRV-Reflect，https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+来源：Khronos SPIRV-Reflect，https://github.com/KhronosGroup/SPIRV-Reflect
 版权声明：Copyright 2017-2022 Google Inc.
 许可：Apache License, Version 2.0，licenses/spirv_reflect-apache_2.0.txt
 SPDX-License-Identifier: Apache-2.0

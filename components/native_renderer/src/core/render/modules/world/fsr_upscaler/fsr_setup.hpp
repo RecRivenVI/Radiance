@@ -23,11 +23,7 @@
 #pragma once
 
 #include <volk.h>
-
-#ifdef MCVR_ENABLE_FFX_UPSCALER
-#    include <ffx_api/ffx_api.hpp>
-#    include <ffx_api/ffx_api_types.h>
-#endif
+#include "fsr_api.hpp"
 
 namespace mcvr::fsr {
 

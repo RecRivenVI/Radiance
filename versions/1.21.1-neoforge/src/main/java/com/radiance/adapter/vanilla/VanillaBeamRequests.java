@@ -11,7 +11,7 @@ import net.minecraft.util.*;
 public final class VanillaBeamRequests {
     private VanillaBeamRequests() {}
 
-    private record Shape(int start, int end, float radius, boolean outer) {}
+    private record Shape(float radius, boolean outer, boolean descending) {}
 
     public static void collect(
             ResourceLocation texture,
@@ -25,18 +25,20 @@ public final class VanillaBeamRequests {
             float outer,
             PoseStack pose,
             MultiBufferSource buffers) {
-        int end = start + height;
+        if (height == 0) return;
         pose.pushPose();
-        pose.translate(.5, 0, .5);
+        pose.translate(.5, start, .5);
+        boolean descending = height < 0;
+        pose.scale(1, Math.abs(height), 1);
         float phase = (float) Math.floorMod(tick, 40) + partial;
-        float signed = height < 0 ? phase : -phase,
+        float signed = descending ? phase : -phase,
                 scroll = Mth.frac(signed * .2F - Mth.floor(signed * .1F));
         pose.pushPose();
         pose.mulPose(Axis.YP.rotationDegrees(phase * 2.25F - 45));
         float v0 = -1 + scroll;
         request(
                 texture,
-                new Shape(start, end, inner, false),
+                new Shape(inner, false, descending),
                 height * scale * (.5F / inner),
                 v0,
                 color,
@@ -45,7 +47,7 @@ public final class VanillaBeamRequests {
         pose.popPose();
         request(
                 texture,
-                new Shape(start, end, outer, true),
+                new Shape(outer, true, descending),
                 height * scale,
                 v0,
                 FastColor.ARGB32.color(32, color),
@@ -74,6 +76,8 @@ public final class VanillaBeamRequests {
                                 1, 0, 0, 0, vScale, vOffset)),
                 (p, out, light, tint) -> {
                     float r = shape.radius;
+                    // The original vertex normal remains +Y for a downward beam.
+                    float end = shape.descending ? -1 : 1;
                     float[] x =
                             shape.outer ? new float[] {-r, r, -r, r} : new float[] {0, r, -r, 0};
                     float[] z =
@@ -82,13 +86,13 @@ public final class VanillaBeamRequests {
                     for (int i = 0; i < pairs.length; i += 2) {
                         int a = pairs[i], b = pairs[i + 1];
                         VanillaProjectileMeshes.vertex(
-                                p, out, x[a], shape.end, z[a], 1, 1, 0, 1, 0, light, tint);
+                                p, out, x[a], end, z[a], 1, 1, 0, 1, 0, light, tint);
                         VanillaProjectileMeshes.vertex(
-                                p, out, x[a], shape.start, z[a], 1, 0, 0, 1, 0, light, tint);
+                                p, out, x[a], 0, z[a], 1, 0, 0, 1, 0, light, tint);
                         VanillaProjectileMeshes.vertex(
-                                p, out, x[b], shape.start, z[b], 0, 0, 0, 1, 0, light, tint);
+                                p, out, x[b], 0, z[b], 0, 0, 0, 1, 0, light, tint);
                         VanillaProjectileMeshes.vertex(
-                                p, out, x[b], shape.end, z[b], 0, 1, 0, 1, 0, light, tint);
+                                p, out, x[b], end, z[b], 0, 1, 0, 1, 0, light, tint);
                     }
                 });
     }

@@ -238,6 +238,7 @@ val gameJar =
             "XESS_LICENCE.txt",
             "shaders/**",
             "dlss/**",
+            "fsr/**",
         )
     }
 val metadataDirectory = layout.buildDirectory.dir("generated/bootstrapMetadata")
@@ -479,6 +480,7 @@ val verifyMavenDevelopmentArtifact =
                         it.name.startsWith("com/radiance/bootstrap/") ||
                             it.name == "core.dll" ||
                             it.name.startsWith("dlss/") ||
+                            it.name.startsWith("fsr/") ||
                             it.name.startsWith("shaders/")
                     },
                 )

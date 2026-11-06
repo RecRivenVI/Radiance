@@ -2,6 +2,7 @@ package com.radiance.client.texture;
 
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.platform.TextureUtil;
+import com.radiance.client.option.Options;
 import com.radiance.client.proxy.vulkan.TextureProxy;
 import com.radiance.mixin_related.extensions.vanilla_resource_tracker.INativeImageExt;
 import java.io.IOException;
@@ -311,7 +312,9 @@ public enum AuxiliaryTextures {
                     }
                     ((INativeImageExt) (Object) auxiliaryImage)
                             .radiance$setTargetID(auxiliaryTargetId);
-                    if (level == 0 && auxiliaryTexture == SPECULAR) {
+                    if (level == 0
+                            && auxiliaryTexture == SPECULAR
+                            && Options.collectChunkEmission) {
                         // Null specular publishes an empty tile, clearing any prior emission.
                         TextureProxy.uploadEmissionTile(
                                 EmissionRecorder.buildTileUpdate(

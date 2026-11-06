@@ -6,8 +6,9 @@ Java 与 Gradle 插件的版本由[版本目录](../../gradle/libs.versions.toml
 
 | 工具 | 唯一版本来源 | 用途 |
 | --- | --- | --- |
-| CI Python | 版本目录的 `python` | 执行盘点工具的行为测试 |
+| CI Python | 版本目录的 `python` | 执行盘点与渲染诊断工具测试 |
 | PyYAML | [requirements.txt](../../components/render_diagnostics/inventory/requirements.txt) | 读取盘点模块与城市基准的管线 YAML；benchmark 的 requirements 引用同一来源 |
+| nbtlib | [requirements.txt](../../components/render_diagnostics/benchmark/requirements.txt) | 读写验证地图与夹具的 NBT 数据 |
 | Pillow | [requirements.txt](../../components/render_diagnostics/benchmark/requirements.txt) | 读取接管可行性验证的真实 PNG，检查限定控制面板；不进入产品构件 |
 | CI Vulkan SDK | 版本目录的 `vulkan-sdk` | 提供 Vulkan 头文件、链接库、shaderc 与 glslangValidator |
 

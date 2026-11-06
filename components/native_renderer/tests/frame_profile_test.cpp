@@ -1,4 +1,5 @@
 #include "core/diagnostics/frame_profile.hpp"
+#include "core/diagnostics/table_delta.hpp"
 #include <stdexcept>
 #include <vector>
 #include <string>
@@ -24,6 +25,21 @@ static void require(bool condition) {
     if (!condition) throw std::runtime_error("profile contract");
 }
 int main() {
+    {
+        const std::vector<uint32_t> a{1, 2, 3, 4}, b{1, 9, 3, 4, 5};
+        const auto delta = mcvr::profile::tableDelta(mcvr::sceneTable<uint32_t>(a), mcvr::sceneTable<uint32_t>(b), 4);
+        require(delta.before == 4 && delta.after == 5 && delta.changed == 1 && delta.prefix == 1 && delta.suffix == 2);
+        // Segment boundaries may split records. Count a changed record exactly once.
+        auto raw = std::as_bytes(std::span(b));
+        mcvr::SceneTable split{raw.first(5), {}, raw.subspan(5)};
+        const auto segmented = mcvr::profile::tableDelta(mcvr::sceneTable<uint32_t>(a), split, 4);
+        require(segmented.changed == 1 && segmented.prefix == 1 && segmented.suffix == 2);
+        const auto shorter = mcvr::profile::tableDelta(mcvr::sceneTable<uint32_t>(b), mcvr::sceneTable<uint32_t>(a), 4);
+        require(shorter.changed == 1 && shorter.before - shorter.after == 1);
+        require(mcvr::profile::tableDelta({}, mcvr::sceneTable<uint32_t>(a), 4).after == 4);
+        const auto same = mcvr::profile::tableDelta(split, split, 4);
+        require(same.changed == 0 && same.prefix == 5 && same.suffix == 5);
+    }
     const McvrProfileSink observer{MCVR_PROFILE_ABI, sizeof(McvrProfileSink), sample};
     require(mcvr::profile::install(&observer));
     const McvrProfileSink stale{1, sizeof(McvrProfileSink), sample};
@@ -31,6 +47,9 @@ int main() {
     mcvr::profile::beginFrame(70, MCVR_PROFILE_TIMING);
     require(mcvr::profile::enabled() && !mcvr::profile::contentAuditEnabled() &&
             !mcvr::profile::residencyCensusEnabled());
+    require(!mcvr::profile::flowAuditEnabled());
+    mcvr::profile::beginFrame(70, MCVR_PROFILE_TIMING | MCVR_PROFILE_FLOW_AUDIT);
+    require(mcvr::profile::flowAuditEnabled() && !mcvr::profile::residencyCensusEnabled());
     mcvr::profile::beginFrame(70, MCVR_PROFILE_TIMING | MCVR_PROFILE_CONTENT_AUDIT | MCVR_PROFILE_RESIDENCY_CENSUS);
     require(mcvr::profile::contentAuditEnabled() && mcvr::profile::residencyCensusEnabled());
     mcvr::profile::beginFrame(70, MCVR_PROFILE_CONTENT_AUDIT);
@@ -115,4 +134,20 @@ int main() {
         phases.next("also-disabled");
     }
     require(samples.size() == count);
+    samples.clear();
+    mcvr::profile::beginFrame(72, MCVR_PROFILE_TIMING);
+    { mcvr::profile::AllocationScope dormant("allocation", 1024, clockNs); }
+    require(samples.empty());
+    mcvr::profile::beginFrame(73, MCVR_PROFILE_TIMING | MCVR_PROFILE_ALLOCATION_TIMING);
+    timeNs = 0;
+    {
+        mcvr::profile::Scope parent("parent", clockNs);
+        {
+            mcvr::profile::AllocationScope measured("allocation", 4096, clockNs);
+            timeNs = 20;
+        }
+        timeNs = 30;
+    }
+    require(samples.size() == 3 && samples[0].domain == 5 && samples[0].inclusive == 1 && samples[0].self == 4096);
+    require(samples[1].domain == 0 && samples[1].inclusive == 20 && samples[2].self == 10);
 }
