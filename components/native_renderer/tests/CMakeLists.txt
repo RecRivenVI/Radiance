@@ -252,6 +252,7 @@ add_test(NAME mcvr.shaders
     COMMAND ${CMAKE_COMMAND}
         -DMCVR_SHADER_DIR=${PROJECT_BINARY_DIR}/src/shader/shaders
         -DMCVR_INSTALL_DIR=${MCVR_INSTALL_LIB_DIR}
+        -DMCVR_SOURCE_DIR=${PROJECT_SOURCE_DIR}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/verify_shaders.cmake
 )
 add_test(NAME mcvr.borrowed-window
@@ -682,6 +683,10 @@ add_executable(mcvr_frame_retention_test frame_retention_test.cpp)
 target_compile_features(mcvr_frame_retention_test PRIVATE cxx_std_23)
 target_include_directories(mcvr_frame_retention_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
 add_test(NAME mcvr.frame-retention COMMAND mcvr_frame_retention_test)
+add_executable(mcvr_frame_execution_test frame_execution_test.cpp ../src/core/render/frame_execution.cpp)
+target_compile_features(mcvr_frame_execution_test PRIVATE cxx_std_23)
+target_include_directories(mcvr_frame_execution_test PRIVATE "${PROJECT_SOURCE_DIR}/src")
+add_test(NAME mcvr.frame-execution COMMAND mcvr_frame_execution_test)
 add_executable(mcvr_ray_facing_contract_test ray_facing_contract_test.cpp)
 target_compile_features(mcvr_ray_facing_contract_test PRIVATE cxx_std_23)
 target_include_directories(mcvr_ray_facing_contract_test PRIVATE "${PROJECT_SOURCE_DIR}/src"
@@ -759,6 +764,8 @@ foreach(COVERAGE_FIXTURE IN ITEMS coverage_blend coverage_scene coverage_path)
             "${PROJECT_SOURCE_DIR}/src/shader/util/alpha_mode.glsl" "${PROJECT_SOURCE_DIR}/src/shader/util/ray_origin.glsl"
             "${PROJECT_SOURCE_DIR}/src/shader/util/coverage_raygen.glsl"
             "${PROJECT_SOURCE_DIR}/src/shader/util/ray_payloads.glsl"
+            "${PROJECT_SOURCE_DIR}/src/shader/util/ray_medium.glsl"
+            "${PROJECT_SOURCE_DIR}/src/common/render_abi.hpp"
             "${PROJECT_SOURCE_DIR}/src/shader/util/ui_primary_visibility.glsl"
             "${PROJECT_SOURCE_DIR}/src/shader/util/random.glsl"
         VERBATIM)
@@ -874,3 +881,28 @@ add_custom_command(OUTPUT "${DISPLAY_COLOUR_SPIRV}"
 add_custom_target(mcvr_display_colour_shader ALL DEPENDS "${DISPLAY_COLOUR_SPIRV}")
 add_test(NAME mcvr.display-colour-gpu COMMAND mcvr_spring_material_gpu_test "${DISPLAY_COLOUR_SPIRV}" --display-colour)
 set_tests_properties(mcvr.display-colour-gpu PROPERTIES LABELS "gpu" SKIP_RETURN_CODE 77)
+
+set(RECONSTRUCTION_MATERIAL_SPIRV "${CMAKE_CURRENT_BINARY_DIR}/shaders/reconstruction_material.spv")
+add_custom_command(OUTPUT "${RECONSTRUCTION_MATERIAL_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/shaders"
+    COMMAND "${MCVR_TEST_GLSLANG}" -V "${CMAKE_CURRENT_SOURCE_DIR}/shaders/reconstruction_material.comp"
+        "-I${PROJECT_SOURCE_DIR}/src/shader" --target-env vulkan1.2 -o "${RECONSTRUCTION_MATERIAL_SPIRV}"
+    DEPENDS shaders/reconstruction_material.comp "${PROJECT_SOURCE_DIR}/src/shader/util/reconstruction_material.glsl" "${PROJECT_SOURCE_DIR}/src/shader/util/reconstruction_guides.glsl"
+        "${PROJECT_SOURCE_DIR}/src/shader/world/nrd/nrd_glsl_compat.glsl")
+add_custom_target(mcvr_reconstruction_material_shader ALL DEPENDS "${RECONSTRUCTION_MATERIAL_SPIRV}")
+add_dependencies(mcvr_spring_material_gpu_test mcvr_reconstruction_material_shader)
+add_test(NAME mcvr.reconstruction-material-gpu COMMAND mcvr_spring_material_gpu_test "${RECONSTRUCTION_MATERIAL_SPIRV}" --reconstruction-material)
+set_tests_properties(mcvr.reconstruction-material-gpu PROPERTIES LABELS "gpu" SKIP_RETURN_CODE 77)
+
+add_executable(mcvr_medium_contacts_test medium_contacts_test.cpp)
+target_compile_features(mcvr_medium_contacts_test PRIVATE cxx_std_23)
+target_include_directories(mcvr_medium_contacts_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${GLM_INCLUDE_DIR}")
+target_link_libraries(mcvr_medium_contacts_test PRIVATE Threads::Threads)
+add_test(NAME mcvr.medium-contacts COMMAND mcvr_medium_contacts_test)
+
+add_executable(mcvr_scene_replay_test scene_replay_test.cpp)
+target_compile_features(mcvr_scene_replay_test PRIVATE cxx_std_23)
+target_include_directories(mcvr_scene_replay_test PRIVATE "${PROJECT_SOURCE_DIR}/src" "${GLM_INCLUDE_DIR}")
+target_link_libraries(mcvr_scene_replay_test PRIVATE minizip)
+add_test(NAME mcvr.scene-replay COMMAND mcvr_scene_replay_test)
+set_tests_properties(mcvr.medium-contacts PROPERTIES TIMEOUT 15)

@@ -1,5 +1,6 @@
 #include "core/render/scene_instances.hpp"
 #include "core/render/effect_plan.hpp"
+#include "core/render/scene_slots.hpp"
 #include <memory>
 #include <iostream>
 int main() {
@@ -41,6 +42,120 @@ int main() {
     if (pins.bytes() != 12) return 8;
     pins.unpin(1);
     if (pins.bytes() != 0 || !pins.pin(2, 8)) return 9;
+    {
+        // A retained group stays selected without per-frame input, follows replaced versions
+        // and never keeps a removed version alive.
+        mcvr::scene::InstanceStore<int> store;
+        mcvr::scene::RetainedSelections<int> retained;
+        const auto sum = [&] {
+            int total = 0;
+            const size_t count = retained.each(store, [&](const int &value) { total += value; });
+            return std::pair<size_t, int>{count, total};
+        };
+        const auto drop = [&](uint64_t id) {
+            if (store.remove(id)) retained.stale(id);
+        };
+        const auto accept = [&](uint64_t id, int value) {
+            drop(id);
+            store.put(id, value);
+            retained.stale(id);
+        };
+        for (uint64_t id = 1; id <= 6; ++id) accept(id, int(id));
+        const uint64_t first[] = {1, 2, 3}, second[] = {3, 4};
+        retained.set(7, first);
+        retained.set(8, second);
+        if (retained.groups() != 2 || retained.members() != 5) return 20;
+        if (sum() != std::pair<size_t, int>{5, 13} || retained.resolvedRows() != 5 ||
+            sum() != std::pair<size_t, int>{5, 13} || retained.resolvedRows() != 0)
+            return 21;
+        // Unreferenced churn must not disturb resolved members; a replaced member is followed.
+        accept(5, 50);
+        accept(6, 60);
+        accept(2, 20);
+        if (sum() != std::pair<size_t, int>{5, 31} || retained.resolvedRows() != 3) return 22;
+        // A removed member drops out of every group and returns once accepted again.
+        drop(3);
+        if (sum() != std::pair<size_t, int>{3, 25} || retained.resolvedRows() != 5) return 23;
+        accept(3, 300);
+        if (sum() != std::pair<size_t, int>{5, 625}) return 24;
+        // Replacing a group releases its former members.
+        const uint64_t replaced[] = {6};
+        retained.set(7, replaced);
+        drop(1);
+        if (retained.members() != 3 || sum() != std::pair<size_t, int>{3, 364}) return 25;
+        retained.set(8, {});
+        retained.set(9, {});
+        if (retained.groups() != 1 || sum() != std::pair<size_t, int>{1, 60}) return 26;
+        store.clear();
+        retained.staleAll();
+        if (sum() != std::pair<size_t, int>{0, 0}) return 27;
+        accept(6, 6);
+        if (sum() != std::pair<size_t, int>{1, 6}) return 28;
+        retained.clear();
+        if (retained.groups() || retained.members() || sum().first) return 29;
+        try {
+            const uint64_t zero[] = {0};
+            retained.set(1, zero);
+            return 30;
+        } catch (const std::invalid_argument &) {}
+        if (retained.groups() || retained.members()) return 31;
+    }
+    {
+        mcvr::scene::InstanceStore<int> store;
+        mcvr::scene::RetainedSelections<int, std::shared_ptr<int>> retained;
+        store.put(1, 10);
+        store.put(2, 20);
+        const uint64_t first[] = {1}, second[] = {2};
+        retained.set(1, first);
+        retained.set(2, second);
+        int builds = 0;
+        const auto publish = [&](auto rows, auto &page) {
+            if (!page) {
+                page = std::make_shared<int>(*rows.front());
+                ++builds;
+            }
+        };
+        retained.eachGroup(store, publish);
+        retained.eachGroup(store, publish);
+        if (builds != 2 || retained.resolvedRows() != 0) return 40;
+        store.put(2, 21);
+        retained.stale(2);
+        retained.eachGroup(store, publish);
+        if (builds != 3 || retained.resolvedRows() != 1) return 41;
+    }
+    {
+        mcvr::SceneSlots baseline, reused;
+        using Key = mcvr::SceneSlots::SelectionKey;
+        using Range = mcvr::SceneSlots::Range;
+        const auto sameRange = [](const Range &a, const Range &b) {
+            return a.slot == b.slot && a.record == b.record && a.group == b.group && a.geometries == b.geometries;
+        };
+        const auto compare = [&](std::initializer_list<Key> list, bool expectReuse) {
+            const auto at = [&](size_t i) { return list.begin()[i]; };
+            baseline.reconcile(list.size(), at, UINT32_MAX, false);
+            if (reused.reconcile(list.size(), at, UINT32_MAX, true) != expectReuse) return false;
+            if (baseline.slotCount() != reused.slotCount() || baseline.recordCount() != reused.recordCount() ||
+                baseline.groupCount() != reused.groupCount() || baseline.additions() != reused.additions() ||
+                baseline.removals() != reused.removals() || baseline.moves() != reused.moves() ||
+                baseline.retired().size() != reused.retired().size())
+                return false;
+            for (size_t i = 0; i < baseline.retired().size(); ++i)
+                if (!sameRange(baseline.retired()[i], reused.retired()[i])) return false;
+            for (size_t i = 0; i < list.size(); ++i) {
+                const auto &a = baseline.selection()[i];
+                const auto &b = reused.selection()[i];
+                if (a.poseSlot != b.poseSlot || a.range.has_value() != b.range.has_value() ||
+                    (a.range && !sameRange(*a.range, *b.range)))
+                    return false;
+            }
+            return true;
+        };
+        if (!compare({{1, 1}, {2, 2}, {1, 1}, {0, 1}}, false) || !compare({{1, 1}, {2, 2}, {1, 1}, {0, 1}}, true) ||
+            !compare({{2, 3}, {1, 1}, {1, 2}}, false) || !compare({{2, 3}, {1, 1}, {1, 2}}, true) ||
+            !compare({{2, 3}}, false) || !compare({{2, 3}}, true) || !compare({{2, 3}, {3, 1}}, false) ||
+            !compare({}, false) || !compare({}, true))
+            return 32;
+    }
     for (auto type : {CREEPER, SPIDER, INVERT}) mcvr::effects::validate(mcvr::effects::entity(type));
     auto spider = mcvr::effects::entity(SPIDER);
     if (spider.passes.size() != 5 || spider.passes.back().inputs.size() != 3) return 5;

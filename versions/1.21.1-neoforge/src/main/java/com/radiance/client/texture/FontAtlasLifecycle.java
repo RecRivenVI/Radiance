@@ -43,7 +43,7 @@ public final class FontAtlasLifecycle {
 
     public static void capture(
             BatchOwner owner, Map<RenderType, AbstractTexture> owners, RenderType layer) {
-        if (owners.containsKey(layer)) return;
+        if (registeredPages.isEmpty() || owners.containsKey(layer)) return;
         if (layer instanceof RenderType.CompositeRenderType composite) {
             var location = composite.state.textureState.cutoutTexture().orElse(null);
             AbstractTexture page = registeredPages.get(location);

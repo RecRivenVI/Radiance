@@ -3,6 +3,7 @@ package com.radiance.audit.mixin;
 import com.llamalad7.mixinextras.injector.wrapmethod.WrapMethod;
 import com.llamalad7.mixinextras.injector.wrapoperation.Operation;
 import com.llamalad7.mixinextras.injector.wrapoperation.WrapOperation;
+import com.radiance.api.render.RenderSpace;
 import com.radiance.audit.FrameProfiler;
 import com.radiance.audit.FrameTimings.Stage;
 import com.radiance.client.constant.Constants;
@@ -22,6 +23,8 @@ import net.minecraft.client.renderer.RenderBuffers;
 import net.minecraft.client.renderer.RenderType;
 import net.minecraft.client.renderer.ViewArea;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
+import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
+import net.minecraft.client.renderer.chunk.SectionRenderDispatcher;
 import net.minecraft.client.renderer.debug.DebugRenderer;
 import net.minecraft.client.renderer.entity.EntityRenderDispatcher;
 import net.minecraft.server.level.BlockDestructionProgress;
@@ -127,6 +130,7 @@ public abstract class ProfileEntityProxyMixin {
             DeltaTracker tickCounter,
             boolean canDrawEntityOutlines,
             Operation<Void> original) {
+        FrameProfiler.entities(renderedEntities.size());
         try (var ignored = FrameProfiler.span(Stage.ENTITIES)) {
             original.call(
                     camera,
@@ -163,6 +167,7 @@ public abstract class ProfileEntityProxyMixin {
                     float tickDelta,
                     Operation<Tuple<List<StorageVertexConsumerProvider>, EntityRenderDataList>>
                             original) {
+        FrameProfiler.blockEntityVisits(noCullingBlockEntities.size());
         try (var ignored = FrameProfiler.span(Stage.BLOCK_ENTITIES)) {
             return original.call(
                     chunks,
@@ -171,6 +176,56 @@ public abstract class ProfileEntityProxyMixin {
                     blockEntityRenderDispatcher,
                     tickDelta);
         }
+    }
+
+    @WrapOperation(
+            method = "queueBlockEntitiesRebuild",
+            at =
+                    @At(
+                            value = "INVOKE",
+                            target =
+                                    "Lnet/minecraft/client/renderer/chunk/SectionRenderDispatcher$CompiledSection;getRenderableBlockEntities()Ljava/util/List;"))
+    private static List<BlockEntity> audit$sectionVisits(
+            SectionRenderDispatcher.CompiledSection section,
+            Operation<List<BlockEntity>> original) {
+        var result = original.call(section);
+        FrameProfiler.blockEntityVisits(result.size());
+        return result;
+    }
+
+    @WrapOperation(
+            method = "queueBlockEntitiesRebuild",
+            at =
+                    @At(
+                            value = "INVOKE",
+                            target =
+                                    "Lcom/radiance/adapter/vanilla/VanillaBlockReplacement;stableInputs(Lnet/minecraft/client/renderer/blockentity/BlockEntityRenderer;Lnet/minecraft/world/level/block/entity/BlockEntity;FLcom/radiance/api/render/RenderSpace$Placement;)Ljava/lang/Object;"))
+    private static Object audit$stableInputs(
+            BlockEntityRenderer<?> renderer,
+            BlockEntity entity,
+            float tickDelta,
+            RenderSpace.Placement placement,
+            Operation<Object> original) {
+        try (var ignored = FrameProfiler.span(Stage.BLOCK_ENTITY_STABLE_INPUTS)) {
+            return original.call(renderer, entity, tickDelta, placement);
+        }
+    }
+
+    @WrapOperation(
+            method = "queueBlockEntitiesRebuild",
+            at =
+                    @At(
+                            value = "INVOKE",
+                            target =
+                                    "Lcom/radiance/api/render/BlockEntityPublications;selectStable(Lnet/minecraft/world/level/block/entity/BlockEntity;Ljava/lang/Object;)Z"))
+    private static boolean audit$selectStable(
+            BlockEntity entity, Object inputs, Operation<Boolean> original) {
+        boolean reused;
+        try (var ignored = FrameProfiler.span(Stage.BLOCK_ENTITY_SELECT)) {
+            reused = original.call(entity, inputs);
+        }
+        FrameProfiler.blockEntitySelection(reused);
+        return reused;
     }
 
     @WrapMethod(method = "queueParticleRebuild")

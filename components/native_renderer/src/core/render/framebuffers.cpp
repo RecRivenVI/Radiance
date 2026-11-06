@@ -26,6 +26,7 @@ void Framebuffers::deleteFramebuffer(uint32_t id) {
     framebuffers_.erase(id);
     if (readFramebufferBinding_ == id) readFramebufferBinding_ = 0;
     if (drawFramebufferBinding_ == id) drawFramebufferBinding_ = 0;
+    publishProducerBindings();
 }
 
 uint32_t Framebuffers::allocateRenderbuffer() {
@@ -61,6 +62,12 @@ void Framebuffers::bindFramebuffer(uint32_t target, uint32_t id) {
         case mcvr::framebuffer::DRAW_FRAMEBUFFER: drawFramebufferBinding_ = id; break;
         default: throw std::invalid_argument("Unsupported framebuffer bind target");
     }
+    publishProducerBindings();
+}
+
+void Framebuffers::publishProducerBindings() {
+    producerBindings_.store(uint64_t(readFramebufferBinding_) | (uint64_t(drawFramebufferBinding_) << 32),
+                            std::memory_order_release);
 }
 
 void Framebuffers::bindRenderbuffer(uint32_t id) {

@@ -75,6 +75,15 @@ class Device : public SharedObject<Device> {
         return dlssFGCompatible_;
     }
     bool isXessDeviceExtensionsCompatible() const;
+    uint32_t rayReorderMode() const {
+        return rayReorderMode_;
+    }
+    bool imageViewAddressReport() const {
+        return imageViewAddressReport_;
+    }
+    bool opacityMicromapEnabled() const {
+        return opacityMicromapEnabled_;
+    }
 
   private:
     std::shared_ptr<Instance> instance_;
@@ -90,6 +99,10 @@ class Device : public SharedObject<Device> {
     bool extendedDynamicState2LogicOp_ = false;
     bool tessellation_ = false;
     bool memoryBudget_ = false;
+    bool pipelineExecutableStats_ = false;
+    uint32_t rayReorderMode_ = 0;
+    bool opacityMicromapEnabled_ = false;
+    bool imageViewAddressReport_ = false;
     bool multiDrawIndirect_ = false;
     bool drawIndirectFirstInstance_ = false;
     bool dlssDeviceExtensionsCompatible_ = false;

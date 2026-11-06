@@ -315,6 +315,50 @@ int main() {
                 require(selection.buffer->bytes == expected, "stable-directory rebase matches the complete table");
             }
         }
+        {
+            mcvr::SceneTableCache<Buffer> resident;
+            const auto immutable = std::make_shared<const std::vector<uint64_t>>(4, 5);
+            auto dir = std::make_shared<mcvr::SceneTable::Directory>();
+            dir->add({std::as_bytes(std::span(*immutable)), immutable});
+            std::vector<uint64_t> values{7, 8};
+            auto update = [&](size_t prefix, bool slotComplete, bool expectedInPlace) {
+                auto table = mcvr::sceneTable<uint64_t>(values, prefix);
+                table.directory = dir;
+                std::vector<std::byte> expected(table.size());
+                table.write(expected);
+                auto selection = resident.acquirePatched(
+                    table,
+                    [](const auto &input, const auto &patch, const auto &source) {
+                        if (patch.inPlace) return source;
+                        auto target = std::make_shared<Buffer>();
+                        target->bytes.resize(input.size());
+                        return target;
+                    },
+                    [&](const auto &target, const auto &patch, const auto &source) {
+                        require(patch.inPlace == expectedInPlace, "only a completed slot may patch a stable layout");
+                        if (patch.inPlace)
+                            require(target == source && patch.copies.empty() &&
+                                        patch.residentBytes == immutable->size() * sizeof(uint64_t),
+                                    "resident bytes are left at their existing offsets");
+                        for (const auto &copy : patch.copies)
+                            std::memcpy(target->bytes.data() + copy.target, source->bytes.data() + copy.source,
+                                        copy.bytes);
+                        for (const auto &upload : patch.uploads)
+                            std::memcpy(target->bytes.data() + upload.target, upload.bytes.data(), upload.bytes.size());
+                    },
+                    [](const auto &) {}, true, true, slotComplete);
+                require(selection.buffer->bytes == expected, "resident and fallback uploads produce the same bytes");
+                return selection.buffer;
+            };
+            const auto first = update(1, false, false);
+            values = {10, 11};
+            require(update(1, true, true) == first, "completed slot retains the same backing buffer");
+            auto saved = first->bytes;
+            values = {12, 13};
+            const auto inflight = update(1, false, false);
+            require(inflight != first && first->bytes == saved, "same-frame update preserves the prior buffer");
+            require(update(2, true, false) != inflight, "shifted directory requires a new backing buffer");
+        }
         rejects([&] {
             auto invalid = mcvr::sceneTable<uint64_t>(dynamic);
             invalid.segments.push_back({std::as_bytes(std::span(dynamic)), {}});

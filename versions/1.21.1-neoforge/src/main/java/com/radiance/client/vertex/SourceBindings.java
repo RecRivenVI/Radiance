@@ -1,5 +1,7 @@
 package com.radiance.client.vertex;
 
+import it.unimi.dsi.fastutil.longs.Long2LongOpenHashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -15,16 +17,17 @@ public final class SourceBindings {
         }
     }
 
-    private final Map<Long, Slot> slots = new HashMap<>();
+    private final Long2ObjectOpenHashMap<Slot> slots = new Long2ObjectOpenHashMap<>();
     private final Map<Object, Object> definitions = new HashMap<>();
 
-    private record DrawKey(Object domain, long slot) {}
-
-    private final Map<DrawKey, Long> histories = new HashMap<>();
+    private final Map<Object, Long2LongOpenHashMap> histories = new HashMap<>();
+    private Object historyDomain;
+    private Long2LongOpenHashMap historySlots;
     private static final java.util.concurrent.atomic.AtomicLong IDENTITIES =
             new java.util.concurrent.atomic.AtomicLong();
     private static long resourceEpoch = 1;
     private long epoch;
+    private long slotsSweptAt = Long.MIN_VALUE;
     private boolean retired;
 
     static final class Slot {
@@ -38,6 +41,8 @@ public final class SourceBindings {
             slots.clear();
             definitions.clear();
             histories.clear();
+            historySlots = null;
+            historyDomain = null;
             epoch = resourceEpoch;
         }
     }
@@ -48,14 +53,18 @@ public final class SourceBindings {
 
     long history(Object domain, long slot) {
         current();
-        return histories.computeIfAbsent(
-                new DrawKey(domain, slot),
-                ignored -> {
-                    long id = IDENTITIES.incrementAndGet();
-                    if (id <= 0 || id >= 1L << 61)
-                        throw new IllegalStateException("Source instance identity exhausted");
-                    return Long.MIN_VALUE | 1L << 62 | id;
-                });
+        if (historySlots == null || !java.util.Objects.equals(historyDomain, domain)) {
+            historySlots = histories.computeIfAbsent(domain, ignored -> new Long2LongOpenHashMap());
+            historyDomain = domain;
+        }
+        long previous = historySlots.get(slot);
+        if (previous != 0) return previous;
+        long id = IDENTITIES.incrementAndGet();
+        if (id <= 0 || id >= 1L << 61)
+            throw new IllegalStateException("Source instance identity exhausted");
+        long history = Long.MIN_VALUE | 1L << 62 | id;
+        historySlots.put(slot, history);
+        return history;
     }
 
     public static long localHistory(Owner owner, long identity, int ordinal) {
@@ -75,7 +84,10 @@ public final class SourceBindings {
         current();
         var result = slots.computeIfAbsent(identity, key -> new Slot());
         result.used = frame;
-        if ((frame & 127) == 0) slots.values().removeIf(slot -> frame - slot.used > 120);
+        if ((frame & 127) == 0 && slotsSweptAt != frame) {
+            slots.values().removeIf(slot -> frame - slot.used > 120);
+            slotsSweptAt = frame;
+        }
         return result;
     }
 
@@ -83,6 +95,8 @@ public final class SourceBindings {
         slots.clear();
         definitions.clear();
         histories.clear();
+        historySlots = null;
+        historyDomain = null;
     }
 
     public void retire() {

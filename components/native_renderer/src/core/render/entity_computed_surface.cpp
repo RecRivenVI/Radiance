@@ -13,7 +13,8 @@ std::atomic_uint64_t nextHandle{1};
 }
 
 uint64_t Entities::surfaceProgram(uint64_t generation, std::span<const uint32_t> spirv) {
-    if (!worldMeshFrameOpen_ || generation != activeResourceGeneration_)
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ || generation != input.activeResourceGeneration_)
         throw std::invalid_argument("Surface program generation is not active");
     auto value = makeSurfaceProgram(*Renderer::instance().framework(), spirv);
     auto handle = nextHandle.fetch_add(1);
@@ -21,7 +22,8 @@ uint64_t Entities::surfaceProgram(uint64_t generation, std::span<const uint32_t>
     return handle;
 }
 uint64_t Entities::surfaceData(uint64_t generation, const void *data, size_t bytes) {
-    if (!worldMeshFrameOpen_ || generation != activeResourceGeneration_)
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ || generation != input.activeResourceGeneration_)
         throw std::invalid_argument("Surface input generation is not active");
     auto value = makeSurfaceData(*Renderer::instance().framework(), data, bytes);
     auto handle = nextHandle.fetch_add(1);
@@ -50,8 +52,9 @@ bool Entities::queueSurface(uint64_t world,
                             double x,
                             double y,
                             double z) {
-    if (!worldMeshFrameOpen_ || !acceptsWorldMeshGeneration(world, frame, generation) || worldMeshStages_.empty() ||
-        worldMeshStages_.back().token != stage)
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ || !acceptsWorldMeshGeneration(world, frame, generation) ||
+        input.worldMeshStages_.empty() || input.worldMeshStages_.back().token != stage)
         return false;
     auto get = [&](uint64_t id) {
         auto it = surfaces_.find(id);
@@ -97,7 +100,7 @@ bool Entities::queueSurface(uint64_t world,
     uploads->queueImportantWorldUpload(dispatch->parameters);
     if (!vertices) {
         dispatch->bind(*f, nullptr, nullptr, nullptr, 0, 0);
-        surfaceFields_.push_back(dispatch);
+        input.surfaceFields_.push_back(dispatch);
     } else {
         auto data = EntityBuildData::create(
             identity, x, y, z, mcvr::abi::QUERY_WORLD, 0, -1, World::Coordinates::WORLD, 1,
@@ -116,7 +119,7 @@ bool Entities::queueSurface(uint64_t world,
         raw.parameters.vertexCount = vertices;
         raw.parameters.indexCount = indices;
         data->topologyPrepared = true;
-        entityBuildDataBatch_->addData(data);
+        input.entityBuildDataBatch_->addData(data);
     }
     return true;
 }

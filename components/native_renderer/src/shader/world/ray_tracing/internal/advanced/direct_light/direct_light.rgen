@@ -115,6 +115,7 @@ void initDirectLightRay(vec3 origin, vec3 direction, uint seed, float coneSpread
     mainRay.throughput = vec3(1.0);
     mainRay.coneSpread = coneSpread;
     mainRay.stateBits = 0u;
+    mainRay.mediumState = 0u;
     raySetBounce(mainRay, 0u);
     raySetDirectImage(mainRay, imageChain);
     raySetStop(mainRay, false);

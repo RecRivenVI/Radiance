@@ -55,7 +55,7 @@ public class MinecraftClientMixins {
 
     @Inject(method = "runTick(Z)V", at = @At("HEAD"))
     private void beginSimulation(boolean tick, CallbackInfo ci) {
-        RendererProxy.streamlineFrameEvent(1);
+        RendererProxy.beginSimulation();
     }
 
     @Inject(
@@ -66,7 +66,7 @@ public class MinecraftClientMixins {
                             target =
                                     "Lnet/minecraft/client/renderer/GameRenderer;render(Lnet/minecraft/client/DeltaTracker;Z)V"))
     private void beginRenderSubmission(boolean tick, CallbackInfo ci) {
-        RendererProxy.streamlineFrameEvent(2);
+        RendererProxy.beginRenderSubmission();
     }
 
     @WrapMethod(method = "useAmbientOcclusion")
@@ -187,7 +187,7 @@ public class MinecraftClientMixins {
             RendererProxy.submitCommandAndPresent();
             com.radiance.api.audit.DrawingAudit.consumed("native.present");
         }
-        RendererProxy.acquireContext();
+        if (!RendererProxy.nativeFrameWorker()) RendererProxy.acquireContext();
     }
 
     @Redirect(

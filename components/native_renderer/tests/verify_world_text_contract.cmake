@@ -79,8 +79,12 @@ foreach(text_any_hit IN ITEMS
         "${VANILLA_ROOT}/world/text.rahit"
         "${ADVANCED_ROOT}/common/text.rahit")
     file(READ "${text_any_hit}" text_any_hit_source)
+    set(coverage_sample "rand(mainRay.seed)")
+    if(text_any_hit MATCHES "vanilla-pt/")
+        set(coverage_sample "coverageSample(geometryBufferIndex, uint(gl_PrimitiveID), rayBounce(mainRay))")
+    endif()
     foreach(required_marker IN ITEMS lodWithObjectCone resolveTextTextureColor resolveSourceAlpha
-            sourceDrawColour getSourceAlphaRule "alpha <= 0.0" "rand(mainRay.seed)" ignoreIntersectionEXT)
+            sourceDrawColour getSourceAlphaRule "alpha <= 0.0" "${coverage_sample}" ignoreIntersectionEXT)
         string(FIND "${text_any_hit_source}" "${required_marker}" marker_index)
         if(marker_index EQUAL -1)
             message(FATAL_ERROR "${text_any_hit} is missing upstream marker: ${required_marker}")
@@ -141,7 +145,8 @@ foreach(world_surface IN ITEMS
             "resolveTextTextureColor"
             "bool usePbr = !textSurface"
             "specularValue = textureMap.specular >= 0 && usePbr ?"
-            "normalValue = textureMap.normal >= 0 && usePbr ?")
+            "textureMap.normal >= 0 && usePbr"
+            "vec4 normalValue = vec4(0.5, 0.5, 1.0, 0.0)")
         string(FIND "${world_surface_source}" "${required_marker}" marker_index)
         if(marker_index EQUAL -1)
             message(FATAL_ERROR

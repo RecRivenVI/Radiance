@@ -3,6 +3,7 @@ package com.radiance.client.proxy.vulkan;
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.platform.Window;
 import com.mojang.blaze3d.systems.RenderSystem;
+import com.radiance.client.option.Options;
 import com.radiance.mixin_related.extensions.vulkan_render_integration.INativeImageExt;
 import net.minecraft.client.Minecraft;
 
@@ -16,6 +17,11 @@ public class RendererProxy {
     private static final int VK_ERROR_DEVICE_LOST = -4;
     private static volatile boolean initialized;
     private static final FrameLifecycle FRAME = new FrameLifecycle();
+    private static final boolean NATIVE_FRAME_WORKER =
+            !"0".equals(System.getenv("RADIANCE_NATIVE_FRAME_WORKER"));
+    private static boolean pendingInputFrame;
+
+    private static native boolean tryPrepareInputFrame(int reflexMode, int maxFps);
 
     public static native void initFolderPath(String folderPath);
 
@@ -48,6 +54,45 @@ public class RendererProxy {
     private static native int submitCommandNative();
 
     private static native int presentNative(boolean menuFrame);
+
+    private static native int executeFrameNative(boolean menuFrame);
+
+    public static boolean nativeFrameWorker() {
+        return NATIVE_FRAME_WORKER;
+    }
+
+    public static void prepareInputFrame() {
+        if (NATIVE_FRAME_WORKER
+                && initialized
+                && !FRAME.acquired()
+                && !Options.dlssFrameGeneration) {
+            Minecraft client = Minecraft.getInstance();
+            if (client.level != null
+                    && client.getOverlay() == null
+                    && tryPrepareInputFrame(Options.reflexMode, Options.maxFps)) {
+                pendingInputFrame = true;
+                return;
+            }
+        }
+        if (NATIVE_FRAME_WORKER && !FRAME.acquired()) acquireContext();
+        streamlineFrameEvent(0);
+    }
+
+    private static void activateInputFrame() {
+        if (!pendingInputFrame) return;
+        if (!FRAME.acquired()) acquireContext();
+        pendingInputFrame = false;
+        streamlineFrameEvent(0);
+    }
+
+    public static void beginSimulation() {
+        streamlineFrameEvent(pendingInputFrame ? 4 : 1);
+    }
+
+    public static void beginRenderSubmission() {
+        activateInputFrame();
+        streamlineFrameEvent(2);
+    }
 
     private static boolean menuFrame() {
         Minecraft client = Minecraft.getInstance();
@@ -108,6 +153,10 @@ public class RendererProxy {
             return;
         }
         try {
+            if (NATIVE_FRAME_WORKER) {
+                checkVkResult("交接 Vulkan 帧", executeFrameNative(menuFrame()));
+                return;
+            }
             int result;
             synchronized (TextureProxy.class) {
                 result = submitCommandNative();
@@ -225,6 +274,7 @@ public class RendererProxy {
 
     public static void close() {
         initialized = false;
+        pendingInputFrame = false;
         FRAME.markPresentedOrClosed();
         int result;
         synchronized (TextureProxy.class) {

@@ -1,9 +1,18 @@
 #pragma once
 #include "common/shared.hpp"
+#include <glm/gtc/matrix_transform.hpp>
 #include <cstdint>
 #include <stdexcept>
 
 namespace mcvr::view {
+inline constexpr double reconstructionOriginRange = 1024.0;
+
+// Both frame matrices must describe the same, stable world origin. Subtract in
+// double before conversion so sub-pixel camera motion survives far coordinates.
+inline glm::mat4 reconstructionView(const glm::mat4 &relativeView, const glm::dvec3 &camera, const glm::dvec3 &origin) {
+    return relativeView * glm::translate(glm::mat4(1), glm::vec3(origin - camera));
+}
+
 inline uint32_t viewForSlot(uint32_t slot, uint32_t framesPerView) {
     if (!framesPerView) throw std::invalid_argument("View frame partition is empty");
     return slot / framesPerView;

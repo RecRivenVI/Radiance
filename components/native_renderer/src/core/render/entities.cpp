@@ -4,6 +4,7 @@
 #include "core/render/entity_gpu_conversion.hpp"
 #include "core/render/computed_surface.hpp"
 #include "core/render/scene_scope.hpp"
+#include "core/render/frame_execution.hpp"
 #include <cstdlib>
 #include <unordered_set>
 #include <glm/gtc/type_ptr.hpp>
@@ -14,6 +15,7 @@
 #include "common/final_position.hpp"
 #include "core/diagnostics/geometry_audit.hpp"
 #include "core/render/entities.hpp"
+#include "core/render/medium_contact_mesh.hpp"
 #include "core/render/line_geometry.hpp"
 
 #include "core/logging.hpp"
@@ -390,6 +392,7 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
     for (auto &data : datas) {
         if (data->topologyPrepared) continue;
         data->topologyVertexFlags.resize(data->geometryCount);
+        std::vector<std::vector<uint32_t>> mediumSheetPairs(data->geometryCount);
         for (size_t g = 0; g < data->geometryCount; ++g) {
             if (!data->rawGeometry.empty() && data->rawGeometry[g].present()) continue;
             auto result = [&] {
@@ -401,6 +404,7 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
             preparedVertices += data->vertices[g].size();
             preparedTriangles += data->indices[g].size() / 3;
             data->topologyVertexFlags[g] = std::move(result.vertexFlags);
+            mediumSheetPairs[g] = std::move(result.sheetPairs);
             if (result.report.pairedQuads || result.report.pairedTriangles)
                 data->geometryMaterialFlags[g] |= mcvr::geometry::pairedGeometryBit;
             {
@@ -425,7 +429,7 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
                 data->geometryEyeColours, data->geometryTypes, data->geometryGroupNames, data->geometryContentNames,
                 data->authoredQuads, data->rawGeometry, data->shaderKeys, data->materialKeys,
                 data->emissiveOverlayTextureIDs, data->surfaceLayerQualification, data->topologyVertexFlags,
-                layers.primitives);
+                layers.primitives, mediumSheetPairs);
             data->geometryCount = static_cast<uint32_t>(data->vertices.size());
             data->surfaceLayoutKey = layers.topologyKey;
             data->surfaceLayers = std::move(layers.primitives);
@@ -472,9 +476,20 @@ void EntityBuildDataBatch::build(std::shared_ptr<vk::ComputePipeline> *conversio
                         }
                     }
                 });
-                Renderer::instance().buffers()->queueImportantWorldUpload(data->surfaceLayerBuffer);
+                Renderer::instance()
+                    .buffers(Renderer::instance().framework()->worldInputSlot())
+                    ->queueImportantWorldUpload(data->surfaceLayerBuffer);
             }
         }
+        auto mediumMesh = mcvr::medium::makeMesh(data->vertices, data->indices, data->topologyVertexFlags,
+                                                 data->geometryMaterialFlags, mediumSheetPairs);
+        // Deferred/computed inputs have no authoritative CPU triangle snapshot yet.
+        // Keep them unknown rather than publishing an empty no-contact proof.
+        for (size_t g = 0; g < data->rawGeometry.size(); ++g)
+            if (data->rawGeometry[g].present() && (data->geometryMaterialFlags[g] & mcvr::faces::mediumBoundary) &&
+                mediumMesh)
+                mediumMesh->complete = false;
+        data->mediumMesh = std::move(mediumMesh);
         data->topologyPrepared = true;
     }
     if (mcvr::profile::enabled()) {
@@ -618,6 +633,7 @@ void EntityPostBuildDataBatch::addData(std::shared_ptr<EntityBuildData> data) {
 
 Entity::Entity(std::shared_ptr<EntityBuildData> chunkBuildData) {
     geometryMaterialFlags = chunkBuildData->geometryMaterialFlags;
+    mediumMesh = chunkBuildData->mediumMesh;
     geometryDrawColours = chunkBuildData->geometryDrawColours;
     geometryEyeColours = chunkBuildData->geometryEyeColours;
     surfaceLayoutKey = chunkBuildData->surfaceLayoutKey;
@@ -725,11 +741,12 @@ Entities::Entities(std::shared_ptr<Framework> framework) {
 std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rigid::SubmissionRecord &record,
                                                                  const char *const *groups,
                                                                  std::span<const mcvr::rigid::ModelBinding> bindings) {
+    auto &input = frameInputs();
     auto framework = Renderer::instance().framework();
     auto &frr = framework->frameResourceRetainer();
     auto found = rigidModels_.find(record.model);
-    if (found != rigidModels_.end() && found->second->world == activeWorldToken_ &&
-        found->second->generation == activeResourceGeneration_)
+    if (found != rigidModels_.end() && found->second->world == input.activeWorldToken_ &&
+        found->second->generation == input.activeResourceGeneration_)
         return found->second;
 
     mcvr::profile::Scope creation("entity-rigid-model-create");
@@ -737,7 +754,7 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
         mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.new-input", record.vertexCount,
                             static_cast<uint64_t>(record.vertexCount) * 128);
     auto build = EntityBuildDataBatch::create();
-    const auto start = entityBuildDataBatch_->datas.size();
+    const auto start = input.entityBuildDataBatch_->datas.size();
     int hash = 0, post = 0, prebuilt = -1, geometryCount = bindings.empty() ? 1 : static_cast<int>(bindings.size());
     std::vector<int> formats(geometryCount, World::PBR_TRIANGLE),
         modes(geometryCount, static_cast<int>(World::DrawMode::QUADS));
@@ -792,18 +809,18 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
                                      // Declared local coatings use the same composition as captured
                                      // owners, once at resource creation. Their CPU input is copied
                                      // before returning to Java, never retained as borrowed pointers.
-                                     .worldToken = activeWorldToken_,
-                                     .frameToken = activeFrameToken_,
-                                     .resourceGeneration = activeResourceGeneration_,
+                                     .worldToken = input.activeWorldToken_,
+                                     .frameToken = input.activeFrameToken_,
+                                     .resourceGeneration = input.activeResourceGeneration_,
                                      .geometryDrawColours = colours.data(),
                                      .geometryUvTransforms = uvTransforms.data(),
                                      .localModelResource = true});
-        if (entityBuildDataBatch_->datas.size() != start + 1)
+        if (input.entityBuildDataBatch_->datas.size() != start + 1)
             throw std::logic_error("Rigid model conversion did not produce one model");
-        build->datas.push_back(entityBuildDataBatch_->datas.back());
-        entityBuildDataBatch_->datas.resize(start);
+        build->datas.push_back(input.entityBuildDataBatch_->datas.back());
+        input.entityBuildDataBatch_->datas.resize(start);
     } catch (...) {
-        entityBuildDataBatch_->datas.resize(start);
+        input.entityBuildDataBatch_->datas.resize(start);
         throw;
     }
     build->build();
@@ -824,8 +841,8 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
     const auto candidates = rigidGeometries_.equal_range(geometryHash);
     for (auto it = candidates.first; it != candidates.second; ++it) {
         auto candidate = it->second.lock();
-        if (candidate && candidate->world == activeWorldToken_ && candidate->generation == activeResourceGeneration_ &&
-            *candidate->geometryContent == *content) {
+        if (candidate && candidate->world == input.activeWorldToken_ &&
+            candidate->generation == input.activeResourceGeneration_ && *candidate->geometryContent == *content) {
             geometryOwner = std::move(candidate);
             break;
         }
@@ -843,7 +860,7 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
         build->blasBatchBuilder.reset();
         if (mcvr::profile::enabled()) mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.geometry-reuse", 1, 0);
     }
-    auto buffers = Renderer::instance().buffers();
+    auto buffers = Renderer::instance().buffers(Renderer::instance().framework()->worldInputSlot());
     if (!geometryOwner) {
         buffers->queueImportantWorldUpload(build->indexBuffer);
         buffers->queueImportantWorldUpload(build->positionBuffer);
@@ -854,8 +871,8 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
     resource->geometryOwner = geometryOwner;
     resource->geometryContent = geometryOwner ? geometryOwner->geometryContent : std::move(content);
     resource->batch = EntityBatch::create(build);
-    resource->world = activeWorldToken_;
-    resource->generation = activeResourceGeneration_;
+    resource->world = input.activeWorldToken_;
+    resource->generation = input.activeResourceGeneration_;
     const auto &geometry = *resource->batch->entities.front();
     if (!geometry.geometryCount || !geometry.blas) throw std::logic_error("Rigid model must produce a BLAS");
     resource->blas = geometry.blas;
@@ -899,7 +916,7 @@ std::shared_ptr<RigidModelResource> Entities::residentRigidModel(const mcvr::rig
     while (rigidModelBytes_ + resource->residentBytes > budget) {
         auto oldest = rigidModels_.end();
         for (auto it = rigidModels_.begin(); it != rigidModels_.end(); ++it)
-            if (it->second->used != activeFrameToken_ &&
+            if (it->second->used != input.activeFrameToken_ &&
                 (oldest == rigidModels_.end() || it->second->used < oldest->second->used))
                 oldest = it;
         if (oldest == rigidModels_.end()) return resource;
@@ -917,29 +934,34 @@ void Entities::queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
                                 const char *const *groups,
                                 size_t groupCount,
                                 std::span<const mcvr::rigid::ModelBinding> bindings) {
+    auto &input = frameInputs();
     mcvr::profile::Scope timing("entity-rigid-queue");
-    if (!worldMeshFrameOpen_ || !activeWorldToken_ || (count && (!records || !groups || !groupCount)))
+    if (!input.worldMeshFrameOpen_ || !input.activeWorldToken_ || (count && (!records || !groups || !groupCount)))
         throw std::invalid_argument("Invalid rigid model submission batch");
     for (size_t g = 0; g < groupCount; ++g)
         if (!groups[g]) throw std::invalid_argument("Missing rigid model group name");
     // Validate the complete batch first so a rejected record cannot leave a partial frame.
     for (size_t i = 0; i < count; ++i) {
         mcvr::rigid::validate(records[i], groupCount);
-        if (!Renderer::instance().world()->spaces().contains(records[i].space))
+        if (!Renderer::instance()
+                 .world(Renderer::instance().framework()->worldInputSlot())
+                 ->spaces()
+                 .contains(records[i].space))
             throw std::invalid_argument("Rigid instance references a missing scene space");
     }
     const auto recipes = mcvr::rigid::bindings(bindings, groupCount);
-    rigidInstances_.reserve(rigidInstances_.size() + count);
+    auto &rigid = input.rigidInputsForWrite();
+    rigid.instances.reserve(rigid.instances.size() + count);
     for (size_t i = 0; i < count; ++i) {
         const auto &record = records[i];
         const auto recipe = recipes.find(record.model);
         auto resource = residentRigidModel(
             record, groups, recipe == recipes.end() ? std::span<const mcvr::rigid::ModelBinding>{} : recipe->second);
-        if (resource->used != activeFrameToken_) {
-            rigidUsed_.push_back(resource);
-            resource->used = activeFrameToken_;
+        if (resource->used != input.activeFrameToken_) {
+            rigid.models.push_back(resource);
+            resource->used = input.activeFrameToken_;
         }
-        rigidInstances_.push_back(RigidInstance{resource.get(), record.model, record.history,
+        rigid.instances.push_back(RigidInstance{resource.get(), record.model, record.history,
                                                 glm::make_mat4(record.matrix), record.x, record.y, record.z,
                                                 static_cast<uint32_t>(record.mask), glm::make_vec4(record.drawColour),
                                                 record.space, record.surface, record.coordinates});
@@ -948,8 +970,88 @@ void Entities::queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
 
 std::optional<Entities::ResidentInstance> Entities::removePersistentInstance(uint64_t id) {
     auto record = persistentInstances_.remove(id);
-    if (record) persistentModelPins_.unpin(record->resource.get());
+    if (record) {
+        persistentModelPins_.unpin(record->resource.get());
+        retainedSelections_.stale(id);
+    }
     return record;
+}
+
+void Entities::retainRigidSelection(uint64_t group, std::span<const uint64_t> ids) {
+    retainedSelections_.set(group, ids);
+}
+
+void Entities::clearRetainedRigidSelections() {
+    retainedSelections_.clear();
+}
+
+size_t Entities::selectRetainedRigidInstances() {
+    mcvr::profile::Scope timing("entity-rigid-retained");
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ || !input.activeWorldToken_)
+        throw std::invalid_argument("Retained instance selection outside scene frame");
+    auto &rigid = input.rigidInputsForWrite();
+    size_t selected = 0;
+    size_t rebuiltRows = 0;
+    static const bool pagePlacements = [] {
+        const auto *value = std::getenv("RADIANCE_RETAINED_RIGID_PLACEMENTS");
+        return value && std::string_view(value) == "1";
+    }();
+    const auto accept = [&](const auto &resource) {
+        return resource->world == input.activeWorldToken_ && resource->generation == input.activeResourceGeneration_;
+    };
+    const auto useModel = [&](const auto &resource) {
+        if (resource->used == input.activeFrameToken_) return;
+        rigid.models.push_back(resource);
+        resource->used = input.activeFrameToken_;
+    };
+    if (pagePlacements) {
+        retainedSelections_.eachGroup(persistentInstances_, [&](auto records, auto &page) {
+            if (!page || page->worldToken != input.activeWorldToken_ ||
+                page->resourceGeneration != input.activeResourceGeneration_) {
+                auto next = std::make_shared<RetainedRigidPlacements>();
+                next->worldToken = input.activeWorldToken_;
+                next->resourceGeneration = input.activeResourceGeneration_;
+                next->instances.reserve(records.size());
+                std::unordered_set<const RigidModelResource *> seen;
+                for (const auto *record : records) {
+                    const auto &resource = record->resource;
+                    if (!accept(resource)) continue;
+                    next->instances.push_back(record->placement);
+                    next->geometryCount += resource->geometries.size();
+                    next->multiGeometryCount += resource->geometries.size() > 1;
+                    if (seen.insert(resource.get()).second) next->models.push_back(resource);
+                }
+                rebuiltRows += next->instances.size();
+                page = std::move(next);
+            }
+            const auto count = page->instances.size();
+            if (!count) return;
+            for (const auto &model : page->models) useModel(model);
+            rigid.appendRetained(page);
+            selected += count;
+        });
+    } else {
+        rigid.instances.reserve(rigid.instances.size() + retainedSelections_.members());
+        retainedSelections_.each(persistentInstances_, [&](const ResidentInstance &record) {
+            if (!accept(record.resource)) return;
+            useModel(record.resource);
+            rigid.instances.push_back(record.placement);
+            ++selected;
+        });
+        rebuiltRows = selected;
+    }
+    if (mcvr::profile::enabled()) {
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.retained", selected,
+                            retainedSelections_.groups());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.retained-dropped",
+                            retainedSelections_.members() - selected, 0);
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.retained-resolved",
+                            retainedSelections_.resolvedRows(), 0);
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.retained-placements-built", rebuiltRows,
+                            rebuiltRows * sizeof(RigidInstance));
+    }
+    return selected;
 }
 std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid::SubmissionRecord> records,
                                                      const char *const *groups,
@@ -957,17 +1059,60 @@ std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid
                                                      std::span<const mcvr::rigid::ModelBinding> bindings,
                                                      std::span<const uint64_t> selected,
                                                      std::span<const uint64_t> removed) {
-    if (!worldMeshFrameOpen_ || !activeWorldToken_ || (records.size() && (!groups || !groupCount)))
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ || !input.activeWorldToken_ || (records.size() && (!groups || !groupCount)))
         throw std::invalid_argument("Persistent instance submission outside scene frame");
     for (size_t g = 0; g < groupCount; g++)
         if (!groups[g]) throw std::invalid_argument("Missing model group");
+    const auto checkVersion = [&](const ResidentInstance &record) {
+        const auto &resource = record.resource;
+        if (resource->world != input.activeWorldToken_ || resource->generation != input.activeResourceGeneration_)
+            throw std::invalid_argument("Stale persistent scene version");
+    };
+    auto &rigid = input.rigidInputsForWrite();
+    const auto append = [&](const ResidentInstance &record) {
+        const auto &resource = record.resource;
+        if (resource->used != input.activeFrameToken_) {
+            rigid.models.push_back(resource);
+            resource->used = input.activeFrameToken_;
+        }
+        rigid.instances.push_back(record.placement);
+    };
+    const auto report = [&](size_t refused) {
+        if (!mcvr::profile::enabled()) return;
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.changed", records.size(), records.size_bytes());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.selected", selected.size(),
+                            selected.size_bytes());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.resident", persistentInstances_.size(),
+                            persistentModelPins_.bytes());
+        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.transient-budget", refused, 0);
+    };
+    if (records.empty() && removed.empty()) {
+        auto &placements = rigidSelectionScratch_;
+        placements.clear();
+        placements.reserve(selected.size());
+        for (uint64_t id : selected) {
+            if (!id) throw std::invalid_argument("Missing transient instance input");
+            const auto *record = persistentInstances_.find(id);
+            if (!record) throw std::invalid_argument("Selected instance has no accepted version");
+            checkVersion(*record);
+            placements.push_back(record);
+        }
+        for (const auto *record : placements) append(*record);
+        placements.clear();
+        report(0);
+        return {};
+    }
     std::unordered_set<uint64_t> live;
     for (uint64_t id : selected)
         if (id) live.insert(id);
     std::unordered_set<uint64_t> changed;
     for (const auto &record : records) {
         mcvr::rigid::validate(record, groupCount);
-        if (!Renderer::instance().world()->spaces().contains(record.space))
+        if (!Renderer::instance()
+                 .world(Renderer::instance().framework()->worldInputSlot())
+                 ->spaces()
+                 .contains(record.space))
             throw std::invalid_argument("Rigid instance references a missing scene space");
         if (live.contains(record.history)) changed.insert(record.history);
     }
@@ -1000,6 +1145,7 @@ std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid
             if (persistentInstances_.size() < 65536 &&
                 persistentModelPins_.pin(resource.get(), resource->residentBytes)) {
                 persistentInstances_.put(record.history, std::move(next));
+                retainedSelections_.stale(record.history);
                 temporary.erase(record.history);
                 refused.erase(record.history);
             } else {
@@ -1014,37 +1160,32 @@ std::vector<uint64_t> Entities::updateRigidInstances(std::span<const mcvr::rigid
         if (!id && nextTransient >= transient.size()) throw std::invalid_argument("Missing transient instance input");
         const auto &record =
             id ? (temporary.contains(id) ? temporary.at(id) : persistentInstances_.at(id)) : transient[nextTransient++];
-        auto &resource = record.resource;
-        if (resource->world != activeWorldToken_ || resource->generation != activeResourceGeneration_)
-            throw std::invalid_argument("Stale persistent scene version");
-        if (resource->used != activeFrameToken_) {
-            rigidUsed_.push_back(resource);
-            resource->used = activeFrameToken_;
-        }
-        rigidInstances_.push_back(record.placement);
+        checkVersion(record);
+        append(record);
     }
     if (nextTransient != transient.size()) throw std::invalid_argument("Unselected transient instance input");
-    if (mcvr::profile::enabled()) {
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.changed", records.size(), records.size_bytes());
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.selected", selected.size(),
-                            selected.size_bytes());
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.resident", persistentInstances_.size(),
-                            persistentModelPins_.bytes());
-        mcvr::profile::emit(mcvr::profile::frame, 5, "scene.instances.transient-budget", refused.size(), 0);
-    }
+    report(refused.size());
     return {refused.begin(), refused.end()};
 }
 
-std::shared_ptr<RigidInstanceBatch> Entities::rigidInstanceBatch() {
+std::shared_ptr<const RigidInstanceBatch> Entities::rigidInstanceBatch() {
+    auto &input = frameInputs();
     Renderer::instance().framework()->safeAcquireCurrentContext();
-    return rigidBatch_;
+    return input.rigidBatch_;
 }
 
 void Entities::recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &commands) {
+    auto &input = frameInputs();
     if (mcvr::profile::enabled())
-        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.resident", rigidModels_.size(), rigidModelBytes_);
-    for (auto &model : rigidUsed_) {
+        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.resident", input.residentModels,
+                            input.residentBytes);
+    const auto serial = Renderer::instance().framework()->frameSerial();
+    for (const auto &model : input.rigidInputs_->models) {
         auto &geometry = model->geometryResource();
+        if (geometry.lastRecordingSerial != serial) {
+            geometry.lastRecordingSerial = serial;
+            geometry.lifecycle.beginFrame();
+        }
         geometry.lifecycle.record([&] {
             geometry.build->blasBatchBuilder->submit(commands);
             if (mcvr::profile::enabled())
@@ -1055,8 +1196,9 @@ void Entities::recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &comma
 }
 
 void Entities::commitRigidModels() {
+    auto &input = frameInputs();
     auto &frr = Renderer::instance().framework()->frameResourceRetainer();
-    for (auto &model : rigidUsed_) {
+    for (const auto &model : input.rigidInputs_->models) {
         auto &geometry = model->geometryResource();
         if (geometry.lifecycle.submitted()) {
             frr.retain(geometry.build);
@@ -1066,8 +1208,10 @@ void Entities::commitRigidModels() {
 }
 
 bool Entities::beginCachedCloud(uint64_t revision, double x, double y, double z) {
-    if (revision == 0 || cloudCapturing_ || !entityBuildDataBatch_)
+    auto &input = frameInputs();
+    if (revision == 0 || input.cloudCapturing_ || !input.entityBuildDataBatch_)
         throw std::logic_error("Invalid cloud geometry capture boundary");
+    std::lock_guard lock(cloudMutex_);
     if (auto cached = cloudCache_.find(revision)) {
         for (const auto &entity : cached->entities) {
             // Per-frame transforms must not mutate entities retained by previous TLAS/history.
@@ -1075,62 +1219,69 @@ bool Entities::beginCachedCloud(uint64_t revision, double x, double y, double z)
             next->x = x;
             next->y = y;
             next->z = z;
-            queuedClouds_.push_back(std::move(next));
+            input.queuedClouds_.push_back(std::move(next));
         }
         return true;
     }
-    cloudRevision_ = revision;
-    cloudCaptureStart_ = entityBuildDataBatch_->datas.size();
-    cloudCapturing_ = true;
+    input.cloudRevision_ = revision;
+    input.cloudCaptureStart_ = input.entityBuildDataBatch_->datas.size();
+    input.cloudCapturing_ = true;
     return false;
 }
 
 void Entities::endCachedCloud(bool success) {
-    if (!cloudCapturing_) throw std::logic_error("Cloud capture was not opened");
-    cloudCapturing_ = false;
-    auto &datas = entityBuildDataBatch_->datas;
+    auto &input = frameInputs();
+    if (!input.cloudCapturing_) throw std::logic_error("Cloud capture was not opened");
+    input.cloudCapturing_ = false;
+    auto &datas = input.entityBuildDataBatch_->datas;
     if (success) {
-        cloudBuildData_ = EntityBuildDataBatch::create();
-        cloudBuildData_->datas.assign(datas.begin() + cloudCaptureStart_, datas.end());
+        input.cloudBuildData_ = EntityBuildDataBatch::create();
+        input.cloudBuildData_->datas.assign(datas.begin() + input.cloudCaptureStart_, datas.end());
     }
-    datas.erase(datas.begin() + cloudCaptureStart_, datas.end());
+    datas.erase(datas.begin() + input.cloudCaptureStart_, datas.end());
 }
 
 void Entities::recordGpuConversion(const std::shared_ptr<vk::CommandBuffer> &commands) {
-    for (const auto &surface : surfaceFields_) surface->record(*Renderer::instance().framework(), commands);
-    if (mcvr::profile::enabled() && entityBuildDataBatch_) {
+    auto &input = frameInputs();
+    for (const auto &surface : input.surfaceFields_) surface->record(*Renderer::instance().framework(), commands);
+    if (mcvr::profile::enabled() && input.entityBuildDataBatch_) {
         size_t builds = 0;
-        for (const auto &data : entityBuildDataBatch_->datas)
+        for (const auto &data : input.entityBuildDataBatch_->datas)
             if (data->blas) ++builds;
         mcvr::profile::emit(mcvr::profile::frame, 5, "entity.dynamic.blas-inputs", builds, 0);
     }
-    if (entityBuildDataBatch_ && entityBuildDataBatch_->gpuConversion)
-        entityBuildDataBatch_->gpuConversion->record(*Renderer::instance().framework(), commands);
+    if (input.entityBuildDataBatch_ && input.entityBuildDataBatch_->gpuConversion)
+        input.entityBuildDataBatch_->gpuConversion->record(*Renderer::instance().framework(), commands);
 }
 
 void Entities::recordCachedCloudBuild(const std::shared_ptr<vk::CommandBuffer> &commands) {
-    if (cloudBlasBuilder_ && !cloudBuildRecorded_) {
-        cloudBlasBuilder_->submit(commands);
-        cloudBuildRecorded_ = true;
+    auto &input = frameInputs();
+    if (input.cloudBlasBuilder_ && !input.cloudBuildRecorded_) {
+        input.cloudBlasBuilder_->submit(commands);
+        input.cloudBuildRecorded_ = true;
     }
 }
 
 void Entities::commitCachedCloudBuild() {
-    if (cloudBuildRecorded_) cloudCache_.submitted();
+    auto &input = frameInputs();
+    std::lock_guard lock(cloudMutex_);
+    if (input.cloudBuildRecorded_) cloudCache_.submitted();
 }
 
 void Entities::publishCachedEntities(std::vector<std::shared_ptr<Entity>> entities) {
+    auto &input = frameInputs();
     auto &retainer = Renderer::instance().framework()->frameResourceRetainer();
-    retainer.retain(entityBatch_);
-    retainer.retain(blasBatchBuilder_);
-    blasBatchBuilder_.reset();
-    entityBatch_ = EntityBatch::create();
-    entityBatch_->entities = std::move(entities);
+    retainer.retain(input.entityBatch_);
+    retainer.retain(input.blasBatchBuilder_);
+    input.blasBatchBuilder_.reset();
+    input.entityBatch_ = EntityBatch::create();
+    input.entityBatch_->entities = std::move(entities);
 }
 
 std::shared_ptr<Entity> Entities::buildUiMaterialUpdate(const std::shared_ptr<Entity> &previous) {
-    if (!previous || entityBuildDataBatch_->datas.size() != 1) return {};
-    const auto &data = entityBuildDataBatch_->datas.front();
+    auto &input = frameInputs();
+    if (!previous || input.entityBuildDataBatch_->datas.size() != 1) return {};
+    const auto &data = input.entityBuildDataBatch_->datas.front();
     if (data->surfaceLayerOwner || previous->surfaceLayerBuffer || data->geometryCount != previous->geometryCount)
         return {};
     std::vector<vk::VertexFormat::MaterialVertex> materials;
@@ -1155,7 +1306,9 @@ std::shared_ptr<Entity> Entities::buildUiMaterialUpdate(const std::shared_ptr<En
     next->materialBufferAddresses = std::make_shared<std::vector<VkDeviceAddress>>();
     for (auto offset : offsets)
         next->materialBufferAddresses->push_back(next->materialBuffer->bufferAddress() + offset * sizeof(materials[0]));
-    Renderer::instance().buffers()->queueImportantWorldUpload(next->materialBuffer);
+    Renderer::instance()
+        .buffers(Renderer::instance().framework()->worldInputSlot())
+        ->queueImportantWorldUpload(next->materialBuffer);
     framework->frameResourceRetainer().retain(previous);
     return next;
 }
@@ -1174,87 +1327,137 @@ void Entities::releaseRigidGeometry(uint64_t identity) {
     });
 }
 
+const EntityFrameInputs &Entities::frameInputs() const {
+    if (!SceneRecordingScope::active()) {
+        const auto *slot = Renderer::instance().framework()->worldInputSlot();
+        if (slot && slot->splitWorldInputs) {
+            mcvr::FrameExecution::checkAccess("world inputs", slot);
+            return *slot->entityInputs;
+        }
+    }
+    return legacyFrame_;
+}
+
+EntityFrameInputs &Entities::frameInputs() {
+    return const_cast<EntityFrameInputs &>(std::as_const(*this).frameInputs());
+}
+
+RigidInstanceBatch &EntityFrameInputs::rigidInputsForWrite() {
+    // An auxiliary view or a later build may still hold the previously published placements.
+    if (rigidInputs_.use_count() != 1) {
+        auto next = RigidInstanceBatch::create();
+        next->models = rigidInputs_->models;
+        next->instances = rigidInputs_->instances;
+        next->retained = rigidInputs_->retained;
+        next->retainedCount = rigidInputs_->retainedCount;
+        rigidInputs_ = std::move(next);
+    }
+    return *rigidInputs_;
+}
+
+void Entities::sealFrameInputs() {
+    auto &input = frameInputs();
+    input.residentModels = rigidModels_.size();
+    input.residentBytes = rigidModelBytes_;
+}
+
 void Entities::resetFrame() {
-    surfaceFields_.clear();
+    auto &input = frameInputs();
+    input.surfaceFields_.clear();
     mcvr::audit::beginFrame();
-    if (auto world = Renderer::instance().world()) world->spaces().beginFrame();
+    if (auto world = Renderer::instance().world(Renderer::instance().framework()->worldInputSlot()))
+        world->spaces().beginFrame();
     auto framework = Renderer::instance().framework();
     framework->safeAcquireCurrentContext();
     auto &frr = framework->frameResourceRetainer();
-    for (auto &model : rigidUsed_) {
-        frr.retain(model);
-        model->geometryResource().lifecycle.beginFrame();
+    input.rigidBatch_.reset();
+    for (const auto &model : input.rigidInputs_->models) { frr.retain(model); }
+    if (input.rigidInputs_.use_count() == 1) {
+        input.rigidInputs_->models.clear();
+        input.rigidInputs_->clearPlacements();
+    } else {
+        auto next = RigidInstanceBatch::create();
+        next->models.reserve(input.rigidInputs_->models.size());
+        next->instances.reserve(input.rigidInputs_->instances.size());
+        next->retained.reserve(input.rigidInputs_->retained.size());
+        input.rigidInputs_ = std::move(next);
     }
-    rigidUsed_.clear();
-    rigidInstances_.clear();
     std::erase_if(rigidModels_, [&](const auto &entry) {
-        if (activeFrameToken_ <= entry.second->used + 120) return false;
+        if (lastProducerFrameToken_ <= entry.second->used + 120) return false;
         rigidModelBytes_ -= entry.second->residentBytes;
         frr.retain(entry.second);
         return true;
     });
     std::erase_if(rigidGeometries_, [](const auto &entry) { return entry.second.expired(); });
-    frr.retain(cloudBuildData_);
-    frr.retain(cloudBlasBuilder_);
-    cloudBuildData_.reset();
-    cloudBlasBuilder_.reset();
-    queuedClouds_.clear();
-    cloudCapturing_ = cloudBuildRecorded_ = false;
-    cloudCache_.beginFrame();
+    frr.retain(input.cloudBuildData_);
+    frr.retain(input.cloudBlasBuilder_);
+    input.cloudBuildData_.reset();
+    input.cloudBlasBuilder_.reset();
+    input.queuedClouds_.clear();
+    input.cloudCapturing_ = input.cloudBuildRecorded_ = false;
+    {
+        std::lock_guard lock(cloudMutex_);
+        cloudCache_.beginFrame();
+    }
 
-    frr.retain(entityBuildDataBatch_);
-    entityBuildDataBatch_ = EntityBuildDataBatch::create();
+    frr.retain(input.entityBuildDataBatch_);
+    input.entityBuildDataBatch_ = EntityBuildDataBatch::create();
 
-    frr.retain(entityPostBuildDataBatch_);
-    entityPostBuildDataBatch_ = EntityPostBuildDataBatch::create();
+    frr.retain(input.entityPostBuildDataBatch_);
+    input.entityPostBuildDataBatch_ = EntityPostBuildDataBatch::create();
 
-    frr.retain(entityBatch_);
-    entityBatch_ = nullptr;
+    frr.retain(input.entityBatch_);
+    input.entityBatch_ = nullptr;
 
-    frr.retain(entityPostBatch_);
-    entityPostBatch_ = nullptr;
+    frr.retain(input.entityPostBatch_);
+    input.entityPostBatch_ = nullptr;
 
-    frr.retain(blasBatchBuilder_);
-    blasBatchBuilder_ = nullptr;
+    frr.retain(input.blasBatchBuilder_);
+    input.blasBatchBuilder_ = nullptr;
 }
 
 int Entities::beginWorldMeshFrame(uint64_t worldToken, uint64_t frameToken, uint64_t resourceGeneration) {
+    auto &input = frameInputs();
     if (worldToken == 0 || frameToken == 0 || resourceGeneration == 0) return 3;
-    if (entityBuildDataBatch_ == nullptr) entityBuildDataBatch_ = EntityBuildDataBatch::create();
-    if (entityPostBuildDataBatch_ == nullptr) entityPostBuildDataBatch_ = EntityPostBuildDataBatch::create();
+    if (input.entityBuildDataBatch_ == nullptr) input.entityBuildDataBatch_ = EntityBuildDataBatch::create();
+    if (input.entityPostBuildDataBatch_ == nullptr)
+        input.entityPostBuildDataBatch_ = EntityPostBuildDataBatch::create();
     auto removeWorldMeshes = [](auto &datas) {
         std::erase_if(datas, [](const auto &data) { return data != nullptr && data->worldToken != 0; });
     };
-    removeWorldMeshes(entityBuildDataBatch_->datas);
-    removeWorldMeshes(entityPostBuildDataBatch_->datas);
-    surfaceFields_.clear();
+    removeWorldMeshes(input.entityBuildDataBatch_->datas);
+    removeWorldMeshes(input.entityPostBuildDataBatch_->datas);
+    input.surfaceFields_.clear();
     if (surfaceGeneration_ != resourceGeneration) {
         surfaces_.clear();
         surfaceGeneration_ = resourceGeneration;
     }
-    activeWorldToken_ = worldToken;
-    activeFrameToken_ = frameToken;
-    activeResourceGeneration_ = resourceGeneration;
-    frameEntityCheckpoint_ = entityBuildDataBatch_->datas.size();
-    framePostCheckpoint_ = entityPostBuildDataBatch_->datas.size();
-    worldMeshStages_.clear();
-    worldMeshFrameOpen_ = true;
+    input.activeWorldToken_ = worldToken;
+    input.activeFrameToken_ = frameToken;
+    lastProducerFrameToken_ = frameToken;
+    input.activeResourceGeneration_ = resourceGeneration;
+    input.frameEntityCheckpoint_ = input.entityBuildDataBatch_->datas.size();
+    input.framePostCheckpoint_ = input.entityPostBuildDataBatch_->datas.size();
+    input.worldMeshStages_.clear();
+    input.worldMeshFrameOpen_ = true;
     return 1;
 }
 
 int Entities::beginWorldMeshStage(
     uint64_t worldToken, uint64_t frameToken, uint64_t resourceGeneration, uint64_t stageToken, int) {
-    if (!worldMeshFrameOpen_ || !acceptsWorldMeshGeneration(worldToken, frameToken, resourceGeneration)) return 2;
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ || !acceptsWorldMeshGeneration(worldToken, frameToken, resourceGeneration)) return 2;
     if (stageToken == 0) return 3;
-    worldMeshStages_.push_back({stageToken, entityBuildDataBatch_->datas.size(),
-                                entityPostBuildDataBatch_->datas.size(), surfaceFields_.size()});
+    input.worldMeshStages_.push_back({stageToken, input.entityBuildDataBatch_->datas.size(),
+                                      input.entityPostBuildDataBatch_->datas.size(), input.surfaceFields_.size()});
     return 1;
 }
 
 int Entities::queueWorldMesh(const WorldMeshBuildTask &task) {
-    if (!worldMeshFrameOpen_ ||
+    auto &input = frameInputs();
+    if (!input.worldMeshFrameOpen_ ||
         !acceptsWorldMeshGeneration(task.worldToken, task.frameToken, task.resourceGeneration) ||
-        worldMeshStages_.empty() || worldMeshStages_.back().token != task.stageToken)
+        input.worldMeshStages_.empty() || input.worldMeshStages_.back().token != task.stageToken)
         return 2;
     if (task.vertices == nullptr || task.vertexCount <= 0 || task.vertexBytes <= 0 || task.indexCount <= 0 ||
         task.indexBytes < 0 || (task.indices == nullptr && task.indexBytes != 0))
@@ -1297,7 +1500,7 @@ int Entities::queueWorldMesh(const WorldMeshBuildTask &task) {
     const char *contentNamePtr = materialKey;
     const char *shaderKey = task.shaderKey == nullptr ? "" : task.shaderKey;
 
-    const size_t before = entityBuildDataBatch_->datas.size();
+    const size_t before = input.entityBuildDataBatch_->datas.size();
     queueBuild(EntitiesBuildTask{
         .coordinate = task.coordinate,
         .normalOffset = false,
@@ -1335,17 +1538,25 @@ int Entities::queueWorldMesh(const WorldMeshBuildTask &task) {
         .geometryLineStyles = task.lineStyle,
         .geometryDrawColours = &task.drawColour,
     });
-    if (entityBuildDataBatch_->datas.size() <= before) return 3;
+    if (input.entityBuildDataBatch_->datas.size() <= before) return 3;
     if (task.auditId != 0) {
-        for (size_t i = before; i < entityBuildDataBatch_->datas.size(); ++i) {
-            if (entityBuildDataBatch_->datas[i] != nullptr) { entityBuildDataBatch_->datas[i]->auditId = task.auditId; }
+        for (size_t i = before; i < input.entityBuildDataBatch_->datas.size(); ++i) {
+            if (input.entityBuildDataBatch_->datas[i] != nullptr) {
+                input.entityBuildDataBatch_->datas[i]->auditId = task.auditId;
+            }
         }
-        worldMeshAuditStates_[task.auditId] = WorldMeshAuditState::Queued;
+        setWorldMeshAuditState(task.auditId, WorldMeshAuditState::Queued);
     }
     return 1;
 }
 
+void Entities::setWorldMeshAuditState(uint64_t id, WorldMeshAuditState state) {
+    std::lock_guard lock(auditMutex_);
+    worldMeshAuditStates_[id] = state;
+}
+
 int Entities::pollWorldMeshAudit(uint64_t auditId, bool consumeTerminal) {
+    std::lock_guard lock(auditMutex_);
     const auto found = worldMeshAuditStates_.find(auditId);
     if (found == worldMeshAuditStates_.end()) return 0;
     const auto status = found->second;
@@ -1355,88 +1566,95 @@ int Entities::pollWorldMeshAudit(uint64_t auditId, bool consumeTerminal) {
 
 void Entities::endWorldMeshStage(
     uint64_t worldToken, uint64_t frameToken, uint64_t resourceGeneration, uint64_t stageToken, bool commit) {
-    if (!acceptsWorldMeshGeneration(worldToken, frameToken, resourceGeneration) || worldMeshStages_.empty() ||
-        worldMeshStages_.back().token != stageToken) {
+    auto &input = frameInputs();
+    if (!acceptsWorldMeshGeneration(worldToken, frameToken, resourceGeneration) || input.worldMeshStages_.empty() ||
+        input.worldMeshStages_.back().token != stageToken) {
         throw std::runtime_error("World mesh stage closed out of order or after generation change");
     }
-    const StageCheckpoint checkpoint = worldMeshStages_.back();
-    worldMeshStages_.pop_back();
+    const EntityFrameInputs::StageCheckpoint checkpoint = input.worldMeshStages_.back();
+    input.worldMeshStages_.pop_back();
     if (!commit) {
-        for (size_t i = checkpoint.entityCount; i < entityBuildDataBatch_->datas.size(); ++i) {
-            const auto &data = entityBuildDataBatch_->datas[i];
+        for (size_t i = checkpoint.entityCount; i < input.entityBuildDataBatch_->datas.size(); ++i) {
+            const auto &data = input.entityBuildDataBatch_->datas[i];
             if (data != nullptr && data->auditId != 0) {
-                worldMeshAuditStates_[data->auditId] = WorldMeshAuditState::RolledBack;
+                setWorldMeshAuditState(data->auditId, WorldMeshAuditState::RolledBack);
             }
         }
-        entityBuildDataBatch_->datas.resize(checkpoint.entityCount);
-        entityPostBuildDataBatch_->datas.resize(checkpoint.postCount);
-        surfaceFields_.resize(checkpoint.surfaceCount);
+        input.entityBuildDataBatch_->datas.resize(checkpoint.entityCount);
+        input.entityPostBuildDataBatch_->datas.resize(checkpoint.postCount);
+        input.surfaceFields_.resize(checkpoint.surfaceCount);
     }
 }
 
 void Entities::endWorldMeshFrame(uint64_t worldToken, uint64_t frameToken, uint64_t resourceGeneration, bool commit) {
+    auto &input = frameInputs();
     if (!acceptsWorldMeshGeneration(worldToken, frameToken, resourceGeneration)) {
         throw std::runtime_error("World mesh frame closed after generation change");
     }
-    if (!worldMeshStages_.empty()) throw std::runtime_error("World mesh frame has active stages");
+    if (!input.worldMeshStages_.empty()) throw std::runtime_error("World mesh frame has active stages");
     if (!commit) {
-        rigidInstances_.clear();
-        surfaceFields_.clear();
-        for (size_t i = frameEntityCheckpoint_; i < entityBuildDataBatch_->datas.size(); ++i) {
-            const auto &data = entityBuildDataBatch_->datas[i];
+        input.rigidInputsForWrite().clearPlacements();
+        input.surfaceFields_.clear();
+        for (size_t i = input.frameEntityCheckpoint_; i < input.entityBuildDataBatch_->datas.size(); ++i) {
+            const auto &data = input.entityBuildDataBatch_->datas[i];
             if (data != nullptr && data->auditId != 0) {
-                worldMeshAuditStates_[data->auditId] = WorldMeshAuditState::RolledBack;
+                setWorldMeshAuditState(data->auditId, WorldMeshAuditState::RolledBack);
             }
         }
-        entityBuildDataBatch_->datas.resize(frameEntityCheckpoint_);
-        entityPostBuildDataBatch_->datas.resize(framePostCheckpoint_);
+        input.entityBuildDataBatch_->datas.resize(input.frameEntityCheckpoint_);
+        input.entityPostBuildDataBatch_->datas.resize(input.framePostCheckpoint_);
     } else {
-        for (size_t i = frameEntityCheckpoint_; i < entityBuildDataBatch_->datas.size(); ++i) {
-            const auto &data = entityBuildDataBatch_->datas[i];
+        for (size_t i = input.frameEntityCheckpoint_; i < input.entityBuildDataBatch_->datas.size(); ++i) {
+            const auto &data = input.entityBuildDataBatch_->datas[i];
             if (data != nullptr && data->auditId != 0) {
-                worldMeshAuditStates_[data->auditId] = WorldMeshAuditState::Committed;
+                setWorldMeshAuditState(data->auditId, WorldMeshAuditState::Committed);
             }
         }
     }
-    worldMeshFrameOpen_ = false;
+    input.worldMeshFrameOpen_ = false;
 }
 
 void Entities::invalidateWorldMeshGeneration(uint64_t resourceGeneration) {
+    auto &input = frameInputs();
     surfaces_.clear();
-    surfaceFields_.clear();
+    input.surfaceFields_.clear();
     surfaceGeneration_ = resourceGeneration;
     auto &retainer = Renderer::instance().framework()->frameResourceRetainer();
     for (const auto &[key, model] : rigidModels_) retainer.retain(model);
     persistentInstances_.clear();
+    retainedSelections_.clear();
     persistentModelPins_.clear();
     rigidModels_.clear();
     rigidGeometries_.clear();
     rigidModelBytes_ = 0;
-    rigidInstances_.clear();
-    activeResourceGeneration_ = resourceGeneration;
-    worldMeshFrameOpen_ = false;
-    worldMeshStages_.clear();
-    if (entityBuildDataBatch_ != nullptr) {
-        for (const auto &data : entityBuildDataBatch_->datas) {
+    input.rigidInputsForWrite().clearPlacements();
+    input.activeResourceGeneration_ = resourceGeneration;
+    input.worldMeshFrameOpen_ = false;
+    input.worldMeshStages_.clear();
+    if (input.entityBuildDataBatch_ != nullptr) {
+        for (const auto &data : input.entityBuildDataBatch_->datas) {
             if (data != nullptr && data->worldToken != 0 && data->auditId != 0) {
-                worldMeshAuditStates_[data->auditId] = WorldMeshAuditState::Stale;
+                setWorldMeshAuditState(data->auditId, WorldMeshAuditState::Stale);
             }
         }
-        std::erase_if(entityBuildDataBatch_->datas,
+        std::erase_if(input.entityBuildDataBatch_->datas,
                       [](const auto &data) { return data != nullptr && data->worldToken != 0; });
     }
-    if (entityPostBuildDataBatch_ != nullptr) {
-        std::erase_if(entityPostBuildDataBatch_->datas,
+    if (input.entityPostBuildDataBatch_ != nullptr) {
+        std::erase_if(input.entityPostBuildDataBatch_->datas,
                       [](const auto &data) { return data != nullptr && data->worldToken != 0; });
     }
 }
 
 bool Entities::acceptsWorldMeshGeneration(uint64_t worldToken, uint64_t frameToken, uint64_t resourceGeneration) const {
-    return WorldMeshContract::generationMatches(activeWorldToken_, activeFrameToken_, activeResourceGeneration_,
-                                                worldToken, frameToken, resourceGeneration);
+    auto &input = frameInputs();
+    return WorldMeshContract::generationMatches(input.activeWorldToken_, input.activeFrameToken_,
+                                                input.activeResourceGeneration_, worldToken, frameToken,
+                                                resourceGeneration);
 }
 
 void Entities::queueBuild(EntitiesBuildTask task) {
+    auto &input = frameInputs();
     mcvr::profile::Scope totalProfile("entity.queue.total");
     {
         mcvr::profile::Scope validationProfile("entity.queue.validate");
@@ -1613,7 +1831,7 @@ void Entities::queueBuild(EntitiesBuildTask task) {
                                                    task.indexFormats[geometryIndex + i],
                                                    task.vertexCounts[geometryIndex + i], post, task.worldToken != 0,
                                                    task.geometryIndexCounts != nullptr, eyeLayer || layerOwner,
-                                                   cloudCapturing_, prebuiltBLAS >= 0}) &&
+                                                   input.cloudCapturing_, prebuiltBLAS >= 0}) &&
                 ![&] {
                     const auto count = static_cast<uint32_t>(task.vertexCounts[geometryIndex + i]);
                     const uint32_t corners = authoredQuads.back() ? 4u : 3u;
@@ -1629,7 +1847,7 @@ void Entities::queueBuild(EntitiesBuildTask task) {
                         (small ? smallPairVertices : largePairVertices) += count;
                         pairMatches += matched;
                     }
-                    return matched;
+                    return matched || mediumBoundary;
                 }()) {
                 mcvr::profile::Scope capture(formatPhase);
                 const uint32_t count = task.vertexCounts[geometryIndex + i];
@@ -2247,9 +2465,9 @@ void Entities::queueBuild(EntitiesBuildTask task) {
             else
                 preparedEntityData.push_back(std::move(chunkBuildData));
         } else if (post) {
-            entityPostBuildDataBatch_->addData(std::move(chunkBuildData));
+            input.entityPostBuildDataBatch_->addData(std::move(chunkBuildData));
         } else {
-            entityBuildDataBatch_->addData(std::move(chunkBuildData));
+            input.entityBuildDataBatch_->addData(std::move(chunkBuildData));
         }
 
         // mcvr::log::info("Entities") << "used texture ids: ";
@@ -2358,8 +2576,8 @@ void Entities::queueBuild(EntitiesBuildTask task) {
             throw std::length_error("Entity submission batch size overflow");
         destination.reserve(destination.size() + count);
     };
-    auto &entityDestination = entityBuildDataBatch_->datas;
-    auto &postDestination = entityPostBuildDataBatch_->datas;
+    auto &entityDestination = input.entityBuildDataBatch_->datas;
+    auto &postDestination = input.entityPostBuildDataBatch_->datas;
     reserveAppend(entityDestination, preparedEntityData.size());
     reserveAppend(postDestination, preparedPostData.size());
     entityDestination.insert(entityDestination.end(), std::make_move_iterator(preparedEntityData.begin()),
@@ -2377,6 +2595,8 @@ void Entities::queueBuild(EntitiesBuildTask task) {
 }
 
 void Entities::build() {
+    auto &input = frameInputs();
+    if (!mcvr::FrameExecution::workerRecordingSlot()) sealFrameInputs();
     mcvr::profile::Scope auditProfile("entity-build-dispatch");
     Renderer::instance().framework()->safeAcquireCurrentContext();
     auto framework = Renderer::instance().framework();
@@ -2384,142 +2604,166 @@ void Entities::build() {
     auto device = framework->device();
     auto physicalDevice = framework->physicalDevice();
 
-    bool hasComputed =
-        std::any_of(entityBuildDataBatch_->datas.begin(), entityBuildDataBatch_->datas.end(), [](const auto &d) {
-            return std::any_of(d->rawGeometry.begin(), d->rawGeometry.end(),
-                               [](const auto &r) { return bool(r.computed); });
-        });
-    entityBuildDataBatch_->build((gpuEntityConversionEnabled() || hasComputed) ? &conversionPipeline_ : nullptr,
-                                 SceneRecordingScope::active() ? nullptr : cpuPreparation_.get());
+    bool hasComputed = std::any_of(input.entityBuildDataBatch_->datas.begin(), input.entityBuildDataBatch_->datas.end(),
+                                   [](const auto &d) {
+                                       return std::any_of(d->rawGeometry.begin(), d->rawGeometry.end(),
+                                                          [](const auto &r) { return bool(r.computed); });
+                                   });
+    input.entityBuildDataBatch_->build((gpuEntityConversionEnabled() || hasComputed) ? &conversionPipeline_ : nullptr,
+                                       SceneRecordingScope::active() ? nullptr : cpuPreparation_.get());
 
-    for (const auto &data : entityBuildDataBatch_->datas) {
+    for (const auto &data : input.entityBuildDataBatch_->datas) {
         if (data != nullptr && data->auditId != 0) {
-            worldMeshAuditStates_[data->auditId] = WorldMeshAuditState::Built;
+            setWorldMeshAuditState(data->auditId, WorldMeshAuditState::Built);
         }
     }
 
-    if (auto conversion = entityBuildDataBatch_->gpuConversion) {
-        auto buffers = Renderer::instance().buffers();
+    if (auto conversion = input.entityBuildDataBatch_->gpuConversion) {
+        auto buffers = Renderer::instance().buffers(Renderer::instance().framework()->worldInputSlot());
         for (const auto &group : conversion->sourceGroups) {
             buffers->queueImportantWorldUpload(group.input);
             buffers->queueImportantWorldUpload(group.jobs);
         }
     } else {
-        Renderer::instance().buffers()->queueImportantWorldUpload(entityBuildDataBatch_->indexBuffer);
-        Renderer::instance().buffers()->queueImportantWorldUpload(entityBuildDataBatch_->positionBuffer);
-        Renderer::instance().buffers()->queueImportantWorldUpload(entityBuildDataBatch_->materialBuffer);
+        Renderer::instance()
+            .buffers(Renderer::instance().framework()->worldInputSlot())
+            ->queueImportantWorldUpload(input.entityBuildDataBatch_->indexBuffer);
+        Renderer::instance()
+            .buffers(Renderer::instance().framework()->worldInputSlot())
+            ->queueImportantWorldUpload(input.entityBuildDataBatch_->positionBuffer);
+        Renderer::instance()
+            .buffers(Renderer::instance().framework()->worldInputSlot())
+            ->queueImportantWorldUpload(input.entityBuildDataBatch_->materialBuffer);
     }
-    blasBatchBuilder_ = entityBuildDataBatch_->blasBatchBuilder;
+    input.blasBatchBuilder_ = input.entityBuildDataBatch_->blasBatchBuilder;
 
-    entityBatch_ = EntityBatch::create(entityBuildDataBatch_);
-    if (cloudBuildData_) {
-        cloudBuildData_->build();
-        auto buffers = Renderer::instance().buffers();
-        buffers->queueImportantWorldUpload(cloudBuildData_->indexBuffer);
-        buffers->queueImportantWorldUpload(cloudBuildData_->positionBuffer);
-        buffers->queueImportantWorldUpload(cloudBuildData_->materialBuffer);
-        cloudBlasBuilder_ = cloudBuildData_->blasBatchBuilder;
-        auto batch = EntityBatch::create(cloudBuildData_);
-        cloudCache_.store(cloudRevision_, batch);
-        queuedClouds_.insert(queuedClouds_.end(), batch->entities.begin(), batch->entities.end());
+    input.entityBatch_ = EntityBatch::create(input.entityBuildDataBatch_);
+    if (input.cloudBuildData_) {
+        input.cloudBuildData_->build();
+        auto buffers = Renderer::instance().buffers(Renderer::instance().framework()->worldInputSlot());
+        buffers->queueImportantWorldUpload(input.cloudBuildData_->indexBuffer);
+        buffers->queueImportantWorldUpload(input.cloudBuildData_->positionBuffer);
+        buffers->queueImportantWorldUpload(input.cloudBuildData_->materialBuffer);
+        input.cloudBlasBuilder_ = input.cloudBuildData_->blasBatchBuilder;
+        auto batch = EntityBatch::create(input.cloudBuildData_);
+        {
+            std::lock_guard lock(cloudMutex_);
+            cloudCache_.store(input.cloudRevision_, batch);
+        }
+        input.queuedClouds_.insert(input.queuedClouds_.end(), batch->entities.begin(), batch->entities.end());
     }
-    entityBatch_->entities.insert(entityBatch_->entities.end(), queuedClouds_.begin(), queuedClouds_.end());
-    rigidBatch_ = RigidInstanceBatch::create();
-    rigidBatch_->models = rigidUsed_;
-    rigidBatch_->instances = rigidInstances_;
-    rigidBatch_->worldToken = activeWorldToken_;
-    rigidBatch_->frameToken = activeFrameToken_;
-    rigidBatch_->resourceGeneration = activeResourceGeneration_;
+    input.entityBatch_->entities.insert(input.entityBatch_->entities.end(), input.queuedClouds_.begin(),
+                                        input.queuedClouds_.end());
+    const auto &previous = input.rigidBatch_;
+    if (previous.get() != input.rigidInputs_.get() || previous->worldToken != input.activeWorldToken_ ||
+        previous->frameToken != input.activeFrameToken_ ||
+        previous->resourceGeneration != input.activeResourceGeneration_) {
+        auto &rigid = input.rigidInputsForWrite();
+        rigid.worldToken = input.activeWorldToken_;
+        rigid.frameToken = input.activeFrameToken_;
+        rigid.resourceGeneration = input.activeResourceGeneration_;
+        input.rigidBatch_ = input.rigidInputs_;
+    }
     if (mcvr::profile::enabled()) {
+        const auto &rigid = *input.rigidBatch_;
         uint64_t vertices = 0;
-        for (const auto &instance : rigidInstances_) vertices += instance.model->vertexCount;
-        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.instances", rigidInstances_.size(), 0);
+        size_t page = 0;
+        for (size_t i = 0; i < rigid.count(); ++i) vertices += rigid.at(i, page).model->vertexCount;
+        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.instances", rigid.count(), 0);
         mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.referenced-vertices", vertices, 0);
-        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.resident-models", rigidModels_.size(), 0);
+        mcvr::profile::emit(mcvr::profile::frame, 5, "entity.rigid.resident-models", input.residentModels, 0);
     }
-    entityPostBatch_ = EntityPostBatch::create(entityPostBuildDataBatch_);
+    input.entityPostBatch_ = EntityPostBatch::create(input.entityPostBuildDataBatch_);
 
-    for (auto entity : entityPostBatch_->entities) {
+    for (auto entity : input.entityPostBatch_->entities) {
         for (int i = 0; i < entity->geometryCount; i++) {
-            Renderer::instance().buffers()->queueImportantWorldUpload(entity->vertexBuffers[i],
-                                                                      entity->indexBuffers[i]);
+            Renderer::instance()
+                .buffers(Renderer::instance().framework()->worldInputSlot())
+                ->queueImportantWorldUpload(entity->vertexBuffers[i], entity->indexBuffers[i]);
         }
     }
 }
 
 void Entities::releaseScene() {
+    auto &input = frameInputs();
     surfaces_.clear();
-    surfaceFields_.clear();
+    input.surfaceFields_.clear();
     surfaceGeneration_ = 0;
     persistentInstances_.clear();
+    retainedSelections_.clear();
+    rigidSelectionScratch_.clear();
     persistentModelPins_.clear();
     rigidModels_.clear();
     rigidGeometries_.clear();
     rigidModelBytes_ = 0;
-    rigidInstances_.clear();
-    rigidUsed_.clear();
-    rigidBatch_ = nullptr;
+    input.rigidBatch_.reset();
+    input.rigidInputs_ = RigidInstanceBatch::create();
     cloudCache_.clear();
-    cloudBuildData_.reset();
-    cloudBlasBuilder_.reset();
-    queuedClouds_.clear();
-    cloudCapturing_ = cloudBuildRecorded_ = false;
-    entityBatch_ = nullptr;
-    entityPostBatch_ = nullptr;
-    blasBatchBuilder_ = nullptr;
-    entityBuildDataBatch_ = EntityBuildDataBatch::create();
-    entityPostBuildDataBatch_ = EntityPostBuildDataBatch::create();
+    input.cloudBuildData_.reset();
+    input.cloudBlasBuilder_.reset();
+    input.queuedClouds_.clear();
+    input.cloudCapturing_ = input.cloudBuildRecorded_ = false;
+    input.entityBatch_ = nullptr;
+    input.entityPostBatch_ = nullptr;
+    input.blasBatchBuilder_ = nullptr;
+    input.entityBuildDataBatch_ = EntityBuildDataBatch::create();
+    input.entityPostBuildDataBatch_ = EntityPostBuildDataBatch::create();
 }
 
 void Entities::close() {
+    auto &input = frameInputs();
     cpuPreparation_.reset();
     persistentInstances_.clear();
+    retainedSelections_.clear();
+    rigidSelectionScratch_.clear();
     persistentModelPins_.clear();
     rigidModels_.clear();
     rigidGeometries_.clear();
     rigidModelBytes_ = 0;
-    rigidInstances_.clear();
-    rigidUsed_.clear();
-    rigidBatch_ = nullptr;
+    input.rigidBatch_.reset();
+    input.rigidInputs_ = RigidInstanceBatch::create();
     conversionPipeline_.reset();
     cloudCache_.clear();
-    cloudBuildData_.reset();
-    cloudBlasBuilder_.reset();
-    queuedClouds_.clear();
-    cloudCapturing_ = cloudBuildRecorded_ = false;
+    input.cloudBuildData_.reset();
+    input.cloudBlasBuilder_.reset();
+    input.queuedClouds_.clear();
+    input.cloudCapturing_ = input.cloudBuildRecorded_ = false;
     for (auto &[auditId, status] : worldMeshAuditStates_) {
         if (status < WorldMeshAuditState::Built) status = WorldMeshAuditState::Stale;
     }
-    worldMeshFrameOpen_ = false;
-    worldMeshStages_.clear();
-    activeWorldToken_ = 0;
-    activeFrameToken_ = 0;
-    activeResourceGeneration_ = 0;
-    entityBatch_ = nullptr;
-    entityPostBatch_ = nullptr;
-    entityBuildDataBatch_ = nullptr;
-    entityPostBuildDataBatch_ = nullptr;
-    blasBatchBuilder_ = nullptr;
+    input.worldMeshFrameOpen_ = false;
+    input.worldMeshStages_.clear();
+    input.activeWorldToken_ = 0;
+    input.activeFrameToken_ = 0;
+    input.activeResourceGeneration_ = 0;
+    input.entityBatch_ = nullptr;
+    input.entityPostBatch_ = nullptr;
+    input.entityBuildDataBatch_ = nullptr;
+    input.entityPostBuildDataBatch_ = nullptr;
+    input.blasBatchBuilder_ = nullptr;
 }
 
 std::shared_ptr<EntityBatch> Entities::entityBatch() {
+    auto &input = frameInputs();
     Renderer::instance().framework()->safeAcquireCurrentContext();
 
-    if (entityBatch_)
-        return entityBatch_;
+    if (input.entityBatch_)
+        return input.entityBatch_;
     else
         return nullptr;
 }
 
 std::shared_ptr<EntityPostBatch> Entities::entityPostBatch() {
+    auto &input = frameInputs();
     Renderer::instance().framework()->safeAcquireCurrentContext();
 
-    if (entityPostBatch_)
-        return entityPostBatch_;
+    if (input.entityPostBatch_)
+        return input.entityPostBatch_;
     else
         return nullptr;
 }
 
 std::shared_ptr<vk::BLASBatchBuilder> Entities::blasBatchBuilder() {
-    return blasBatchBuilder_;
+    auto &input = frameInputs();
+    return input.blasBatchBuilder_;
 }

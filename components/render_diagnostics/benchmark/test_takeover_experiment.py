@@ -24,7 +24,8 @@ class CompletionTests(unittest.TestCase):
             (extra/'.git/history').write_bytes(b'not-workspace')
             with patch.object(experiment, 'ROOT', core), \
                     patch.object(experiment, 'EXTRA_ROOT', extra), \
-                    patch.object(Path, 'glob', return_value=iter([])):
+                    patch.object(experiment, 'ARTIFACT_ROOT', Path(directory)/'artifacts'), \
+                    patch.object(experiment, 'SCRATCH_ROOT', Path(directory)/'scratches'):
                 self.assertEqual(9, experiment.storage_preflight()['workspace'])
 
     def test_storage_includes_independent_radiance_scratch_evidence(self):
@@ -32,10 +33,10 @@ class CompletionTests(unittest.TestCase):
             scratch = Path(directory)/'RadianceFeasibility'
             scratch.mkdir()
             (scratch/'evidence.txt').write_bytes(b'proof')
-            def walk(path, **kwargs):
-                return [(str(scratch), [], ['evidence.txt'])] if Path(path)==scratch else []
-            with patch.object(Path, 'glob', lambda path, pattern: iter([scratch]) if pattern=='Radiance*' else iter([])), \
-                    patch.object(experiment.os, 'walk', side_effect=walk):
+            with patch.object(experiment, 'ROOT', Path(directory)/'core'), \
+                    patch.object(experiment, 'EXTRA_ROOT', Path(directory)/'extra'), \
+                    patch.object(experiment, 'ARTIFACT_ROOT', Path(directory)/'artifacts'), \
+                    patch.object(experiment, 'SCRATCH_ROOT', Path(directory)):
                 self.assertEqual(5, experiment.storage_preflight()['external'])
 
     def test_source_checkpoints_exclude_generated_evidence_and_local_settings(self):

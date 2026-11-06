@@ -94,8 +94,9 @@ void UIModuleContext::postDiagramTarget(uint32_t framebuffer) {
         if (source.readColor->image == target.drawColors[0]->image ||
             source.depthStencil->image == target.drawColors[0]->image)
             throw std::runtime_error("Diagram input and output must use separate attachments");
-        sampleDiagramImage(frame->overlayCommandBuffer, *source.readColor, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-        sampleDiagramImage(frame->overlayCommandBuffer, *source.depthStencil,
+        sampleDiagramImage(frame->recordingOverlayCommands(), *source.readColor,
+                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        sampleDiagramImage(frame->recordingOverlayCommands(), *source.depthStencil,
                            VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
         setOverlayScissorEnabled(false);
         setOverlayViewport(0, 0, target.extent.width, target.extent.height);
@@ -143,12 +144,12 @@ void UIModuleContext::postDiagramTarget(uint32_t framebuffer) {
         }
         const auto post = Renderer::instance().buffers()->getPostID();
         if (post < 0) throw std::runtime_error("Diagram uniform has not been uploaded");
-        const auto command = frame->overlayCommandBuffer->vkCommandBuffer();
+        const auto command = frame->recordingOverlayCommands()->vkCommandBuffer();
         vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->vkPipeline());
         uint32_t offsets[]{0, Renderer::instance().buffers()->overlayPostUniformOffset(post)};
         vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_GRAPHICS, descriptor->vkPipelineLayout(), 0,
                                 descriptor->descriptorSet().size(), descriptor->descriptorSet().data(), 2, offsets);
-        frame->overlayCommandBuffer->draw(3, 1);
+        frame->recordingOverlayCommands()->draw(3, 1);
         auto &retainer = framework->frameResourceRetainer();
         retainer.retain(source.readColor->image);
         retainer.retain(source.depthStencil->image);

@@ -42,6 +42,16 @@ class BakedModelTakeoverTest {
         var resource = new BakedModelTakeover.Source(model, 512);
         assertEquals(2, resource.quads.size());
         assertEquals(512, resource.bytes);
+        assertFalse(resource.hasTintedQuads);
+        assertEquals(List.of(-1, -1), resource.untinted);
+        assertTrue(resource.versions.isEmpty());
+        var tintedQuad = new BakedQuad(new int[32], 0, Direction.UP, null, true);
+        var tintedModel =
+                new net.minecraft.client.resources.model.SimpleBakedModel(
+                        List.of(q, tintedQuad), faces, true, true, true, null, null, null);
+        var tintedResource = new BakedModelTakeover.Source(tintedModel, 512);
+        assertTrue(tintedResource.hasTintedQuads);
+        assertEquals(List.of(-1, -1), tintedResource.untinted);
         assertThrows(
                 IllegalArgumentException.class, () -> new BakedModelTakeover.Source(model, 256));
         var oversized =

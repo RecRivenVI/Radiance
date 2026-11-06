@@ -1,3 +1,4 @@
+#include "core/render/frame_execution.hpp"
 #include "core/render/ui_coverage.hpp"
 #include "core/logging.hpp"
 #include "core/vulkan/image_format.hpp"
@@ -50,11 +51,12 @@ void UIModule::init(std::shared_ptr<Framework> framework) {
     initOverlayPostPipelineTypes();
     initOverlayPostPipelines();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     contexts_.resize(size);
     for (int i = 0; i < size; i++) {
         contexts_[i] = UIModuleContext::create(framework->contexts()[i], shared_from_this());
     }
+    contexts_.front()->publishQueryState();
 
 #ifdef DEBUG
     mcvr::log::info("UiModule") << "UI init" << std::endl;
@@ -128,13 +130,14 @@ void UIModule::resize(std::shared_ptr<Framework> framework) {
     initSpiderBlurFrameBuffers();
     initOverlayPostPipelines();
 
-    const uint32_t size = framework->swapchain()->imageCount();
+    const uint32_t size = framework->mainFrameSlotCount();
     contexts_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
         contexts_[i] = UIModuleContext::create(framework->contexts()[i], shared_from_this());
         if (persistentState != nullptr) { contexts_[i]->copyPersistentStateFrom(*persistentState); }
     }
     lastActiveContext_ = contexts_.front();
+    contexts_.front()->publishQueryState();
 }
 
 std::vector<std::shared_ptr<UIModuleContext>> &UIModule::contexts() {
@@ -528,6 +531,13 @@ bool UIModule::defaultStencilAvailable() const {
     return defaultStencilAvailable_;
 }
 
+std::optional<VkExtent2D> UIModule::defaultFramebufferExtent() const {
+    if (overlayDrawColorImages_.empty() || !overlayDrawColorImages_.front() || !overlayDrawDepthStencilImages_.front())
+        return std::nullopt;
+    const auto &image = overlayDrawColorImages_.front();
+    return VkExtent2D{image->width(), image->height()};
+}
+
 void UIModule::refreshOverlayDescriptorTable(uint32_t frameIndex) {
     std::lock_guard lock(overlayDescriptorMutex_);
     auto framework = framework_.lock();
@@ -549,7 +559,7 @@ void UIModule::refreshOverlayDescriptorTable(uint32_t frameIndex) {
 void UIModule::initOverlayDescriptorTablesAndFrameSamplers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayDescriptorTables_.resize(size);
     overlayDescriptorTableDirty_.assign(size, true);
     overlayDrawColorImageSamplers_.resize(size);
@@ -582,7 +592,7 @@ void UIModule::initOverlayDescriptorTablesAndFrameSamplers() {
 void UIModule::initDiagramDrawImages() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     diagramDrawColorImages_.resize(size);
     diagramDrawDepthImages_.resize(size);
 
@@ -606,7 +616,7 @@ void UIModule::initDiagramDrawImages() {
 void UIModule::initOverlayDrawImages() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayDrawColorImages_.resize(size);
     overlayDrawDepthStencilImages_.resize(size);
     overlayDrawDepthStencilViewIndices_.assign(size, 0);
@@ -659,7 +669,7 @@ void UIModule::initOverlayDrawImages() {
 
 void UIModule::initMainAliasImages() {
     auto framework = framework_.lock();
-    const uint32_t size = framework->swapchain()->imageCount();
+    const uint32_t size = framework->mainFrameSlotCount();
     const VkExtent2D extent = framework->swapchain()->vkExtent();
     const VkFormat depthFormat = overlayDrawDepthStencilImages_.front()->vkFormat();
     mainColorAliasImages_.resize(size);
@@ -677,7 +687,7 @@ void UIModule::initMainAliasImages() {
 void UIModule::initMainDepthPass() {
     auto framework = framework_.lock();
     constexpr uint32_t pushConstantSize = 32;
-    const uint32_t size = framework->swapchain()->imageCount();
+    const uint32_t size = framework->mainFrameSlotCount();
     mainDepthDescriptorTables_.resize(size);
     mainDepthSourceSamplers_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
@@ -805,7 +815,7 @@ void UIModule::initOverlayDrawRenderPass() {
 void UIModule::initOverlayDrawFrameBuffers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayDrawFramebuffers_.resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -868,7 +878,7 @@ void UIModule::initDiagramDrawRenderPass() {
 void UIModule::initDiagramDrawFrameBuffers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     diagramDrawFramebuffers_.resize(size);
 
     for (uint32_t i = 0; i < size; ++i) {
@@ -884,7 +894,7 @@ void UIModule::initDiagramDrawFrameBuffers() {
 void UIModule::initOverlayPostImages() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayPostColorImages_.resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -900,7 +910,7 @@ void UIModule::initOverlayPostImages() {
 
 void UIModule::initSpiderBlurImages() {
     auto framework = framework_.lock();
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     spiderSmallBlurImages_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
         spiderSmallBlurImages_[i] = vk::DeviceLocalImage::create(
@@ -915,39 +925,44 @@ void UIModule::initSpiderBlurImages() {
 void UIModule::initOverlayPostRenderPass() {
     auto framework = framework_.lock();
 
-    overlayPostRenderPass_ = vk::RenderPassBuilder{}
-                                 .beginAttachmentDescription()
-                                 .defineAttachmentDescription({
-                                     // color
-                                     .format = overlayPostColorImages_[0]->vkFormat(),
-                                     .samples = VK_SAMPLE_COUNT_1_BIT,
-                                     .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
-                                     .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
-                                     .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
-                                     .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
-                                     .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                     .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                 })
-                                 .endAttachmentDescription()
-                                 .beginAttachmentReference()
-                                 .defineAttachmentReference({
-                                     .attachment = 0,
-                                     .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                 })
-                                 .endAttachmentReference()
-                                 .beginSubpassDescription()
-                                 .defineSubpassDescription({
-                                     .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                     .colorAttachmentIndices = {0},
-                                 })
-                                 .endSubpassDescription()
-                                 .build(framework->device());
+    auto makePass = [&](VkFormat format) {
+        return vk::RenderPassBuilder{}
+            .beginAttachmentDescription()
+            .defineAttachmentDescription({
+                // color
+                .format = format,
+                .samples = VK_SAMPLE_COUNT_1_BIT,
+                .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+                .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+                .stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+                .stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+                .initialLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                .finalLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            })
+            .endAttachmentDescription()
+            .beginAttachmentReference()
+            .defineAttachmentReference({
+                .attachment = 0,
+                .layout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+            })
+            .endAttachmentReference()
+            .beginSubpassDescription()
+            .defineSubpassDescription({
+                .pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS,
+                .colorAttachmentIndices = {0},
+            })
+            .endSubpassDescription()
+            .build(framework->device());
+    };
+    overlayPostRenderPass_ = makePass(overlayPostColorImages_.front()->vkFormat());
+    // The spider effect can reuse the eight-bit diagram target.
+    overlayPostUnormRenderPass_ = makePass(diagramDrawColorImages_.front()->vkFormat());
 }
 
 void UIModule::initOverlayPostFrameBuffers() {
     auto framework = framework_.lock();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     overlayPostFramebuffers_.resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -961,7 +976,7 @@ void UIModule::initOverlayPostFrameBuffers() {
 
 void UIModule::initSpiderBlurFrameBuffers() {
     auto framework = framework_.lock();
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     spiderLargeBlurFramebuffers_.resize(size);
     spiderSmallBlurFramebuffers_.resize(size);
     for (uint32_t i = 0; i < size; ++i) {
@@ -969,7 +984,7 @@ void UIModule::initSpiderBlurFrameBuffers() {
                                               .beginAttachment()
                                               .defineAttachment(diagramDrawColorImages_[i])
                                               .endAttachment()
-                                              .build(framework->device(), overlayPostRenderPass_);
+                                              .build(framework->device(), overlayPostUnormRenderPass_);
         spiderSmallBlurFramebuffers_[i] = vk::FramebufferBuilder{}
                                               .beginAttachment()
                                               .defineAttachment(spiderSmallBlurImages_[i])
@@ -1197,7 +1212,7 @@ void UIModuleContext::syncToCommandBuffer() {
 
     if (!framework->isRunning()) return;
 
-    auto commandBuffer = context->overlayCommandBuffer->vkCommandBuffer();
+    auto commandBuffer = context->recordingOverlayCommands()->vkCommandBuffer();
 
     // ------------ VkPipelineViewportStateCreateInfo ------------
     /* VK_DYNAMIC_STATE_VIEWPORT */
@@ -1308,11 +1323,10 @@ void UIModuleContext::copyPersistentStateFrom(const UIModuleContext &other) {
 
     // OpenGL keeps custom viewport/scissor state across a resize, but the default full-window
     // values follow the drawable extent. Distinguish those cases using the old target size.
-    auto context = frameworkContext.lock();
     const uint32_t oldWidth = other.overlayDrawColorImage->width();
     const uint32_t oldHeight = other.overlayDrawColorImage->height();
-    const uint32_t newWidth = context->swapchainImage->width();
-    const uint32_t newHeight = context->swapchainImage->height();
+    const uint32_t newWidth = overlayDrawColorImage->width();
+    const uint32_t newHeight = overlayDrawColorImage->height();
     if (overlayViewport.x == 0.0f && overlayViewport.y == 0.0f &&
         overlayViewport.width == static_cast<float>(oldWidth) &&
         overlayViewport.height == static_cast<float>(oldHeight)) {
@@ -1356,6 +1370,7 @@ void UIModuleContext::copyPersistentStateFrom(const UIModuleContext &other) {
     overlayClearColors = other.overlayClearColors;
     overlayClearDepth = other.overlayClearDepth;
     overlayClearStencil = other.overlayClearStencil;
+    publishQueryState();
 }
 
 // Outside a raster pass, the state is still observable through the shadow fields,
@@ -1381,13 +1396,13 @@ void UIModuleContext::setOverlayScissorEnabled(bool enabled) {
     overlayScissorEnabled = enabled;
     if (deferIdleStateWrite()) return;
     if (overlayScissorEnabled) {
-        vkCmdSetScissor(context->overlayCommandBuffer->vkCommandBuffer(), 0, 1, &overlayScissor);
+        vkCmdSetScissor(context->recordingOverlayCommands()->vkCommandBuffer(), 0, 1, &overlayScissor);
     } else {
         VkRect2D full_scissor = {
             .offset = {0, 0},
             .extent = drawExtent(),
         };
-        vkCmdSetScissor(context->overlayCommandBuffer->vkCommandBuffer(), 0, 1, &full_scissor);
+        vkCmdSetScissor(context->recordingOverlayCommands()->vkCommandBuffer(), 0, 1, &full_scissor);
     }
 }
 
@@ -1413,6 +1428,29 @@ void UIModuleContext::setOverlayScissor(int x, int y, int width, int height) {
     setOverlayScissorEnabled(overlayScissorEnabled);
 }
 
+std::array<int, 14> UIModuleContext::stencilState() const {
+    std::array<int, 14> values;
+    for (size_t side = 0; side < 2; ++side) {
+        const auto base = side * 7;
+        values[base] = overlayCompareOp[side];
+        values[base + 1] = overlayReference[side];
+        values[base + 2] = overlayCompareMask[side];
+        values[base + 3] = overlayFailOp[side];
+        values[base + 4] = overlayDepthFailOp[side];
+        values[base + 5] = overlayPassOp[side];
+        values[base + 6] = overlayWriteMask[side];
+    }
+    return values;
+}
+
+void UIModuleContext::publishQueryState() const {
+    if (mcvr::FrameExecution::workerRecordingSlot()) return;
+    if (auto module = uiModule.lock()) {
+        module->producerViewport_ = overlayViewportGl;
+        module->producerStencil_ = stencilState();
+    }
+}
+
 void UIModuleContext::setOverlayViewport(int x, int y, int width, int height) {
     if (width < 0 || height < 0) throw std::invalid_argument("Negative viewport size");
     auto context = frameworkContext.lock();
@@ -1424,12 +1462,13 @@ void UIModuleContext::setOverlayViewport(int x, int y, int width, int height) {
                                   overlayViewportGl != std::array<int, 4>{x, y, width, height}, overlayMode == NONE);
 
     overlayViewportGl = {x, y, width, height};
+    publishQueryState();
     overlayViewport.x = x;
     overlayViewport.y = static_cast<float>(drawExtent().height) - y - height;
     overlayViewport.width = width;
     overlayViewport.height = height;
     if (deferIdleStateWrite()) return;
-    vkCmdSetViewport(context->overlayCommandBuffer->vkCommandBuffer(), 0, 1, &overlayViewport);
+    vkCmdSetViewport(context->recordingOverlayCommands()->vkCommandBuffer(), 0, 1, &overlayViewport);
 }
 
 void UIModuleContext::setOverlayBlendEnable(bool enable) {
@@ -1461,7 +1500,7 @@ void UIModuleContext::setOverlayColorBlendConstants(float const1, float const2, 
     overlayBlendConstants[2] = const3;
     overlayBlendConstants[3] = const4;
     if (deferIdleStateWrite()) return;
-    vkCmdSetBlendConstants(context->overlayCommandBuffer->vkCommandBuffer(), overlayBlendConstants.data());
+    vkCmdSetBlendConstants(context->recordingOverlayCommands()->vkCommandBuffer(), overlayBlendConstants.data());
 }
 
 void UIModuleContext::setOverlayColorLogicOpEnable(bool enable) {
@@ -1476,7 +1515,7 @@ void UIModuleContext::setOverlayColorLogicOpEnable(bool enable) {
     overlayColorLogicOpEnable = enable;
     if (deferIdleStateWrite()) return;
     if (context->device->hasExtendedDynamicState2LogicOp()) {
-        vkCmdSetLogicOpEnableEXT(context->overlayCommandBuffer->vkCommandBuffer(), overlayColorLogicOpEnable);
+        vkCmdSetLogicOpEnableEXT(context->recordingOverlayCommands()->vkCommandBuffer(), overlayColorLogicOpEnable);
     }
 }
 
@@ -1546,7 +1585,7 @@ void UIModuleContext::setOverlayColorLogicOp(int colorLogicOp) {
     overlayColorLogicOp = static_cast<VkLogicOp>(colorLogicOp);
     if (deferIdleStateWrite()) return;
     if (context->device->hasExtendedDynamicState2LogicOp()) {
-        vkCmdSetLogicOpEXT(context->overlayCommandBuffer->vkCommandBuffer(), overlayColorLogicOp);
+        vkCmdSetLogicOpEXT(context->recordingOverlayCommands()->vkCommandBuffer(), overlayColorLogicOp);
     }
 }
 
@@ -1560,7 +1599,7 @@ void UIModuleContext::setOverlayDepthTestEnable(bool enable) {
 
     overlayDepthTestEnable = enable;
     if (deferIdleStateWrite()) return;
-    vkCmdSetDepthTestEnable(context->overlayCommandBuffer->vkCommandBuffer(), overlayDepthTestEnable);
+    vkCmdSetDepthTestEnable(context->recordingOverlayCommands()->vkCommandBuffer(), overlayDepthTestEnable);
 }
 
 void UIModuleContext::setOverlayDepthWriteEnable(bool enable) {
@@ -1574,7 +1613,7 @@ void UIModuleContext::setOverlayDepthWriteEnable(bool enable) {
 
     overlayDepthWriteEnable = enable;
     if (deferIdleStateWrite()) return;
-    vkCmdSetDepthWriteEnable(context->overlayCommandBuffer->vkCommandBuffer(), overlayDepthWriteEnable);
+    vkCmdSetDepthWriteEnable(context->recordingOverlayCommands()->vkCommandBuffer(), overlayDepthWriteEnable);
 }
 
 void UIModuleContext::setOverlayStencilTestEnable(bool enable) {
@@ -1588,7 +1627,7 @@ void UIModuleContext::setOverlayStencilTestEnable(bool enable) {
 
     overlayStencilTestEnable = enable;
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilTestEnable(context->overlayCommandBuffer->vkCommandBuffer(), overlayStencilTestEnable);
+    vkCmdSetStencilTestEnable(context->recordingOverlayCommands()->vkCommandBuffer(), overlayStencilTestEnable);
 }
 
 void UIModuleContext::setOverlayDepthCompareOp(int depthCompareOp) {
@@ -1602,7 +1641,7 @@ void UIModuleContext::setOverlayDepthCompareOp(int depthCompareOp) {
 
     overlayDepthCompareOp = static_cast<VkCompareOp>(depthCompareOp);
     if (deferIdleStateWrite()) return;
-    vkCmdSetDepthCompareOp(context->overlayCommandBuffer->vkCommandBuffer(), overlayDepthCompareOp);
+    vkCmdSetDepthCompareOp(context->recordingOverlayCommands()->vkCommandBuffer(), overlayDepthCompareOp);
 }
 
 void UIModuleContext::setOverlayStencilFrontFunc(int compareOp, int reference, int compareMask) {
@@ -1619,12 +1658,13 @@ void UIModuleContext::setOverlayStencilFrontFunc(int compareOp, int reference, i
     overlayCompareOp[0] = static_cast<VkCompareOp>(compareOp);
     overlayReference[0] = reference;
     overlayCompareMask[0] = compareMask;
+    publishQueryState();
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilOp(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT, overlayFailOp[0],
-                      overlayPassOp[0], overlayDepthFailOp[0], overlayCompareOp[0]);
-    vkCmdSetStencilReference(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
+    vkCmdSetStencilOp(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
+                      overlayFailOp[0], overlayPassOp[0], overlayDepthFailOp[0], overlayCompareOp[0]);
+    vkCmdSetStencilReference(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
                              overlayReference[0]);
-    vkCmdSetStencilCompareMask(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
+    vkCmdSetStencilCompareMask(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
                                overlayCompareMask[0]);
 }
 
@@ -1642,12 +1682,13 @@ void UIModuleContext::setOverlayStencilBackFunc(int compareOp, int reference, in
     overlayCompareOp[1] = static_cast<VkCompareOp>(compareOp);
     overlayReference[1] = reference;
     overlayCompareMask[1] = compareMask;
+    publishQueryState();
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilOp(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT, overlayFailOp[1],
-                      overlayPassOp[1], overlayDepthFailOp[1], overlayCompareOp[1]);
-    vkCmdSetStencilReference(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
+    vkCmdSetStencilOp(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
+                      overlayFailOp[1], overlayPassOp[1], overlayDepthFailOp[1], overlayCompareOp[1]);
+    vkCmdSetStencilReference(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
                              overlayReference[1]);
-    vkCmdSetStencilCompareMask(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
+    vkCmdSetStencilCompareMask(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
                                overlayCompareMask[1]);
 }
 
@@ -1664,10 +1705,11 @@ void UIModuleContext::setOverlayStencilFrontOp(int failOp, int depthFailOp, int 
 
     overlayFailOp[0] = static_cast<VkStencilOp>(failOp);
     overlayDepthFailOp[0] = static_cast<VkStencilOp>(depthFailOp);
+    publishQueryState();
     overlayPassOp[0] = static_cast<VkStencilOp>(passOp);
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilOp(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT, overlayFailOp[0],
-                      overlayPassOp[0], overlayDepthFailOp[0], overlayCompareOp[0]);
+    vkCmdSetStencilOp(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
+                      overlayFailOp[0], overlayPassOp[0], overlayDepthFailOp[0], overlayCompareOp[0]);
 }
 
 void UIModuleContext::setOverlayStencilBackOp(int failOp, int depthFailOp, int passOp) {
@@ -1683,10 +1725,11 @@ void UIModuleContext::setOverlayStencilBackOp(int failOp, int depthFailOp, int p
 
     overlayFailOp[1] = static_cast<VkStencilOp>(failOp);
     overlayDepthFailOp[1] = static_cast<VkStencilOp>(depthFailOp);
+    publishQueryState();
     overlayPassOp[1] = static_cast<VkStencilOp>(passOp);
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilOp(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT, overlayFailOp[1],
-                      overlayPassOp[1], overlayDepthFailOp[1], overlayCompareOp[1]);
+    vkCmdSetStencilOp(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
+                      overlayFailOp[1], overlayPassOp[1], overlayDepthFailOp[1], overlayCompareOp[1]);
 }
 
 void UIModuleContext::setOverlayStencilFrontWriteMask(int writeMask) {
@@ -1699,8 +1742,9 @@ void UIModuleContext::setOverlayStencilFrontWriteMask(int writeMask) {
                                   overlayMode == NONE);
 
     overlayWriteMask[0] = writeMask;
+    publishQueryState();
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilWriteMask(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
+    vkCmdSetStencilWriteMask(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_FRONT_BIT,
                              overlayWriteMask[0]);
 }
 
@@ -1714,8 +1758,9 @@ void UIModuleContext::setOverlayStencilBackWriteMask(int writeMask) {
                                   overlayMode == NONE);
 
     overlayWriteMask[1] = writeMask;
+    publishQueryState();
     if (deferIdleStateWrite()) return;
-    vkCmdSetStencilWriteMask(context->overlayCommandBuffer->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
+    vkCmdSetStencilWriteMask(context->recordingOverlayCommands()->vkCommandBuffer(), VK_STENCIL_FACE_BACK_BIT,
                              overlayWriteMask[1]);
 }
 
@@ -1729,7 +1774,7 @@ void UIModuleContext::setOverlayLineWidth(float lineWidth) {
 
     overlayLineWidth = lineWidth;
     if (deferIdleStateWrite()) return;
-    vkCmdSetLineWidth(context->overlayCommandBuffer->vkCommandBuffer(), overlayLineWidth);
+    vkCmdSetLineWidth(context->recordingOverlayCommands()->vkCommandBuffer(), overlayLineWidth);
 }
 
 void UIModuleContext::setOverlayPolygonMode(int polygonMode) {
@@ -1743,7 +1788,7 @@ void UIModuleContext::setOverlayPolygonMode(int polygonMode) {
 
     overlayPolygonMode = static_cast<VkPolygonMode>(polygonMode);
     if (deferIdleStateWrite()) return;
-    vkCmdSetPolygonModeEXT(context->overlayCommandBuffer->vkCommandBuffer(), overlayPolygonMode);
+    vkCmdSetPolygonModeEXT(context->recordingOverlayCommands()->vkCommandBuffer(), overlayPolygonMode);
     setOverlayDepthBiasEnable(overlayPolygonMode, overlayDepthBiasEnable);
 }
 
@@ -1757,7 +1802,7 @@ void UIModuleContext::setOverlayCullMode(int cullMode) {
 
     overlayCullMode = cullMode;
     if (deferIdleStateWrite()) return;
-    vkCmdSetCullMode(context->overlayCommandBuffer->vkCommandBuffer(), overlayCullMode);
+    vkCmdSetCullMode(context->recordingOverlayCommands()->vkCommandBuffer(), overlayCullMode);
 }
 
 void UIModuleContext::setOverlayFrontFace(int frontFace) {
@@ -1770,7 +1815,7 @@ void UIModuleContext::setOverlayFrontFace(int frontFace) {
 
     overlayFrontFace = static_cast<VkFrontFace>(frontFace);
     if (deferIdleStateWrite()) return;
-    vkCmdSetFrontFace(context->overlayCommandBuffer->vkCommandBuffer(), overlayFrontFace);
+    vkCmdSetFrontFace(context->recordingOverlayCommands()->vkCommandBuffer(), overlayFrontFace);
 }
 
 void UIModuleContext::setOverlayDepthBiasEnable(int polygonMode, bool enable) {
@@ -1784,10 +1829,10 @@ void UIModuleContext::setOverlayDepthBiasEnable(int polygonMode, bool enable) {
     overlayDepthBiasEnable = enable;
     if (deferIdleStateWrite()) return;
     if (overlayDepthBiasEnable)
-        vkCmdSetDepthBias(context->overlayCommandBuffer->vkCommandBuffer(),
+        vkCmdSetDepthBias(context->recordingOverlayCommands()->vkCommandBuffer(),
                           overlayDepthBiasConstantFactor[overlayPolygonMode], overlayDepthBiasClamp[overlayPolygonMode],
                           overlayDepthBiasSlopeFactor[overlayPolygonMode]);
-    vkCmdSetDepthBiasEnable(context->overlayCommandBuffer->vkCommandBuffer(), overlayDepthBiasEnable);
+    vkCmdSetDepthBiasEnable(context->recordingOverlayCommands()->vkCommandBuffer(), overlayDepthBiasEnable);
 }
 
 void UIModuleContext::setOverlayDepthBias(float depthBiasSlopeFactor, float depthBiasConstantFactor) {
@@ -1849,12 +1894,12 @@ void UIModuleContext::switchOverlayDraw() {
     auto mainQueueIndex = context->physicalDevice->mainQueueIndex();
 
     if (overlayMode == POST) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
         overlayPostColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     }
 
     if (overlayMode == NONE || overlayMode == POST) {
-        context->overlayCommandBuffer->barriersBufferImage(
+        context->recordingOverlayCommands()->barriersBufferImage(
             {}, {{
                      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
                                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1895,7 +1940,7 @@ void UIModuleContext::switchOverlayDraw() {
 #endif
         overlayDrawDepthStencilImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-        context->overlayCommandBuffer->beginRenderPass({
+        context->recordingOverlayCommands()->beginRenderPass({
             .renderPass = module->overlayDrawRenderPass_,
             .framebuffer = overlayDrawFramebuffer,
             .renderAreaExtent = {overlayDrawColorImage->width(), overlayDrawColorImage->height()},
@@ -1918,7 +1963,7 @@ void UIModuleContext::beginDiagram(int x, int y, int width, int height) {
     if (!framework->isRunning() || width <= 0 || height <= 0) return;
 
     if (overlayMode == DRAW) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
 #ifdef USE_AMD
         overlayDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 #else
@@ -1926,17 +1971,17 @@ void UIModuleContext::beginDiagram(int x, int y, int width, int height) {
 #endif
         overlayDrawDepthStencilImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     } else if (overlayMode == POST) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
         overlayPostColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     } else if (overlayMode == DIAGRAM_DRAW) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
         diagramDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         diagramDrawDepthImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     }
     overlayMode = NONE;
 
     auto mainQueueIndex = context->physicalDevice->mainQueueIndex();
-    context->overlayCommandBuffer->barriersBufferImage(
+    context->recordingOverlayCommands()->barriersBufferImage(
         {},
         {{
              .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -1966,7 +2011,7 @@ void UIModuleContext::beginDiagram(int x, int y, int width, int height) {
     diagramDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     diagramDrawDepthImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-    context->overlayCommandBuffer->beginRenderPass({
+    context->recordingOverlayCommands()->beginRenderPass({
         .renderPass = module->diagramDrawRenderPass_,
         .framebuffer = diagramDrawFramebuffer,
         .renderAreaExtent = {diagramDrawColorImage->width(), diagramDrawColorImage->height()},
@@ -1984,7 +2029,7 @@ void UIModuleContext::beginDiagram(int x, int y, int width, int height) {
     clearRect.rect.extent = framework->swapchain()->vkExtent();
     clearRect.baseArrayLayer = 0;
     clearRect.layerCount = 1;
-    vkCmdClearAttachments(context->overlayCommandBuffer->vkCommandBuffer(), 2, attachments, 1, &clearRect);
+    vkCmdClearAttachments(context->recordingOverlayCommands()->vkCommandBuffer(), 2, attachments, 1, &clearRect);
 
     if (!diagramStateSaved) {
         diagramStateSaved = true;
@@ -2005,6 +2050,7 @@ void UIModuleContext::beginDiagram(int x, int y, int width, int height) {
     int clampedHeight = std::clamp(height, 0, static_cast<int>(extent.height) - clampedY);
     overlayViewportGl = {clampedX, static_cast<int>(extent.height) - clampedY - clampedHeight, clampedWidth,
                          clampedHeight};
+    publishQueryState();
     overlayViewport = {
         .x = static_cast<float>(clampedX),
         .y = static_cast<float>(clampedY),
@@ -2036,7 +2082,7 @@ void UIModuleContext::switchOverlayPost() {
     auto mainQueueIndex = context->physicalDevice->mainQueueIndex();
 
     if (overlayMode == DRAW) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
 #ifdef USE_AMD
         overlayDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 
@@ -2047,7 +2093,7 @@ void UIModuleContext::switchOverlayPost() {
     }
 
     if (overlayMode == NONE || overlayMode == DRAW) {
-        context->overlayCommandBuffer->barriersBufferImage(
+        context->recordingOverlayCommands()->barriersBufferImage(
             {}, {{
                      .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT |
                                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -2077,7 +2123,7 @@ void UIModuleContext::switchOverlayPost() {
         overlayPostColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         overlayDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
-        context->overlayCommandBuffer->beginRenderPass({
+        context->recordingOverlayCommands()->beginRenderPass({
             .renderPass = module->overlayPostRenderPass_,
             .framebuffer = overlayPostFramebuffer,
             .renderAreaExtent = {overlayPostColorImage->width(), overlayPostColorImage->height()},
@@ -2129,8 +2175,8 @@ void UIModuleContext::clearOverlayEntireColorAttachment() {
         clears.push_back(clearAttachment);
     }
     if (!clears.empty())
-        vkCmdClearAttachments(context->overlayCommandBuffer->vkCommandBuffer(), static_cast<uint32_t>(clears.size()),
-                              clears.data(), 1, &clearRect);
+        vkCmdClearAttachments(context->recordingOverlayCommands()->vkCommandBuffer(),
+                              static_cast<uint32_t>(clears.size()), clears.data(), 1, &clearRect);
 }
 
 void UIModuleContext::clearOverlayEntireDepthStencilAttachment(int aspectMask) {
@@ -2163,7 +2209,7 @@ void UIModuleContext::clearOverlayEntireDepthStencilAttachment(int aspectMask) {
     clearRect.baseArrayLayer = 0;
     clearRect.layerCount = 1;
 
-    vkCmdClearAttachments(context->overlayCommandBuffer->vkCommandBuffer(), 1, &clearAttachment, 1, &clearRect);
+    vkCmdClearAttachments(context->recordingOverlayCommands()->vkCommandBuffer(), 1, &clearAttachment, 1, &clearRect);
 }
 
 std::shared_ptr<vk::DynamicGraphicsPipeline> UIModuleContext::prepareRasterDraw(uint32_t shaderId,
@@ -2186,7 +2232,7 @@ std::shared_ptr<vk::DynamicGraphicsPipeline> UIModuleContext::prepareRasterDraw(
     prepareBackgroundModulation();
     auto graphicsPipeline = overlayMode == FRAMEBUFFER_DRAW ? framebufferPipeline(shaderId) :
                                                               module->overlayDrawShaderInfo(shaderId).pipeline;
-    auto command = context->overlayCommandBuffer->vkCommandBuffer();
+    auto command = context->recordingOverlayCommands()->vkCommandBuffer();
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline->vkPipeline());
     syncColorAttachments();
     // Replacement RGB is fully covered even when the source texture has alpha.
@@ -2221,16 +2267,16 @@ void UIModuleContext::drawIndexed(std::shared_ptr<vk::DeviceLocalBuffer> vertexB
     auto graphicsPipeline = prepareRasterDraw(shaderId, uniformOffset);
     auto &shaderInfo = module->overlayDrawShaderInfo(shaderId);
 
-    context->overlayCommandBuffer->bindVertexBuffers(vertexBuffer);
+    context->recordingOverlayCommands()->bindVertexBuffers(vertexBuffer);
     const auto recordAndDraw = [&](const std::shared_ptr<vk::DeviceLocalBuffer> &drawIndexBuffer,
                                    uint32_t drawIndexCount, uint32_t drawPatchIndexCount) {
-        context->overlayCommandBuffer->bindIndexBuffer(drawIndexBuffer, indexType);
+        context->recordingOverlayCommands()->bindIndexBuffer(drawIndexBuffer, indexType);
         if (mcvr::diagnostics::drawStateTraceEnabled()) {
             std::vector<uint64_t> descriptorSets;
             const auto &sets = overlayDescriptorTable->descriptorSet();
             descriptorSets.reserve(sets.size());
             for (VkDescriptorSet set : sets) { descriptorSets.push_back(mcvr::diagnostics::handleValue(set)); }
-            const auto &commandBuffer = context->overlayCommandBuffer->vkCommandBuffer();
+            const auto &commandBuffer = context->recordingOverlayCommands()->vkCommandBuffer();
             mcvr::diagnostics::recordDraw(
                 "ShaderProxy.draw", context->frameIndex, context->frameSubmitted, static_cast<uint32_t>(overlayMode),
                 shaderId, shaderInfo.key, mcvr::diagnostics::handleValue(commandBuffer),
@@ -2256,11 +2302,11 @@ void UIModuleContext::drawIndexed(std::shared_ptr<vk::DeviceLocalBuffer> vertexB
                 overlayViewport.y, overlayViewport.width, overlayViewport.height, overlayViewport.minDepth,
                 overlayViewport.maxDepth);
         }
-        context->overlayCommandBuffer->drawIndexed(drawIndexCount, 1);
+        context->recordingOverlayCommands()->drawIndexed(drawIndexCount, 1);
         if (mcvr::diagnostics::drawStateTraceEnabled()) {
             mcvr::diagnostics::recordFrame(
                 "DRAW_RETURN", context->frameIndex, context->frameSubmitted, 0,
-                mcvr::diagnostics::handleValue(context->overlayCommandBuffer->vkCommandBuffer()));
+                mcvr::diagnostics::handleValue(context->recordingOverlayCommands()->vkCommandBuffer()));
         }
     };
     if (shaderInfo.patchControlPoints != 0) {
@@ -2305,7 +2351,7 @@ void UIModuleContext::prepareBackgroundModulation() {
             hudlessModulationDepthView = 1;
         }
     }
-    auto cmd = context->overlayCommandBuffer;
+    auto cmd = context->recordingOverlayCommands();
     const auto transition = [&](const auto &image, VkImageLayout layout) {
         cmd->barriersBufferImage({}, {{.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                                        .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
@@ -2404,7 +2450,7 @@ void UIModuleContext::drawCustomVertexArray(const std::vector<CustomVertexBuffer
     if (!indexBuffer) throw std::runtime_error("Custom VertexArray has no index buffer");
 
     prepareRasterDraw(shaderId, uniformOffset);
-    VkCommandBuffer command = context->overlayCommandBuffer->vkCommandBuffer();
+    VkCommandBuffer command = context->recordingOverlayCommands()->vkCommandBuffer();
     for (const auto &binding : vertexBuffers) {
         if (!binding.buffer) throw std::runtime_error("Custom VertexArray binding has no buffer");
         VkBuffer handle = binding.buffer->vkBuffer();
@@ -2433,7 +2479,7 @@ void UIModuleContext::refreshOverlayDescriptorTable() {
     module->refreshOverlayDescriptorTable(context->frameIndex);
 }
 
-void UIModuleContext::begin(std::shared_ptr<UIModuleContext> lastContext) {
+void UIModuleContext::begin(std::shared_ptr<UIModuleContext> lastContext, bool overlayOnly) {
     effectDescriptorCursor = 0;
     auto context = frameworkContext.lock();
     auto framework = context->framework.lock();
@@ -2443,9 +2489,7 @@ void UIModuleContext::begin(std::shared_ptr<UIModuleContext> lastContext) {
     overlayMode = NONE;
     auto module = uiModule.lock();
     if (module == nullptr) return;
-    module->prepareOverlayDescriptorTable(context->frameIndex);
-    overlayDescriptorTable = module->overlayDescriptorTables_.at(context->frameIndex);
-    context->overlayCommandBuffer->bindDescriptorTable(overlayDescriptorTable, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    if (!overlayOnly) bindOverlayForFrame();
 
     if (lastContext != nullptr)
         syncFromContext(lastContext);
@@ -2453,6 +2497,15 @@ void UIModuleContext::begin(std::shared_ptr<UIModuleContext> lastContext) {
         syncToCommandBuffer();
 
     module->lastActiveContext_ = shared_from_this();
+    publishQueryState();
+}
+
+void UIModuleContext::bindOverlayForFrame() {
+    auto context = frameworkContext.lock();
+    auto module = uiModule.lock();
+    module->prepareOverlayDescriptorTable(context->frameIndex);
+    overlayDescriptorTable = module->overlayDescriptorTables_.at(context->frameIndex);
+    context->recordingOverlayCommands()->bindDescriptorTable(overlayDescriptorTable, VK_PIPELINE_BIND_POINT_GRAPHICS);
 }
 
 void UIModuleContext::end() {
@@ -2466,7 +2519,7 @@ void UIModuleContext::end() {
     }
 
     if (overlayMode == DRAW) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
 #ifdef USE_AMD
         overlayDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
 #else
@@ -2475,15 +2528,15 @@ void UIModuleContext::end() {
         overlayDrawDepthStencilImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         captureMainAliases();
     } else if (overlayMode == DIAGRAM_DRAW) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
         diagramDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
         diagramDrawDepthImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
         diagramStateSaved = false;
     } else if (overlayMode == POST) {
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->endRenderPass();
 
         auto mainQueueIndex = context->physicalDevice->mainQueueIndex();
-        context->overlayCommandBuffer->barriersBufferImage(
+        context->recordingOverlayCommands()->barriersBufferImage(
             {}, {{
                     .srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_TRANSFER_BIT,
                     .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,

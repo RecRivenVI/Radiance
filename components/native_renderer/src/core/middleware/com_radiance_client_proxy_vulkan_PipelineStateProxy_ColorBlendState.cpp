@@ -11,28 +11,33 @@ extern "C" {
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_setBlendEnable(
     JNIEnv *env, jclass, jboolean enable) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.setBlendEnable", [&] {
-        auto framework = Renderer::instance().framework();
-        if (framework == nullptr) return;
-        auto context = framework->safeAcquireCurrentContext();
-        auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
-        mcvr::state_audit::context();
-        pipelineContext->uiModuleContext->setOverlayBlendEnable(enable);
-    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.setBlendEnable",
+        [&] {
+            auto framework = Renderer::instance().framework();
+            if (framework == nullptr) return;
+            auto context = framework->acquireOverlayContext();
+            auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
+            mcvr::state_audit::context();
+            pipelineContext->uiModuleContext->setOverlayBlendEnable(enable);
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL
 Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_setColorBlendConstants(
     JNIEnv *env, jclass, jfloat const1, jfloat const2, jfloat const3, jfloat const4) {
     jni::invokeVoid(
-        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.setColorBlendConstants", [&] {
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.setColorBlendConstants",
+        [&] {
             auto framework = Renderer::instance().framework();
             if (framework == nullptr) return;
-            auto context = framework->safeAcquireCurrentContext();
+            auto context = framework->acquireOverlayContext();
             auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
             mcvr::state_audit::context();
             pipelineContext->uiModuleContext->setOverlayColorBlendConstants(const1, const2, const3, const4);
-        });
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL
@@ -40,14 +45,16 @@ Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_se
                                                                                                     jclass,
                                                                                                     jboolean enable) {
     jni::invokeVoid(
-        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.setColorLogicOpEnable", [&] {
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.setColorLogicOpEnable",
+        [&] {
             auto framework = Renderer::instance().framework();
             if (framework == nullptr) return;
-            auto context = framework->safeAcquireCurrentContext();
+            auto context = framework->acquireOverlayContext();
             auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
             mcvr::state_audit::context();
             pipelineContext->uiModuleContext->setOverlayColorLogicOpEnable(enable);
-        });
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL
@@ -59,15 +66,17 @@ Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_vk
     jint dstColorBlendFactor,
     jint dstAlphaBlendFactor) {
     jni::invokeVoid(
-        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetBlendFuncSeparate", [&] {
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetBlendFuncSeparate",
+        [&] {
             auto framework = Renderer::instance().framework();
             if (framework == nullptr) return;
-            auto context = framework->safeAcquireCurrentContext();
+            auto context = framework->acquireOverlayContext();
             auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
             mcvr::state_audit::context();
             pipelineContext->uiModuleContext->setOverlayBlendFuncSeparate(srcColorBlendFactor, srcAlphaBlendFactor,
                                                                           dstColorBlendFactor, dstAlphaBlendFactor);
-        });
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL
@@ -75,42 +84,48 @@ Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_vk
                                                                                                    jclass,
                                                                                                    jint colorBlendOp,
                                                                                                    jint alphaBlendOp) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetBlendOpSeparate",
-                    [&] {
-                        auto framework = Renderer::instance().framework();
-                        if (framework == nullptr) return;
-                        auto context = framework->safeAcquireCurrentContext();
-                        auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
-                        mcvr::state_audit::context();
-                        pipelineContext->uiModuleContext->setOverlayBlendOpSeparate(colorBlendOp, alphaBlendOp);
-                    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetBlendOpSeparate",
+        [&] {
+            auto framework = Renderer::instance().framework();
+            if (framework == nullptr) return;
+            auto context = framework->acquireOverlayContext();
+            auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
+            mcvr::state_audit::context();
+            pipelineContext->uiModuleContext->setOverlayBlendOpSeparate(colorBlendOp, alphaBlendOp);
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL
 Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_vkSetColorWriteMask(JNIEnv *env,
                                                                                                   jclass,
                                                                                                   jint colorWriteMask) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetColorWriteMask",
-                    [&] {
-                        auto framework = Renderer::instance().framework();
-                        if (framework == nullptr) return;
-                        auto context = framework->safeAcquireCurrentContext();
-                        auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
-                        mcvr::state_audit::context();
-                        pipelineContext->uiModuleContext->setOverlayColorWriteMask(colorWriteMask);
-                    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetColorWriteMask",
+        [&] {
+            auto framework = Renderer::instance().framework();
+            if (framework == nullptr) return;
+            auto context = framework->acquireOverlayContext();
+            auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
+            mcvr::state_audit::context();
+            pipelineContext->uiModuleContext->setOverlayColorWriteMask(colorWriteMask);
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_PipelineStateProxy_00024ColorBlendState_vkSetColorLogicOp(
     JNIEnv *env, jclass, jint colorLogicOp) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetColorLogicOp",
-                    [&] {
-                        auto framework = Renderer::instance().framework();
-                        if (framework == nullptr) return;
-                        auto context = framework->safeAcquireCurrentContext();
-                        auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
-                        mcvr::state_audit::context();
-                        pipelineContext->uiModuleContext->setOverlayColorLogicOp(colorLogicOp);
-                    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.vulkan.PipelineStateProxy$ColorBlendState.vkSetColorLogicOp",
+        [&] {
+            auto framework = Renderer::instance().framework();
+            if (framework == nullptr) return;
+            auto context = framework->acquireOverlayContext();
+            auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
+            mcvr::state_audit::context();
+            pipelineContext->uiModuleContext->setOverlayColorLogicOp(colorLogicOp);
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 }

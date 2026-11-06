@@ -26,7 +26,7 @@
 
 Voxy 最终 D 配套通过七阶段：来源存储、远处／返回、资源重载、旧代际拒收、Advanced、来源更新及退出重进；实际移动历史检查通过，无设备丢失。最终 E 另修正下述内置物品路由边界，Voxy、弹簧代码与 Native 产品源码和 D 一致；相关功能证据按实际配套身份引用，不改称 E 已重新跑过全部阶段。
 
-配套身份和冻结源码见[最终候选清单](../../validations/conformance-takeover/result/source-efficiency-20261029/source-efficiency-e-20261029/candidate.json)，D 的直接功能证据位于同组 `spring-final` 以及 `validations/regression-voxy_integration/result/source-efficiency-final-20261029`。
+配套身份和冻结源码见最终候选清单（`validations/conformance-takeover/result/source-efficiency-20261029/source-efficiency-e-20261029/candidate.json`），D 的直接功能证据位于同组 `spring-final` 以及 `validations/regression-voxy_integration/result/source-efficiency-final-20261029`。
 
 ### 失败与对照边界
 
@@ -35,7 +35,7 @@ Voxy 最终 D 配套通过七阶段：来源存储、远处／返回、资源重
 - 旧基线先因 Windows 着色器打开路径达到 261 字符而在进世界前失败。缩短验证目录，并在启动前检查冻结包中的最长 Native 文件路径。
 - 冻结城市还暴露了旧版本的内置掉落物强制类型转换错误。正式修正保留路由／轮廓消费者，无法提供合法存储所有者时使用原 renderer。为不删除城市对象，对照基线只回补相同的 `VanillaItemReplacement.class`；其他 GAME 条目及全部 Native／资源逐条保持不变，内嵌 GAME 校验同步更新。这是修补基线，不能冒称原验收二进制。
 
-基线修补清单见[身份与字节码核对](../../validations/performance-sources/result/baseline-item-routing-repair/repair.json)。原冻结产物未覆盖，原失败的 STOP、日志和校验归档保留。
+基线修补清单见身份与字节码核对（`validations/performance-sources/result/baseline-item-routing-repair/repair.json`）。原冻结产物未覆盖，原失败的 STOP、日志和校验归档保留。
 
 修补后的基线在近景队列已清空后仍不断细化 LoD，观察到整卡显存约 15,628/16,376 MiB，未形成平静后的正式窗口。为避免继续逼近显存故障，按确切 PID 强制停止项目内副本；停止时即时读数已降到 15,278 MiB，不能据此证明它必然失败或无法最终稳定。保全日志／资源观察后回收客户端环境，最终日志没有设备丢失，不自动重跑同一基线压力。该组不是稳态 FPS 数据，不能计算完整提速比例。
 
@@ -57,7 +57,7 @@ TIMED 中公共实例每帧约选择 4,109 项、更新 193 项，Native 保留�
 
 固定移动窗口也正常完成、重载并保存退出。FRAME_ONLY 为 126 个有效间隔，均值 158.483 ms，p95 164.020 ms、p99 165.170 ms，约 6.31 真实 FPS；TIMED 为 156.875 ms。路线按同一 5 Hz、振幅 4 方块移动相机，包含区段边界更新，不是正常手工移动体验。静止／移动各只有一次完整运行，没有由这些数据推导运行间统计置信度。
 
-候选整次运行整卡显存峰值分别为 15,710／15,792 MiB，进程私有提交峰值约 21.97／22.43 GiB。候选也处于明显资源压力下，不能声明显存峰值下降；整卡数字包含其他程序，不等于 Minecraft 独占量。GPU 世界 PT 区间也可能包含驻留／搬运影响，现有时间范围不能将它全部归因于着色器计算。原始数据及汇总见[结果](../../validations/conformance-takeover/result/source-efficiency-20261029/results.json)。
+候选整次运行整卡显存峰值分别为 15,710／15,792 MiB，进程私有提交峰值约 21.97／22.43 GiB。候选也处于明显资源压力下，不能声明显存峰值下降；整卡数字包含其他程序，不等于 Minecraft 独占量。GPU 世界 PT 区间也可能包含驻留／搬运影响，现有时间范围不能将它全部归因于着色器计算。原始数据及汇总见结果（`validations/conformance-takeover/result/source-efficiency-20261029/results.json`）。
 
 构建的测试依赖曾意外触发完整 Native 重编译，占用检查测得工作区短时约 22.16 GiB，超过本轮 22 GiB。随后回收已保全的失败客户端、哈希相同的复制暂存及可再生编译缓存，恢复上限；没有删除唯一验收证据。最终打包检查复用该次已构建的 Native，继续执行 CPU／GPU 测试，避免再重复生成全部编译缓存。
 
@@ -65,4 +65,4 @@ TIMED 中公共实例每帧约选择 4,109 项、更新 193 项，Native 保留�
 
 已证实的内容是减少特定来源重复生产、功能合同通过，以及基线在这一完整城市压力下的资源问题；基线没有有效稳态窗口，不声明整帧提速比例。当前候选的主要开销位于 GPU 世界 PT，继续压缩小型 CPU 分配不能独立解决本例低帧率。视觉体验、真实操作下的弹簧形变及预览仍由用户验收。
 
-最终 E 已替换 Prism 中的本体与 Extra，读回哈希一致；Voxy 和其他模组、配置、存档保持不变，没有启动游戏或投放探针。回执见[投放记录](../../validations/conformance-takeover/result/source-efficiency-20261029/source-efficiency-e-20261029/prism-deployment.json)。
+最终 E 已替换 Prism 中的本体与 Extra，读回哈希一致；Voxy 和其他模组、配置、存档保持不变，没有启动游戏或投放探针。回执见投放记录（`validations/conformance-takeover/result/source-efficiency-20261029/source-efficiency-e-20261029/prism-deployment.json`）。

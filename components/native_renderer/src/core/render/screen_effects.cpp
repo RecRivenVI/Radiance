@@ -113,7 +113,7 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
                                           .beginAttachment()
                                           .defineAttachment(scratch.image)
                                           .endAttachment()
-                                          .build(framework->device(), module->overlayPostRenderPass_);
+                                          .build(framework->device(), module->overlayPostUnormRenderPass_);
             }
             targets.push_back(scratch);
         }
@@ -121,7 +121,7 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
     const auto queue = context->physicalDevice->mainQueueIndex();
     auto transition = [&](const std::shared_ptr<vk::DeviceLocalImage> &image, VkImageLayout layout) {
         if (image->imageLayout() == layout) return;
-        context->overlayCommandBuffer->barriersBufferImage(
+        context->recordingOverlayCommands()->barriersBufferImage(
             {}, {{.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                   .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
                   .dstStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
@@ -177,14 +177,17 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
         }
         table->bindBufferRange(buffers->overlayPostUniformBuffer(), 1, 1, 0,
                                buffers->overlayPostUniformDescriptorRange());
-        const auto key = std::tuple{pass.program, image->width(), image->height()};
+        const auto format = image->vkFormat();
+        const auto &renderPass =
+            format == VK_FORMAT_R8G8B8A8_UNORM ? module->overlayPostUnormRenderPass_ : module->overlayPostRenderPass_;
+        const auto key = std::tuple{pass.program, image->width(), image->height(), format};
         if (!module->effectPipelines_.contains(key)) {
             auto shaders = pass.program < MAX_OVERLAY_POST_PIPELINE_TYPE ?
                                module->overlayPostPipelineShaders_.at(OverlayPostPipelineType(pass.program)) :
                                module->effectPrograms_.at(pass.program)->shaders;
             module->effectPipelines_[key] =
                 vk::GraphicsPipelineBuilder{}
-                    .defineRenderPass(module->overlayPostRenderPass_, 0)
+                    .defineRenderPass(renderPass, 0)
                     .beginShaderStage()
                     .defineShaderStage(shaders.vertexShader, VK_SHADER_STAGE_VERTEX_BIT)
                     .defineShaderStage(shaders.fragmentShader, VK_SHADER_STAGE_FRAGMENT_BIT)
@@ -207,17 +210,17 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
         const auto pipeline = module->effectPipelines_.at(key);
         framework->frameResourceRetainer().retain(pipeline);
         transition(image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        context->overlayCommandBuffer->beginRenderPass({.renderPass = module->overlayPostRenderPass_,
-                                                        .framebuffer = target.framebuffer,
-                                                        .renderAreaExtent = {image->width(), image->height()},
-                                                        .clearValues = {{.color = {0, 0, 0, 0}}}});
-        auto cmd = context->overlayCommandBuffer->vkCommandBuffer();
+        context->recordingOverlayCommands()->beginRenderPass({.renderPass = renderPass,
+                                                              .framebuffer = target.framebuffer,
+                                                              .renderAreaExtent = {image->width(), image->height()},
+                                                              .clearValues = {{.color = {0, 0, 0, 0}}}});
+        auto cmd = context->recordingOverlayCommands()->vkCommandBuffer();
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->vkPipeline());
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, table->vkPipelineLayout(), 0,
                                 uint32_t(table->descriptorSet().size()), table->descriptorSet().data(), 1, &offset);
         vkCmdPushConstants(cmd, table->vkPipelineLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, 16, pass.parameters.data());
-        context->overlayCommandBuffer->draw(3, 1);
-        context->overlayCommandBuffer->endRenderPass();
+        context->recordingOverlayCommands()->draw(3, 1);
+        context->recordingOverlayCommands()->endRenderPass();
     }
     auto output = targets[plan.output].image;
     transition(output, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -227,7 +230,7 @@ void UIModuleContext::executeEffects(const mcvr::effects::Plan &plan) {
     copy.dstSubresource = copy.srcSubresource;
     copy.srcOffsets[1] = {int32_t(output->width()), int32_t(output->height()), 1};
     copy.dstOffsets[1] = {int32_t(overlayDrawColorImage->width()), int32_t(overlayDrawColorImage->height()), 1};
-    vkCmdBlitImage(context->overlayCommandBuffer->vkCommandBuffer(), output->vkImage(), output->imageLayout(),
+    vkCmdBlitImage(context->recordingOverlayCommands()->vkCommandBuffer(), output->vkImage(), output->imageLayout(),
                    overlayDrawColorImage->vkImage(), overlayDrawColorImage->imageLayout(), 1, &copy,
                    plan.filter == Filter::Linear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
     transition(output, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);

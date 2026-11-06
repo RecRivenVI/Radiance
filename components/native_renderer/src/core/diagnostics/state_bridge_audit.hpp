@@ -1,7 +1,10 @@
 #pragma once
 #include "frame_profile.hpp"
+#include "core/logging.hpp"
+#include <stdexcept>
 #include <array>
 #include <cstdlib>
+#include <set>
 #include <string_view>
 
 // Opt-in diagnostic window only. Fixed counters, no per-request allocation/logging.
@@ -87,6 +90,26 @@ inline constexpr const char *idleNames[count] = {"state-idle/scissor-enable",   
                                                  "state-idle/bias-enable",        "state-idle/bias",
                                                  "state-idle/clear-color",        "state-idle/clear-depth",
                                                  "state-idle/clear-stencil"};
+inline bool verifyQueryMirrors() {
+    static const bool value = [] {
+        const char *v = std::getenv("RADIANCE_A_QUERY_PARITY");
+        return v && std::string_view(v) == "1";
+    }();
+    return value;
+}
+
+template <typename T>
+void verifyQuery(const char *name, const T &actual, const T &reference) {
+    if (actual != reference) {
+        mcvr::log::error("QueryMirror") << "QUERY_MIRROR_MISMATCH " << name << std::endl;
+        throw std::logic_error(std::string("Producer query differs from serial reference: ") + name);
+    }
+    static thread_local std::set<std::string_view> reported;
+    if (reported.insert(name).second) {
+        mcvr::log::info("QueryMirror") << "QUERY_MIRROR_VERIFIED " << name << std::endl;
+    }
+}
+
 inline thread_local Counts counters;
 inline bool configured() noexcept {
     static const bool value = [] {

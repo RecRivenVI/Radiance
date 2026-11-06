@@ -13,12 +13,16 @@
 #include "core/render/cpu_preparation_batch.hpp"
 
 #include "common/shared.hpp"
+namespace mcvr::medium {
+class Mesh;
+}
 #include "common/singleton.hpp"
 #include "core/all_extern.hpp"
 #include "core/vulkan/all_core_vulkan.hpp"
 
 #include "core/render/world.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <condition_variable>
 #include <deque>
@@ -112,6 +116,7 @@ struct WorldMeshBuildTask {
 
 struct EntityBuildData : public SharedObject<EntityBuildData> {
     std::vector<uint32_t> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
     std::vector<glm::vec4> geometryDrawColours;
     std::vector<glm::vec4> geometryEyeColours;
     uint64_t surfaceLayoutKey = 0;
@@ -217,6 +222,7 @@ struct Entity : public SharedObject<Entity> {
     uint32_t uiSceneOwner = 0;
     std::vector<std::vector<glm::vec4>> waterExclusions;
     std::vector<uint32_t> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
     std::vector<glm::vec4> geometryDrawColours;
     std::vector<glm::vec4> geometryEyeColours;
     uint64_t surfaceLayoutKey = 0;
@@ -296,6 +302,7 @@ struct RigidModelResource {
     uint64_t world = 0, generation = 0, used = 0;
     size_t residentBytes = 0;
     mcvr::RigidBuildLifecycle lifecycle;
+    uint64_t lastRecordingSerial = 0;
     // Immutable after creation; derived once from the single converted geometry.
     std::shared_ptr<vk::BLAS> blas;
     mcvr::hitgroups::Id groupId = 0;
@@ -314,7 +321,7 @@ struct RigidModelResource {
     std::vector<Geometry> geometries;
 };
 
-// Per-frame placement of a resident model. The batch owns the models; instances borrow them.
+// Placement of a resident model. Its publication owns the model; instances borrow it.
 struct RigidInstance {
     const RigidModelResource *model;
     uint64_t key;
@@ -328,16 +335,105 @@ struct RigidInstance {
     int coordinates = 0;
 };
 
+struct RetainedRigidPlacements {
+    uint64_t worldToken, resourceGeneration;
+    size_t geometryCount = 0, multiGeometryCount = 0;
+    std::vector<std::shared_ptr<RigidModelResource>> models;
+    std::vector<RigidInstance> instances;
+};
+
 struct RigidInstanceBatch : public SharedObject<RigidInstanceBatch> {
     std::vector<std::shared_ptr<RigidModelResource>> models;
     std::vector<RigidInstance> instances;
+    struct Page {
+        size_t start, end, retainedBefore;
+        std::shared_ptr<const RetainedRigidPlacements> placements;
+    };
+    std::vector<Page> retained;
+    size_t retainedCount = 0;
     uint64_t worldToken = 0, frameToken = 0, resourceGeneration = 0;
+
+    size_t count() const {
+        return instances.size() + retainedCount;
+    }
+
+    void appendRetained(std::shared_ptr<const RetainedRigidPlacements> page) {
+        const auto start = count();
+        const auto size = page->instances.size();
+        if (size == 0) return;
+        retained.push_back({start, start + size, retainedCount, std::move(page)});
+        retainedCount += size;
+    }
+
+    // Most consumers visit indices in order. The cursor also supports the initial tail
+    // lookup in SceneSlots and independent ranges in the CPU preparation workers.
+    const RigidInstance &at(size_t index, size_t &page) const {
+        if (retained.empty() || index < retained.front().start) return instances[index];
+        if (index >= retained.back().end) return instances[index - retainedCount];
+        if (index >= retained[page].end && page + 1 < retained.size() && index < retained[page + 1].end) {
+            ++page;
+        } else if (index >= retained[page].end || (page && index < retained[page - 1].end)) {
+            // Worker ranges can start far into the sequence. Find the first page
+            // ending after the index, including when the index is in the preceding gap.
+            page = static_cast<size_t>(std::partition_point(retained.begin(), retained.end(),
+                                                            [index](const Page &entry) { return entry.end <= index; }) -
+                                       retained.begin());
+        }
+        const auto &entry = retained[page];
+        return index < entry.start ? instances[index - entry.retainedBefore] :
+                                     entry.placements->instances[index - entry.start];
+    }
+
+    void clearPlacements() {
+        instances.clear();
+        retained.clear();
+        retainedCount = 0;
+    }
+};
+
+struct EntityFrameInputs {
+    RigidInstanceBatch &rigidInputsForWrite();
+
+    std::vector<std::shared_ptr<struct ComputedSurfaceDispatch>> surfaceFields_;
+    std::shared_ptr<RigidInstanceBatch> rigidInputs_ = RigidInstanceBatch::create();
+    std::shared_ptr<const RigidInstanceBatch> rigidBatch_;
+    std::shared_ptr<EntityBatch> entityBatch_;
+    std::shared_ptr<EntityPostBatch> entityPostBatch_;
+    std::shared_ptr<EntityBuildDataBatch> entityBuildDataBatch_;
+    std::shared_ptr<EntityPostBuildDataBatch> entityPostBuildDataBatch_;
+
+    std::shared_ptr<vk::BLASBatchBuilder> blasBatchBuilder_;
+    std::shared_ptr<EntityBuildDataBatch> cloudBuildData_;
+    std::shared_ptr<vk::BLASBatchBuilder> cloudBlasBuilder_;
+    std::vector<std::shared_ptr<Entity>> queuedClouds_;
+    uint64_t cloudRevision_ = 0;
+    size_t cloudCaptureStart_ = 0;
+    bool cloudCapturing_ = false, cloudBuildRecorded_ = false;
+
+    struct StageCheckpoint {
+        uint64_t token;
+        size_t entityCount;
+        size_t postCount;
+        size_t surfaceCount;
+    };
+    uint64_t activeWorldToken_ = 0;
+    uint64_t activeFrameToken_ = 0;
+    uint64_t activeResourceGeneration_ = 0;
+    size_t frameEntityCheckpoint_ = 0;
+    size_t framePostCheckpoint_ = 0;
+    bool worldMeshFrameOpen_ = false;
+    std::vector<StageCheckpoint> worldMeshStages_;
+    size_t residentModels = 0, residentBytes = 0;
 };
 
 class Entities : public SharedObject<Entities> {
     friend World;
 
   public:
+    mcvr::CpuPreparationBatch *cpuPreparation() const {
+        return cpuPreparation_.get();
+    }
+
     uint64_t surfaceProgram(uint64_t generation, std::span<const uint32_t> spirv);
     uint64_t surfaceData(uint64_t generation, const void *data, size_t bytes);
     void releaseSurface(uint64_t generation, uint64_t handle);
@@ -363,6 +459,7 @@ class Entities : public SharedObject<Entities> {
     Entities(std::shared_ptr<Framework> framework);
 
     void resetFrame();
+    void sealFrameInputs();
     void releaseRigidGeometry(uint64_t identity);
     void queueBuild(EntitiesBuildTask task);
     void queueRigidModels(const mcvr::rigid::SubmissionRecord *records,
@@ -376,7 +473,12 @@ class Entities : public SharedObject<Entities> {
                                                std::span<const mcvr::rigid::ModelBinding> bindings,
                                                std::span<const uint64_t> selected,
                                                std::span<const uint64_t> removed);
-    std::shared_ptr<RigidInstanceBatch> rigidInstanceBatch();
+    // Replaces one retained selection group; an empty span ends it. Valid outside a scene frame.
+    void retainRigidSelection(uint64_t group, std::span<const uint64_t> ids);
+    void clearRetainedRigidSelections();
+    // Selects every retained member that still has an accepted version into the open frame.
+    size_t selectRetainedRigidInstances();
+    std::shared_ptr<const RigidInstanceBatch> rigidInstanceBatch();
     void recordRigidModels(const std::shared_ptr<vk::CommandBuffer> &commands);
     void commitRigidModels();
     bool beginCachedCloud(uint64_t revision, double x, double y, double z);
@@ -408,7 +510,6 @@ class Entities : public SharedObject<Entities> {
 
   private:
     std::unordered_map<uint64_t, std::shared_ptr<struct ComputedSurfaceResource>> surfaces_;
-    std::vector<std::shared_ptr<struct ComputedSurfaceDispatch>> surfaceFields_;
     uint64_t surfaceGeneration_ = 0;
     std::unique_ptr<mcvr::CpuPreparationBatch> cpuPreparation_;
     std::shared_ptr<RigidModelResource> residentRigidModel(const mcvr::rigid::SubmissionRecord &record,
@@ -423,37 +524,17 @@ class Entities : public SharedObject<Entities> {
     };
     mcvr::scene::InstanceStore<ResidentInstance> persistentInstances_;
     mcvr::scene::ResourcePins<const RigidModelResource *> persistentModelPins_{64u * 1024 * 1024};
+    std::vector<const ResidentInstance *> rigidSelectionScratch_;
+    mcvr::scene::RetainedSelections<ResidentInstance, std::shared_ptr<const RetainedRigidPlacements>>
+        retainedSelections_;
     std::optional<ResidentInstance> removePersistentInstance(uint64_t id);
-    std::vector<RigidInstance> rigidInstances_;
-    std::vector<std::shared_ptr<RigidModelResource>> rigidUsed_;
-    std::shared_ptr<RigidInstanceBatch> rigidBatch_;
-    std::shared_ptr<EntityBatch> entityBatch_;
-    std::shared_ptr<EntityPostBatch> entityPostBatch_;
-    std::shared_ptr<EntityBuildDataBatch> entityBuildDataBatch_;
-    std::shared_ptr<EntityPostBuildDataBatch> entityPostBuildDataBatch_;
-
-    std::shared_ptr<vk::BLASBatchBuilder> blasBatchBuilder_;
+    EntityFrameInputs legacyFrame_;
+    EntityFrameInputs &frameInputs();
+    const EntityFrameInputs &frameInputs() const;
     std::shared_ptr<vk::ComputePipeline> conversionPipeline_;
     mcvr::SubmittedGeometryCache<EntityBatch> cloudCache_;
-    std::shared_ptr<EntityBuildDataBatch> cloudBuildData_;
-    std::shared_ptr<vk::BLASBatchBuilder> cloudBlasBuilder_;
-    std::vector<std::shared_ptr<Entity>> queuedClouds_;
-    uint64_t cloudRevision_ = 0;
-    size_t cloudCaptureStart_ = 0;
-    bool cloudCapturing_ = false, cloudBuildRecorded_ = false;
-
-    struct StageCheckpoint {
-        uint64_t token;
-        size_t entityCount;
-        size_t postCount;
-        size_t surfaceCount;
-    };
-    uint64_t activeWorldToken_ = 0;
-    uint64_t activeFrameToken_ = 0;
-    uint64_t activeResourceGeneration_ = 0;
-    size_t frameEntityCheckpoint_ = 0;
-    size_t framePostCheckpoint_ = 0;
-    bool worldMeshFrameOpen_ = false;
-    std::vector<StageCheckpoint> worldMeshStages_;
+    std::mutex cloudMutex_, auditMutex_;
+    uint64_t lastProducerFrameToken_ = 0;
+    void setWorldMeshAuditState(uint64_t id, WorldMeshAuditState state);
     std::unordered_map<uint64_t, WorldMeshAuditState> worldMeshAuditStates_;
 };

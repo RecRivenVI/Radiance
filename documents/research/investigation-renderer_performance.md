@@ -10,7 +10,7 @@
 
 ### 冻结输入与观察口径
 
-- 产品是[来源效率 E 清单](../../validations/conformance-takeover/result/source-efficiency-20261029/source-efficiency-e-20261029/candidate.json)中的本体、Extra 和 Native。Core SHA-256 为 `ca9eaf378b91ff0552178a8e6457065a89bd93f0fd07fd0d94bc3b24a5049e7a`；Extra 为 `1093201e7a4c37647aef4dbfee4049b2513d871115b8c44ffbd35c701a3aea85`；实际 DLL 为 `def55b70140079601c21a20dbd52609202292663015c3286c496dd574e4ef1a6`。
+- 产品是来源效率 E 清单（`validations/conformance-takeover/result/source-efficiency-20261029/source-efficiency-e-20261029/candidate.json`）中的本体、Extra 和 Native。Core SHA-256 为 `ca9eaf378b91ff0552178a8e6457065a89bd93f0fd07fd0d94bc3b24a5049e7a`；Extra 为 `1093201e7a4c37647aef4dbfee4049b2513d871115b8c44ffbd35c701a3aea85`；实际 DLL 为 `def55b70140079601c21a20dbd52609202292663015c3286c496dd574e4ef1a6`。
 - 城市输入为 `validations/migration-city_world/result/vanilla-city-fixture.zip`，SHA-256 为 `832a650f7dc6ecba23822d49d767fd0a609f00b3faff6df3f657e2cced0f723e`。每次从同一输入新建验证副本，不修改来源存档。
 - NeoForge 21.1.259、Java 21、RTX 4080 SUPER 16 GiB、驱动 621.01；加载 Core 和 Extra，不加载 Voxy 或其他兼容目标模组。
 - 32 视距、同一原版 PT、SHARC、四次反弹、随机覆盖半透明、DLSS Balanced、FG 关闭。分辨率表是输出尺寸比较，不能写成原生一比一着色分辨率。自动实例静音、无失焦暂停；保存相机、实际尺寸和来源兼容检查。
@@ -29,13 +29,13 @@
 
 | 用例 | 结果入口 | 用途 |
 | --- | --- | --- |
-| 1080p 基线 | [base32 分析](../../validations/performance-sources/result/novoxy-20261029/base32-r32-1080-20261029-144829/analysis.json) | 帧间隔、GPU 基础桶和分段 |
-| 来源与 CPU | [attr32 分析](../../validations/performance-sources/result/novoxy-20261029/attr32-r32-1080-20261029-145534/analysis.json) | TIMED、生产者、JFR、内容审计 |
-| 完整生命周期 | [生命周期分析](../../validations/performance-sources/result/renderer-20261029/lifecycle-r32-1080-20261029-152451/lifecycle-analysis.json) | 移动、实体、退出重进、分配块 |
-| 720p | [gpu720 分析](../../validations/performance-sources/result/renderer-20261029/gpu720-r32-720-20261029-154733/analysis.json) | 分辨率对照及独立硬件计数 |
-| 1440p | [gpu1440 分析](../../validations/performance-sources/result/renderer-20261029/gpu1440-r32-1440-20261029-160050/analysis.json) | 分辨率对照 |
-| 最小观察者 | [控制分析](../../validations/performance-sources/result/renderer-20261029/control-noaftermath-r32-1080-20261029-161718/analysis.json) | 排除主要探针与 Aftermath 开销 |
-| 加载链 | [loading 分析](../../validations/performance-sources/result/renderer-20261029/loading-r32-1080-20261029-163001/loading-chain-analysis.json) | 数据到达、编译入队、GPU 完成与平静 |
+| 1080p 基线 | base32 分析（`validations/performance-sources/result/novoxy-20261029/base32-r32-1080-20261029-144829/analysis.json`） | 帧间隔、GPU 基础桶和分段 |
+| 来源与 CPU | attr32 分析（`validations/performance-sources/result/novoxy-20261029/attr32-r32-1080-20261029-145534/analysis.json`） | TIMED、生产者、JFR、内容审计 |
+| 完整生命周期 | 生命周期分析（`validations/performance-sources/result/renderer-20261029/lifecycle-r32-1080-20261029-152451/lifecycle-analysis.json`） | 移动、实体、退出重进、分配块 |
+| 720p | gpu720 分析（`validations/performance-sources/result/renderer-20261029/gpu720-r32-720-20261029-154733/analysis.json`） | 分辨率对照及独立硬件计数 |
+| 1440p | gpu1440 分析（`validations/performance-sources/result/renderer-20261029/gpu1440-r32-1440-20261029-160050/analysis.json`） | 分辨率对照 |
+| 最小观察者 | 控制分析（`validations/performance-sources/result/renderer-20261029/control-noaftermath-r32-1080-20261029-161718/analysis.json`） | 排除主要探针与 Aftermath 开销 |
+| 加载链 | loading 分析（`validations/performance-sources/result/renderer-20261029/loading-r32-1080-20261029-163001/loading-chain-analysis.json`） | 数据到达、编译入队、GPU 完成与平静 |
 
 部分较大的原始 CSV、JSONL、日志及可再生 SQLite 已无损归档到各用例的 `evidence-raw.zip`，同目录的 `evidence-raw.index.json` 记录原路径和 SHA-256。每条读回校验后才将原文件移入回收站，分析和唯一 GPU 捕获保留。引用原始条目时使用 `evidence-raw.zip!<条目名>`。生命周期的五份 `vma-scene-release-*.json` 保持原文件。
 

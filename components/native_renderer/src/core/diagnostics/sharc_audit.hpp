@@ -8,6 +8,7 @@ namespace mcvr::diagnostics {
 // Local, opt-in sampled shader counters. The frame retainer and a GPU event
 // separate recorded work from completed observations; no GPU wait is introduced.
 struct SharcAudit {
+    static constexpr size_t counterCount = 24;
     std::shared_ptr<vk::Device> device;
     std::shared_ptr<vk::HostVisibleBuffer> buffer;
     VkEvent completed = VK_NULL_HANDLE;
@@ -25,10 +26,10 @@ struct SharcAudit {
         auto value = std::make_shared<SharcAudit>();
         value->device = framework->device();
         value->frame = mcvr::profile::frame;
-        value->buffer = vk::HostVisibleBuffer::create(framework->vma(), value->device, sizeof(uint32_t) * 8,
+        value->buffer = vk::HostVisibleBuffer::create(framework->vma(), value->device, sizeof(uint32_t) * counterCount,
                                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                                           VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
-        std::array<uint32_t, 8> zero{};
+        std::array<uint32_t, counterCount> zero{};
         value->buffer->uploadToBuffer(zero.data());
         VkEventCreateInfo info{VK_STRUCTURE_TYPE_EVENT_CREATE_INFO};
         if (vkCreateEvent(value->device->vkDevice(), &info, nullptr, &value->completed) != VK_SUCCESS)
@@ -48,10 +49,20 @@ struct SharcAudit {
         if (sealed && vkGetEventStatus(device->vkDevice(), completed) == VK_EVENT_SET) {
             buffer->downloadFromBuffer();
             const auto *values = static_cast<const uint32_t *>(buffer->mappedPtr());
-            const char *names[]{"sharc.sampled.queries",     "sharc.sampled.hits",      "sharc.sampled.segments",
-                                "sharc.sampled.pixels",      "sharc.update.first-near", "sharc.update.first-rays",
-                                "sharc.update.first-misses", "sharc.update.first-hits"};
-            for (size_t i = 0; i < 8; ++i) mcvr::profile::emit(frame, 5, names[i], values[i], 0);
+            const char *names[]{"sharc.sampled.queries",           "sharc.sampled.hits",
+                                "sharc.sampled.segments",          "sharc.sampled.pixels",
+                                "sharc.update.first-near",         "sharc.update.first-rays",
+                                "sharc.update.first-misses",       "sharc.update.first-hits",
+                                "medium.sampled.eligible",         "medium.sampled.filtered",
+                                "medium.sampled.queries",          "medium.sampled.candidates",
+                                "medium.sampled.decoded",          "medium.sampled.contacts",
+                                "medium.sampled.resumes",          "medium.sampled.camera-queries",
+                                "shadow.sampled.celestial-rays",   "shadow.sampled.layered-rays",
+                                "shadow.sampled.lod-rays",         "shadow.sampled.boundary-queries",
+                                "shadow.sampled.celestial-anyhit", "shadow.sampled.layered-anyhit",
+                                "shadow.sampled.lod-anyhit",       "shadow.sampled.boundary-candidates"};
+            static_assert(std::size(names) == counterCount);
+            for (size_t i = 0; i < counterCount; ++i) mcvr::profile::emit(frame, 5, names[i], values[i], 0);
         }
         if (completed) vkDestroyEvent(device->vkDevice(), completed, nullptr);
     }

@@ -44,6 +44,63 @@ final class SourceEfficiencyObservation {
                 line,
                 StandardOpenOption.CREATE,
                 StandardOpenOption.APPEND);
+        var mc = Minecraft.getInstance();
+        var witness = new java.util.TreeMap<String, Object>();
+        var eye = mc.gameRenderer.getMainCamera().getPosition();
+        var blocks = new java.util.TreeMap<String, Object>();
+        int cx = net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(eye.x));
+        int cz = net.minecraft.core.SectionPos.blockToSectionCoord((int) Math.floor(eye.z));
+        for (int dx = -2; dx <= 2; dx++)
+            for (int dz = -2; dz <= 2; dz++) {
+                var chunk =
+                        mc.level
+                                .getChunkSource()
+                                .getChunk(
+                                        cx + dx,
+                                        cz + dz,
+                                        net.minecraft.world.level.chunk.status.ChunkStatus.FULL,
+                                        false);
+                if (chunk == null) continue;
+                for (var entry : chunk.getBlockEntities().entrySet()) {
+                    var be = entry.getValue();
+                    var state = new java.util.TreeMap<String, Object>();
+                    state.put("state", be.getBlockState().toString());
+                    state.put("class", be.getClass().getName());
+                    try {
+                        Object speed = be.getClass().getMethod("getSpeed").invoke(be);
+                        state.put("kineticSpeed", speed);
+                    } catch (NoSuchMethodException ordinaryBlockEntity) {
+                        // Non-kinetic block entities have no Flywheel speed input.
+                    }
+                    blocks.put(entry.getKey().toShortString(), state);
+                }
+            }
+        var entities = new java.util.TreeMap<String, Object>();
+        for (var entity : mc.level.entitiesForRendering())
+            if (entity.position().distanceToSqr(eye) < 4096)
+                entities.put(
+                        entity.getUUID().toString(),
+                        java.util.Map.of(
+                                "type",
+                                entity.getType().toString(),
+                                "position",
+                                java.util.List.of(entity.getX(), entity.getY(), entity.getZ()),
+                                "yaw",
+                                entity.getYRot(),
+                                "pitch",
+                                entity.getXRot(),
+                                "velocity",
+                                entity.getDeltaMovement().toString()));
+        witness.put("blockEntities", blocks);
+        witness.put("entities", entities);
+        witness.put("eye", java.util.List.of(eye.x, eye.y, eye.z));
+        witness.put(
+                "scope",
+                "Nearby block states, kinetic speed and entity poses; animation phase is not frozen");
+        Files.writeString(
+                Path.of(System.getProperty("validation.result"), "motion-" + label + ".json"),
+                new com.google.gson.GsonBuilder().setPrettyPrinting().create().toJson(witness)
+                        + "\n");
     }
 
     static void start(Minecraft mc, String label) throws Exception {
@@ -68,6 +125,10 @@ final class SourceEfficiencyObservation {
         if (tick == move) return;
         move = tick;
         double targetX = x + 4 * Math.sin(tick * .2);
+        float targetYaw =
+                Boolean.getBoolean("radiance.audit.sourceEfficiencyTurn")
+                        ? yaw + (float) (12 * Math.sin(tick * .2))
+                        : yaw;
         var server = mc.getSingleplayerServer();
         var id = mc.player.getUUID();
         pending =
@@ -76,7 +137,7 @@ final class SourceEfficiencyObservation {
                             var player = server.getPlayerList().getPlayer(id);
                             if (player == null)
                                 throw new IllegalStateException("Moving fixture disconnected");
-                            player.connection.teleport(targetX, y, z, yaw, pitch);
+                            player.connection.teleport(targetX, y, z, targetYaw, pitch);
                         },
                         server);
     }

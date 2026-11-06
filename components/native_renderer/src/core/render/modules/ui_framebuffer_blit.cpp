@@ -75,17 +75,17 @@ void UIModuleContext::blitAttachment(const Framebuffers::ResolvedAttachment &sou
         saved.level = 0;
         saved.viewIndex = 0;
         const auto oldLayout = source.image->imageLayout();
-        blitTransition(frame->overlayCommandBuffer, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
-        blitTransition(frame->overlayCommandBuffer, saved, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        blitTransition(frame->recordingOverlayCommands(), source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+        blitTransition(frame->recordingOverlayCommands(), saved, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         VkImageCopy region{};
         const VkImageAspectFlags copyAspect = depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
         region.srcSubresource = {copyAspect, source.level, 0, 1};
         region.dstSubresource = {region.srcSubresource.aspectMask, 0, 0, 1};
         region.extent = {source.extent.width, source.extent.height, 1};
-        vkCmdCopyImage(frame->overlayCommandBuffer->vkCommandBuffer(), source.image->vkImage(),
+        vkCmdCopyImage(frame->recordingOverlayCommands()->vkCommandBuffer(), source.image->vkImage(),
                        VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, saved.image->vkImage(),
                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-        blitTransition(frame->overlayCommandBuffer, source, oldLayout);
+        blitTransition(frame->recordingOverlayCommands(), source, oldLayout);
         blitAttachment(saved, destination, sx0, sy0, sx1, sy1, dx0, dy0, dx1, dy1, depth, filter);
         return;
     }
@@ -115,8 +115,8 @@ void UIModuleContext::blitAttachment(const Framebuffers::ResolvedAttachment &sou
     const auto targetLayout =
         depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     const auto previousSourceLayout = source.image->imageLayout();
-    blitTransition(frame->overlayCommandBuffer, source, sourceLayout);
-    blitTransition(frame->overlayCommandBuffer, destination, targetLayout);
+    blitTransition(frame->recordingOverlayCommands(), source, sourceLayout);
+    blitTransition(frame->recordingOverlayCommands(), destination, targetLayout);
     // Default view 0 is a depth-only view for combined depth/stencil images, and spans all mips.
     descriptor->bindSamplerImage(sampler, source.image, sourceLayout, 0, 0, 0);
     const std::string key = std::string(depth ? "blit-depth:" : "blit-color:") + std::to_string(destination.format);
@@ -171,11 +171,11 @@ void UIModuleContext::blitAttachment(const Framebuffers::ResolvedAttachment &sou
                        .definePipelineLayout(descriptor)
                        .build(frame->device);
     }
-    frame->overlayCommandBuffer->beginRenderPass(
+    frame->recordingOverlayCommands()->beginRenderPass(
         {.renderPass = pass, .framebuffer = target, .renderAreaExtent = extent});
-    const auto command = frame->overlayCommandBuffer->vkCommandBuffer();
+    const auto command = frame->recordingOverlayCommands()->vkCommandBuffer();
     vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline->vkPipeline());
-    frame->overlayCommandBuffer->bindDescriptorTable(descriptor, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    frame->recordingOverlayCommands()->bindDescriptorTable(descriptor, VK_PIPELINE_BIND_POINT_GRAPHICS);
     BlitPush push{{sx0, sy0, sx1, sy1},
                   {dx0, dy0, dx1, dy1},
                   {source.extent.width, source.extent.height},
@@ -205,10 +205,10 @@ void UIModuleContext::blitAttachment(const Framebuffers::ResolvedAttachment &sou
         vkCmdSetColorBlendEquationEXT(command, 0, 1, &equation);
         vkCmdSetColorWriteMaskEXT(command, 0, 1, &mask);
     }
-    frame->overlayCommandBuffer->draw(3, 1);
-    frame->overlayCommandBuffer->endRenderPass();
-    blitTransition(frame->overlayCommandBuffer, source, previousSourceLayout);
-    blitTransition(frame->overlayCommandBuffer, destination,
+    frame->recordingOverlayCommands()->draw(3, 1);
+    frame->recordingOverlayCommands()->endRenderPass();
+    blitTransition(frame->recordingOverlayCommands(), source, previousSourceLayout);
+    blitTransition(frame->recordingOverlayCommands(), destination,
                    depth ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (destination.image == overlayDrawColorImage || destination.image == overlayDrawDepthStencilImage) {
         captureMainAliases();

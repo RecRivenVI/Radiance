@@ -61,7 +61,27 @@ void main() {
     uint i0, i1, i2;
     PositionVertex p0, p1, p2;
     MaterialVertex m0, m1, m2;
+#if RADIANCE_GS_DEFER_SHADOW_POSITIONS
+    loadTriangleIndices(geometryBufferIndex, gl_PrimitiveID, i0, i1, i2);
+    loadTriangleMaterial(geometryBufferIndex, i0, i1, i2, m0, m1, m2);
+    InstanceAppearance appearance = instanceAppearances.values[geometryBufferIndex];
+    bool positionAppearance = appearance.sectionColourTarget.w != 0.0 ||
+        (appearance.flags & (SURFACE_FLUID_UV | SURFACE_SHADOW_UV)) != 0u;
+    if (positionAppearance) {
+        loadTrianglePositions(geometryBufferIndex, i0, i1, i2, p0, p1, p2);
+    } else {
+        p0 = PositionVertex(vec3(0.0), 0u);
+        p1 = p0;
+        p2 = p0;
+    }
+    MaterialVertex materials[3] = MaterialVertex[3](m0, m1, m2);
+    applyFlywheelAppearanceBase(geometryBufferIndex, PositionVertex[3](p0, p1, p2), materials);
+    m0 = materials[0];
+    m1 = materials[1];
+    m2 = materials[2];
+#else
     loadTriangle(geometryBufferIndex, gl_PrimitiveID, i0, i1, i2, p0, p1, p2, m0, m1, m2);
+#endif
     if (!selectSurfaceLayer(geometryBufferIndex, gl_PrimitiveID,
         vec3(1.0-attribs.x-attribs.y,attribs), gl_HitKindEXT==gl_HitKindFrontFacingTriangleEXT,
         false,gl_WorldRayOriginEXT,gl_WorldRayDirectionEXT,ubo.seed,0.0,
@@ -98,14 +118,6 @@ void main() {
     if (hasTexture(packedData) && (flags.r & 0x1) > 0 && excludedWaterPosition(gl_WorldRayOriginEXT + gl_WorldRayDirectionEXT * gl_HitTEXT)) { ignoreIntersectionEXT; return; }
 
     bool textSurface = isTextMode(alphaMode);
-    vec3 shadedRgb = textSurface ?
-                         resolveTextTextureColor(albedo, hasTexture(packedData), alphaMode).rgb * colorLayer.rgb * sourceDrawColour(geometryBufferIndex).rgb :
-                         (hasColorLayerMix(packedData) ?
-                              mix(albedo.rgb * sourceDrawColour(geometryBufferIndex).rgb, colorLayer.rgb, clamp(colorLayer.a, 0.0, 1.0)) :
-                              albedo.rgb * colorLayer.rgb * sourceDrawColour(geometryBufferIndex).rgb);
-    float shadedAlpha = textSurface ? albedo.a * colorLayer.a :
-                                      (hasColorLayerMix(packedData) ? albedo.a : albedo.a * colorLayer.a);
-    vec4 shadedAlbedo = vec4(shadedRgb, shadedAlpha);
     float alpha = resolveSourceAlpha(textSurface ? resolveTextTextureColor(albedo, hasTexture(packedData), alphaMode).a : albedo.a,
         hasColorLayerMix(packedData) ? 1.0 : colorLayer.a, sourceDrawColour(geometryBufferIndex).a, alphaMode,
         getSourceAlphaRule(packedData));
@@ -114,7 +126,7 @@ void main() {
     // the same coverage decision for direct-light visibility so glyph edges
     // do not become opaque or dielectric shadows.
     if (textSurface) {
-        uint coverageSeed = xxhash32(uvec3(uint(gl_PrimitiveID), instanceID,
+        uint coverageSeed = xxhash32(uvec3(uint(gl_PrimitiveID), sceneSamplingInstance(instanceID),
                                             floatBitsToUint(gl_HitTEXT)));
         if (alpha <= 0.0 || (alpha < 1.0 && rand(coverageSeed) >= alpha)) {
             ignoreIntersectionEXT;
@@ -160,6 +172,15 @@ void main() {
         }
     }
 
+    vec3 shadedRgb = textSurface ?
+                         resolveTextTextureColor(albedo, hasTexture(packedData), alphaMode).rgb * colorLayer.rgb * sourceDrawColour(geometryBufferIndex).rgb :
+                         (hasColorLayerMix(packedData) ?
+                              mix(albedo.rgb * sourceDrawColour(geometryBufferIndex).rgb, colorLayer.rgb, clamp(colorLayer.a, 0.0, 1.0)) :
+                              albedo.rgb * colorLayer.rgb * sourceDrawColour(geometryBufferIndex).rgb);
+    float shadedAlpha = textSurface ? albedo.a * colorLayer.a :
+                                      (hasColorLayerMix(packedData) ? albedo.a : albedo.a * colorLayer.a);
+    vec4 shadedAlbedo = vec4(shadedRgb, shadedAlpha);
+
     vec3 tint = shadedAlbedo.rgb;
     if (hasOverlay(packedData)) {
         vec4 overlayColor = sampleTexture(textures[nonuniformEXT(ubo.overlayTextureID)], m0.overlayUV, 0, false);
@@ -177,6 +198,10 @@ void main() {
             vec3 dposdu;
             vec3 dposdv;
             mat3 objectToWorld = mat3(gl_ObjectToWorldEXT);
+#if RADIANCE_GS_DEFER_SHADOW_POSITIONS
+            if (!positionAppearance)
+                loadTrianglePositions(geometryBufferIndex, i0, i1, i2, p0, p1, p2);
+#endif
             computedposduDv(p0.pos, p1.pos, p2.pos, m0.textureUV, m1.textureUV, m2.textureUV, dposdu, dposdv);
             vec3 dPduWorld = objectToWorld * dposdu;
             vec3 dPdvWorld = objectToWorld * dposdv;

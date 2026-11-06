@@ -550,6 +550,38 @@ val lineFixtureTest =
 
 tasks.named("check") { dependsOn(lineFixtureTest) }
 
+val sceneReplayTest =
+    tasks.register<Exec>("sceneReplayTest") {
+        commandLine(
+            "python",
+            "-B",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "benchmark",
+            "-p",
+            "test_scene_replay.py",
+        )
+    }
+
+val memoryGuardTest =
+    tasks.register<Exec>("memoryGuardTest") {
+        commandLine(
+            "python",
+            "-B",
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            "benchmark",
+            "-p",
+            "test_memory_guard.py",
+        )
+    }
+
+tasks.named("check") { dependsOn(sceneReplayTest, memoryGuardTest) }
+
 val queryContinuationFixtureTest =
     tasks.register<Exec>("queryContinuationFixtureTest") {
         commandLine(

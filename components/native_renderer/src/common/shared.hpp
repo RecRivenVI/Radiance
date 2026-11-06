@@ -298,9 +298,12 @@ namespace Data {
         T_FLOAT glintStrength;
         T_UINT lodGeometry;
 
-        T_DVEC4 cameraPos;              // w for padding
+        T_DVEC3 cameraPos;
+        // Reuse the former camera padding; the Java wire layout and XYZ stay unchanged.
+        T_UINT samplingFrameIndex;
+        T_UINT samplingSeed;
         T_IVEC4 chunkGridInfo;          // x=sizeX, y=sizeY, z=sizeZ, w=bottomSectionCoord
-        T_IVEC4 chunkStorageSectionPos; // xyz=BuiltChunkStorage.sectionPos
+        T_IVEC4 chunkStorageSectionPos; // xyz=BuiltChunkStorage.sectionPos; w=native-only unused PT output mask
 
         T_UINT endSkyTextureID;
         T_UINT endPortalTextureID;
@@ -309,7 +312,7 @@ namespace Data {
 
         // Display-resolution camera effects are composed after denoising/upscaling and after
         // exposure metering, but before tone mapping.  A negative texture id disables a layer.
-        // x=block atlas, y=fluid overlay, z=fire atlas, w=reserved.
+        // x=block atlas, y=fluid overlay, z=fire atlas, w=Native optical sample parity (0=dense, 1/2=even/odd).
         T_IVEC4 cameraEffectTextureIDs;
 
         // Atlas UV bounds are (u0, v0, u1, v1). The standalone fluid texture uses
@@ -325,6 +328,8 @@ namespace Data {
     };
 #ifdef __cplusplus
     static_assert(sizeof(WorldUBO) == 704, "WorldUBO layout must match BufferProxy serialization");
+    static_assert(offsetof(WorldUBO, samplingFrameIndex) == offsetof(WorldUBO, cameraPos) + 24);
+    static_assert(offsetof(WorldUBO, chunkGridInfo) == offsetof(WorldUBO, cameraPos) + 32);
 #endif
 
     struct SkyUBO {
@@ -337,7 +342,7 @@ namespace Data {
         T_UINT isSunRisingOrSetting;
 
         T_FLOAT thunderGradient;
-        T_UINT reservedSkyWord;
+        T_UINT cameraMediumProbe;
         T_UINT cameraSubmersionType;
         T_UINT moonPhase;
         T_FLOAT rainGradient;
@@ -350,6 +355,8 @@ namespace Data {
         T_FLOAT starBrightness;
         // Projected solid-angle energy: sun, full-moon, current/full phase ratio.
         T_VEC4 celestialProfile;
+        // xy = camera-fluid sprite UV, z = atlas texture id (-1 absent), w = source alpha.
+        T_VEC4 cameraMediumSource;
     };
 
     struct TextureMapEntry {

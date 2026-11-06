@@ -21,6 +21,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.network.chat.Component;
 import net.minecraft.resources.ResourceLocation;
 import net.minecraft.sounds.SoundSource;
+import net.minecraft.world.entity.EntityType;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Blocks;
@@ -40,6 +41,7 @@ public final class TakeoverBoundaryProbe {
     private static long started, resumed, nextSample;
     private static long stableModel;
     private static int step, samples, generatedSamples, focusedSamples;
+    private static int resizeStep;
     private static boolean finished;
     private static CompletableFuture<?> reload;
     private static Path result;
@@ -138,7 +140,7 @@ public final class TakeoverBoundaryProbe {
                 }
             }
             // Move the world underneath fixed UI without synthesizing user input.
-            if (step >= 4 && step <= 6) {
+            if (step >= 4 && step <= 7) {
                 float yaw = 180 + (float) Math.sin((now - started) * 1e-9) * 8;
                 mc.player.setYRot(yaw);
                 mc.player.yRotO = yaw;
@@ -148,7 +150,7 @@ public final class TakeoverBoundaryProbe {
                 SurfaceContractProbe.verify("boundary-initial");
                 MaterialStateBatchProbe.verify("boundary-initial");
                 OffscreenDependencyProbe.verify("boundary-initial");
-                mc.setScreen(new BoundaryScreen());
+                mc.setScreen(new BoundaryScreen(true));
                 capture(mc, "boundary-shared");
                 step++;
             } else if (step == 1 && seconds >= 12) {
@@ -166,8 +168,20 @@ public final class TakeoverBoundaryProbe {
                 report.put(
                         "deformation",
                         "immutable replacement for B; A retains shared version; not parameterized GPU deformation");
+                var spider = java.util.Objects.requireNonNull(EntityType.SPIDER.create(mc.level));
+                spider.moveTo(
+                        mc.player.getX(),
+                        mc.player.getY(),
+                        mc.player.getZ(),
+                        mc.player.getYRot(),
+                        mc.player.getXRot());
+                mc.setScreen(null);
+                mc.setCameraEntity(spider);
                 step++;
             } else if (step == 3 && seconds >= 22) {
+                capture(mc, "boundary-spider-effect");
+                mc.setCameraEntity(mc.player);
+                mc.setScreen(new BoundaryScreen(true));
                 var server = java.util.Objects.requireNonNull(mc.getSingleplayerServer());
                 server.execute(
                         () -> {
@@ -205,12 +219,16 @@ public final class TakeoverBoundaryProbe {
                 LOG.info("TAKEOVER_BOUNDARY FG-requested available={}", report.get("fgAvailable"));
                 step++;
             } else if (step == 5 && seconds >= 39) {
+                capture(mc, "boundary-fg-blur");
+                mc.setScreen(new BoundaryScreen(false));
+                step++;
+            } else if (step == 6 && seconds >= 43) {
                 Files.writeString(
                         mc.gameDirectory.toPath().resolve("radiance-fg-capture.request"),
-                        "boundary-panel-invert-blur\n");
+                        "boundary-panel-invert\n");
                 capture(mc, "boundary-fg-real");
                 step++;
-            } else if (step == 6 && seconds >= 49) {
+            } else if (step == 7 && seconds >= 53) {
                 report.put("fgStateSamples", samples);
                 report.put("fgGeneratedPositiveSamples", generatedSamples);
                 report.put("fgFocusedSamples", focusedSamples);
@@ -221,13 +239,14 @@ public final class TakeoverBoundaryProbe {
                 shared = null;
                 reload = mc.reloadResourcePacks();
                 step++;
-            } else if (step == 7 && reload != null && reload.isDone()) {
+            } else if (step == 8 && reload != null && reload.isDone()) {
                 reload.join();
                 reload = null;
                 resumed = now;
                 step++;
                 LOG.info("TAKEOVER_BOUNDARY reload-complete");
-            } else if (step == 8 && now - resumed >= 8_000_000_000L) {
+            } else if (step == 9 && now - resumed >= 8_000_000_000L) {
+                if (!verifyResize(mc, now)) return;
                 OffscreenDependencyProbe.verify("boundary-reloaded");
                 require(shared != null && shared.model() != stableModel, "new epoch resource");
                 capture(mc, "boundary-reloaded");
@@ -258,6 +277,27 @@ public final class TakeoverBoundaryProbe {
         }
     }
 
+    private static boolean verifyResize(Minecraft mc, long now) {
+        var window = mc.getWindow();
+        if (resizeStep == 0) {
+            org.lwjgl.glfw.GLFW.glfwSetWindowSize(window.getWindow(), 1280, 720);
+        } else if (resizeStep == 1) {
+            require(window.getWidth() == 1280 && window.getHeight() == 720, "resized framebuffer");
+            OffscreenDependencyProbe.verify("boundary-resized");
+            capture(mc, "boundary-resized");
+            org.lwjgl.glfw.GLFW.glfwSetWindowSize(window.getWindow(), 1920, 1080);
+        } else {
+            require(
+                    window.getWidth() == 1920 && window.getHeight() == 1080,
+                    "restored framebuffer");
+            report.put("framebufferResize", "1920x1080 -> 1280x720 -> 1920x1080");
+            return true;
+        }
+        resizeStep++;
+        resumed = now;
+        return false;
+    }
+
     private static void capture(Minecraft mc, String name) {
         Screenshot.grab(
                 mc.gameDirectory,
@@ -271,8 +311,11 @@ public final class TakeoverBoundaryProbe {
     }
 
     private static final class BoundaryScreen extends Screen {
-        BoundaryScreen() {
+        private final boolean blur;
+
+        BoundaryScreen(boolean blur) {
             super(Component.literal("Takeover boundary probe"));
+            this.blur = blur;
         }
 
         @Override
@@ -283,7 +326,7 @@ public final class TakeoverBoundaryProbe {
         @Override
         public void render(GuiGraphics g, int mouseX, int mouseY, float partialTick) {
             g.fill(12, 16, 220, 78, 0x804070a0);
-            g.drawString(font, "Before blur: fractional panel + text", 18, 24, 0xa0ffffff, false);
+            g.drawString(font, "Fractional panel + text", 18, 24, 0xa0ffffff, false);
             g.renderItem(new ItemStack(Items.ENCHANTED_GOLDEN_APPLE), 180, 45);
             g.flush();
             RenderSystem.enableBlend();
@@ -296,9 +339,9 @@ public final class TakeoverBoundaryProbe {
             g.flush();
             RenderSystem.defaultBlendFunc();
             RenderSystem.disableDepthTest();
-            Minecraft.getInstance().gameRenderer.processBlurEffect(partialTick);
+            if (blur) Minecraft.getInstance().gameRenderer.processBlurEffect(partialTick);
             g.fill(12, 90, 220, 115, 0x60703050);
-            g.drawString(font, "After blur: sharp UI", 18, 97, 0xa0ffffff, false);
+            g.drawString(font, "Sharp UI", 18, 97, 0xa0ffffff, false);
             g.flush();
         }
     }

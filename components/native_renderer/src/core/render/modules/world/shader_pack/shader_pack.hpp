@@ -148,6 +148,7 @@ class ShaderPackLoader {
     struct RayTracingPassConfig {
         std::string name;
         bool querySharc = false;
+        bool useInvocationReorder = false;
         fs::path rayGenShaderPath;
         std::string defaultHitGroupName;
         ResourceList inputs;
@@ -282,6 +283,7 @@ class ShaderPackLoader {
     static constexpr char KEY_UPDATE_PASS[] = "update_pass";
     static constexpr char KEY_RESOLVE_COMP[] = "resolve_comp";
     static constexpr char KEY_QUERY_SHARC[] = "query_sharc";
+    static constexpr char KEY_USE_INVOCATION_REORDER[] = "use_invocation_reorder";
     static constexpr char KEY_RGEN[] = "rgen";
     static constexpr char KEY_DEFAULT_HIT_GROUP[] = "default_hit_group";
     static constexpr char KEY_HIT_GROUPS[] = "hit_groups";

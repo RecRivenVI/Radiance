@@ -1,22 +1,10 @@
 cmake_minimum_required(VERSION 3.25)
 
+option(MCVR_BUILD_SCENE_REPLAY "Build local capture and standalone replay (not for distribution)" OFF)
+
 option(MCVR_BUILD_TESTS "Build MCVR first-party contract tests" ON)
 option(MCVR_ENABLE_FFX_UPSCALER "Enable FidelityFX Upscaler support" ON)
 option(MCVR_ENABLE_NRD "Enable NRD denoiser support" ON)
-
-# FidelityFX forces CMAKE_GENERATOR_PLATFORM=x64 while configuring its Vulkan
-# backend. NRD's nested ShaderMake configure then forwards that Visual Studio
-# platform selection to Ninja, which rejects it. Keep the supported Windows
-# build path explicit and fail before dependency configuration becomes costly.
-if(CMAKE_HOST_WIN32
-        AND CMAKE_GENERATOR MATCHES "^Ninja"
-        AND MCVR_ENABLE_FFX_UPSCALER
-        AND MCVR_ENABLE_NRD)
-    message(FATAL_ERROR
-        "Windows builds with both FidelityFX and NRD require a Visual Studio generator. "
-        "Reconfigure in a fresh build directory with, for example, "
-        "-G \"Visual Studio 17 2022\" -A x64.")
-endif()
 
 project(minecraft-vulkan-renderer LANGUAGES C CXX)
 include(CTest)
@@ -120,28 +108,7 @@ message(STATUS "Built-in shader packs: ${MCVR_BUILT_IN_SHADER_PACKS}")
 if(MCVR_ENABLE_FFX_UPSCALER)
     message(STATUS "FidelityFX Upscaler Enabled")
 
-    set(FFX_API_BACKEND VK_X64 CACHE STRING "FidelityFX API backend" FORCE)
-
-    # Disable everything except FSR3 Upscaler
-    set(FFX_DENOISER OFF CACHE BOOL "Build FFX Denoiser" FORCE)
-    set(FFX_ALL OFF CACHE BOOL "Build all FFX components" FORCE)
-    set(FFX_SSSR OFF CACHE BOOL "Build FFX SSSR" FORCE)
-    set(FFX_FSR3 OFF CACHE BOOL "Build FFX FSR3" FORCE) # Full FSR3 (FrameGen) disabled
-    set(FFX_FSR3UPSCALER ON CACHE BOOL "Build FFX FSR3 Upscaler" FORCE)
-    set(FFX_FI OFF CACHE BOOL "Build FFX Frame Interpolation" FORCE)
-    set(FFX_OF OFF CACHE BOOL "Build FFX Optical Flow" FORCE)
-
-    set(FFX_AUTO_COMPILE_SHADERS ON CACHE BOOL "Compile shaders automatically as a prebuild step." FORCE)
-
-    # Use ffx-api which includes sdk internally, providing the necessary API symbols (ffxQuery)
-    set(FFX_BIN_PATH ${CMAKE_BINARY_DIR}/ffx_sdk CACHE STRING "FFX binary output path" FORCE)
-    add_subdirectory(third_party/FidelityFX-SDK/ffx-api EXCLUDE_FROM_ALL)
-
-    if(TARGET ffx_backend_vk_x64)
-        target_include_directories(ffx_backend_vk_x64 PRIVATE ${VOLK_INCLUDE_DIR})
-    endif()
-
-    # Note: ffx_denoiser_x64 target will NOT be created, so don't link against it.
+    include(cmake/FidelityFX.cmake)
 else()
     message(STATUS "FidelityFX Upscaler Disabled")
 endif()
@@ -151,8 +118,13 @@ if(MCVR_ENABLE_NRD)
     message(STATUS "NRD Denoiser Enabled")
 
     set(NRD_STATIC_LIBRARY ON CACHE BOOL "Build NRD as a static library" FORCE)
-    set(NRD_DISABLE_SHADER_COMPILATION ON CACHE BOOL "Disable NRD shader compilation" FORCE)
-    set(NRD_SHADERS_PATH "${PROJECT_SOURCE_DIR}/third_party/nrd/_Shaders" CACHE STRING "NRD shader headers path" FORCE)
+    set(NRD_SHADERS_PATH "${CMAKE_BINARY_DIR}/nrd_shaders" CACHE STRING "NRD shader headers path" FORCE)
+    set(NRD_EMBEDS_SPIRV_SHADERS ON CACHE BOOL "Build the Vulkan shader permutations" FORCE)
+    set(NRD_EMBEDS_DXIL_SHADERS OFF CACHE BOOL "No DirectX 12 backend" FORCE)
+    set(NRD_EMBEDS_DXBC_SHADERS OFF CACHE BOOL "No DirectX 11 backend" FORCE)
+    # Quad intrinsics need an enabled compute_shader_derivatives device feature.
+    # This renderer's portable device contract does not request that feature.
+    set(NRD_SUPPORTS_QUAD_INTRINSICS OFF CACHE BOOL "Use portable NRD shaders" FORCE)
     set(NRD_NORMAL_ENCODING "2" CACHE STRING "Normal encoding variant (0-4, matches nrd::NormalEncoding)" FORCE)
     set(NRD_ROUGHNESS_ENCODING "1" CACHE STRING "Roughness encoding variant (0-2, matches nrd::RoughnessEncoding)" FORCE)
 

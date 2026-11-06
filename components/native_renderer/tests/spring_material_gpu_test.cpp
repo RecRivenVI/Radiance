@@ -27,6 +27,7 @@ int main(int argc, char **argv) {
         if (argc != 2 && argc != 3) return 1;
         const bool display = argc == 3 && std::string(argv[2]) == "--display-colour";
         const bool colourField = argc == 3 && std::string(argv[2]) == "--colour-field";
+        const bool reconstruction = argc == 3 && std::string(argv[2]) == "--reconstruction-material";
         const bool palette = argc == 3 && std::string(argv[2]) == "--material-palette";
         const bool coordinates = argc == 3 && std::string(argv[2]) == "--layered-coordinates";
         const bool coveragePath = argc == 3 && std::string(argv[2]) == "--coverage-path";
@@ -145,34 +146,114 @@ int main(int argc, char **argv) {
             std::memcpy(data + 1280, header.data(), 16);
         }
 
-        VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT,
-                                             nullptr};
+        struct ReconstructionImageState {
+            VkDevice device{};
+            VkImage image{};
+            VkDeviceMemory memory{};
+            VkImageView view{};
+            VkPipeline pass1Pipeline{};
+            void destroy() {
+                if (!device) return;
+                if (pass1Pipeline) vkDestroyPipeline(device, pass1Pipeline, nullptr);
+                if (view) vkDestroyImageView(device, view, nullptr);
+                if (image) vkDestroyImage(device, image, nullptr);
+                if (memory) vkFreeMemory(device, memory, nullptr);
+                pass1Pipeline = VK_NULL_HANDLE;
+                view = VK_NULL_HANDLE;
+                image = VK_NULL_HANDLE;
+                memory = VK_NULL_HANDLE;
+            }
+            ~ReconstructionImageState() {
+                destroy();
+            }
+        } recon{device};
+        if (reconstruction) {
+            VkFormatProperties formatProperties{};
+            vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_R16G16B16A16_SFLOAT, &formatProperties);
+            if ((formatProperties.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0u) {
+                throw std::runtime_error("VK_FORMAT_R16G16B16A16_SFLOAT lacks VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT");
+            }
+            VkImageCreateInfo imageInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            imageInfo.imageType = VK_IMAGE_TYPE_2D;
+            imageInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            imageInfo.extent = {cases, 1u, 1u};
+            imageInfo.mipLevels = 1u;
+            imageInfo.arrayLayers = 4u;
+            imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+            imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+            imageInfo.usage = VK_IMAGE_USAGE_STORAGE_BIT;
+            imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+            imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            require(vkCreateImage(device, &imageInfo, nullptr, &recon.image));
+            VkMemoryRequirements imageRequirements{};
+            vkGetImageMemoryRequirements(device, recon.image, &imageRequirements);
+            VkPhysicalDeviceMemoryProperties memoryProperties{};
+            vkGetPhysicalDeviceMemoryProperties(physical, &memoryProperties);
+            uint32_t memoryTypeIndex = memoryProperties.memoryTypeCount;
+            for (uint32_t idx = 0u; idx < memoryProperties.memoryTypeCount; ++idx) {
+                if ((imageRequirements.memoryTypeBits & (1u << idx)) != 0u &&
+                    (memoryProperties.memoryTypes[idx].propertyFlags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) ==
+                        VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT) {
+                    memoryTypeIndex = idx;
+                    break;
+                }
+            }
+            if (memoryTypeIndex >= memoryProperties.memoryTypeCount)
+                throw std::runtime_error("No device-local memory type for reconstruction rgba16f image");
+            VkMemoryAllocateInfo imageAllocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            imageAllocate.allocationSize = imageRequirements.size;
+            imageAllocate.memoryTypeIndex = memoryTypeIndex;
+            require(vkAllocateMemory(device, &imageAllocate, nullptr, &recon.memory));
+            require(vkBindImageMemory(device, recon.image, recon.memory, 0u));
+            VkImageViewCreateInfo viewInfo{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            viewInfo.image = recon.image;
+            viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            viewInfo.format = VK_FORMAT_R16G16B16A16_SFLOAT;
+            viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 4u};
+            require(vkCreateImageView(device, &viewInfo, nullptr, &recon.view));
+        }
+
+        VkDescriptorSetLayoutBinding bindings[2]{
+            {0u, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+            {1u, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1u, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        };
         VkDescriptorSetLayoutCreateInfo layoutInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        layoutInfo.bindingCount = 1;
-        layoutInfo.pBindings = &binding;
+        layoutInfo.bindingCount = reconstruction ? 2u : 1u;
+        layoutInfo.pBindings = bindings;
         VkDescriptorSetLayout layout{};
         require(vkCreateDescriptorSetLayout(device, &layoutInfo, nullptr, &layout));
-        VkDescriptorPoolSize poolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1};
+        VkDescriptorPoolSize poolSizes[2]{
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1u},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1u},
+        };
         VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        poolInfo.maxSets = 1;
-        poolInfo.poolSizeCount = 1;
-        poolInfo.pPoolSizes = &poolSize;
+        poolInfo.maxSets = 1u;
+        poolInfo.poolSizeCount = reconstruction ? 2u : 1u;
+        poolInfo.pPoolSizes = poolSizes;
         VkDescriptorPool pool{};
         require(vkCreateDescriptorPool(device, &poolInfo, nullptr, &pool));
         VkDescriptorSetAllocateInfo setInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         setInfo.descriptorPool = pool;
-        setInfo.descriptorSetCount = 1;
+        setInfo.descriptorSetCount = 1u;
         setInfo.pSetLayouts = &layout;
         VkDescriptorSet set{};
         require(vkAllocateDescriptorSets(device, &setInfo, &set));
         VkDescriptorBufferInfo descriptor{buffer, 0, bytes};
-        VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-        write.dstSet = set;
-        write.dstBinding = 0;
-        write.descriptorCount = 1;
-        write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-        write.pBufferInfo = &descriptor;
-        vkUpdateDescriptorSets(device, 1, &write, 0, nullptr);
+        VkDescriptorImageInfo imageDescriptor{VK_NULL_HANDLE, recon.view, VK_IMAGE_LAYOUT_GENERAL};
+        VkWriteDescriptorSet writes[2]{};
+        writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[0].dstSet = set;
+        writes[0].dstBinding = 0u;
+        writes[0].descriptorCount = 1u;
+        writes[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+        writes[0].pBufferInfo = &descriptor;
+        writes[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        writes[1].dstSet = set;
+        writes[1].dstBinding = 1u;
+        writes[1].descriptorCount = 1u;
+        writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+        writes[1].pImageInfo = &imageDescriptor;
+        vkUpdateDescriptorSets(device, reconstruction ? 2u : 1u, writes, 0u, nullptr);
 
         std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
         if (!file) throw std::runtime_error("Missing spring material SPIR-V");
@@ -191,6 +272,11 @@ int main(int argc, char **argv) {
         pipelineLayoutInfo.pSetLayouts = &layout;
         VkPipelineLayout pipelineLayout{};
         require(vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout));
+        uint32_t pass0Id = 0u;
+        uint32_t pass1Id = 1u;
+        VkSpecializationMapEntry passEntry{0u, 0u, sizeof(uint32_t)};
+        VkSpecializationInfo pass0Spec{1u, &passEntry, sizeof(uint32_t), &pass0Id};
+        VkSpecializationInfo pass1Spec{1u, &passEntry, sizeof(uint32_t), &pass1Id};
         VkComputePipelineCreateInfo pipelineInfo{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         pipelineInfo.layout = pipelineLayout;
         pipelineInfo.stage = {VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
@@ -199,9 +285,13 @@ int main(int argc, char **argv) {
                               VK_SHADER_STAGE_COMPUTE_BIT,
                               shader,
                               "main",
-                              nullptr};
+                              reconstruction ? &pass0Spec : nullptr};
         VkPipeline pipeline{};
         require(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &pipeline));
+        if (reconstruction) {
+            pipelineInfo.stage.pSpecializationInfo = &pass1Spec;
+            require(vkCreateComputePipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &recon.pass1Pipeline));
+        }
 
         VkCommandPoolCreateInfo commandPoolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         commandPoolInfo.queueFamilyIndex = family;
@@ -215,9 +305,42 @@ int main(int argc, char **argv) {
         require(vkAllocateCommandBuffers(device, &commandInfo, &command));
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         require(vkBeginCommandBuffer(command, &begin));
-        vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-        vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &set, 0, nullptr);
-        vkCmdDispatch(command, cases, 1, 1);
+        if (reconstruction) {
+            VkImageMemoryBarrier toGeneral{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            toGeneral.srcAccessMask = 0u;
+            toGeneral.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            toGeneral.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            toGeneral.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            toGeneral.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toGeneral.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toGeneral.image = recon.image;
+            toGeneral.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 4u};
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0u,
+                                 0u, nullptr, 0u, nullptr, 1u, &toGeneral);
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &set, 0, nullptr);
+            vkCmdDispatch(command, cases, 1, 1);
+            VkMemoryBarrier ssboPassBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+            ssboPassBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            ssboPassBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+            VkImageMemoryBarrier imageReadBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+            imageReadBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            imageReadBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            imageReadBarrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+            imageReadBarrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+            imageReadBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageReadBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            imageReadBarrier.image = recon.image;
+            imageReadBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0u, 1u, 0u, 4u};
+            vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 0u, 1u, &ssboPassBarrier, 0u, nullptr, 1u, &imageReadBarrier);
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, recon.pass1Pipeline);
+            vkCmdDispatch(command, cases, 1, 1);
+        } else {
+            vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &set, 0, nullptr);
+            vkCmdDispatch(command, cases, 1, 1);
+        }
         VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
@@ -232,6 +355,7 @@ int main(int argc, char **argv) {
         submit.pCommandBuffers = &command;
         require(vkQueueSubmit(queue, 1, &submit, fence));
         require(vkWaitForFences(device, 1, &fence, VK_TRUE, 10'000'000'000ull));
+        recon.destroy();
 
         const auto *rows = static_cast<const Vec4 *>(mapped);
         for (uint32_t i = 0; i < cases; ++i) {
@@ -252,6 +376,21 @@ int main(int argc, char **argv) {
                               << " expectedClamp=" << float((x + .25) * double(scale)) << '\n';
                     throw std::runtime_error("Far/negative plane mask, UV, sampler mode or local origin failed");
                 }
+                continue;
+            }
+            if (reconstruction) {
+                if (r[0].w != 1) {
+                    std::cerr << "Reconstruction rgba16f roundtrip debug: case=" << i << " isDelta=" << r[3].x
+                              << " hasPrev=" << r[3].y << " normalErr=" << r[3].z << " quantizedRoughness=" << r[3].w
+                              << " layer1=(" << r[4].x << ',' << r[4].y << ',' << r[4].z << ',' << r[4].w << ")"
+                              << " layer2=(" << r[5].x << ',' << r[5].y << ',' << r[5].z << ',' << r[5].w << ")"
+                              << " checks=(" << r[6].x << ',' << r[6].y << ',' << r[6].z << ',' << r[6].w << ")\n";
+                    throw std::runtime_error(
+                        "Reconstruction rgba16f image write, barrier, or readback contract failed");
+                }
+                if (r[0].x != 1)
+                    throw std::runtime_error(
+                        "Reconstruction reflectance, material energy or hit-distance sentinel failed");
                 continue;
             }
             if (palette) {
@@ -405,6 +544,11 @@ int main(int argc, char **argv) {
         if (layers) {
             std::cout
                 << "10 GPU ordered layer sampling cases, 65536 samples each, alpha/order/physical emission/stage identity PASS\n";
+            return 0;
+        }
+        if (reconstruction) {
+            std::cout
+                << "10 GPU reconstruction material cases: fp32 BRDF/NRD contracts + two-pass rgba16f imageStore/barrier/imageLoad roundtrip; submit/fence/readback PASS\n";
             return 0;
         }
         std::cout

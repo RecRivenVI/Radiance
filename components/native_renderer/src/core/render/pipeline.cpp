@@ -2,8 +2,21 @@
 #include "core/failure_state.hpp"
 #include "core/render/scene_scope.hpp"
 #include "core/render/pipeline.hpp"
+#include "core/diagnostics/scene_replay.hpp"
+#ifdef MCVR_BUILD_SCENE_REPLAY
+#    include <nlohmann/json.hpp>
+std::string WorldPipelineBlueprint::replayDescription() const {
+    return nlohmann::json{{"modules", moduleNames_},
+                          {"inputs", modulesInputIndices_},
+                          {"outputs", modulesOutputIndices_},
+                          {"formats", imageFormats_},
+                          {"attributes", attributeKVs_}}
+        .dump();
+}
+#endif
 
 #include "core/render/render_framework.hpp"
+#include "core/render/frame_execution.hpp"
 #include "core/render/renderer.hpp"
 
 #include "core/render/modules/ui_module.hpp"
@@ -18,6 +31,8 @@
 #include "core/render/modules/world/tone_mapping/tone_mapping_module.hpp"
 #include "core/render/modules/world/xess_upscaler/xess_sr_module.hpp"
 
+#include <algorithm>
+#include <cstdlib>
 #include <set>
 
 WorldPipelineBlueprint::WorldPipelineBlueprint(WorldPipelineBuildParams *params) {
@@ -102,6 +117,9 @@ void WorldPipeline::init(std::shared_ptr<Framework> framework,
     viewCount_ = SceneRecordingScope::active() ? SceneRecordingScope::active()->viewCount : 1;
 
     worldModules_.resize(blueprint->moduleNames_.size());
+    // Multiple PT modules share the view UBO; keep their export mask identical.
+    const bool singleRayTracing =
+        std::count(blueprint->moduleNames_.begin(), blueprint->moduleNames_.end(), RayTracingModule::NAME) == 1;
     sharedImages_.resize(frameNum,
                          std::vector<std::shared_ptr<vk::DeviceLocalImage>>(blueprint->imageFormats_.size(), nullptr));
     contexts_.resize(frameNum);
@@ -149,6 +167,45 @@ void WorldPipeline::init(std::shared_ptr<Framework> framework,
         auto &moduleOutputIndices = blueprint->modulesOutputIndices_[i];
 
         worldModules_[i]->setAttributes(blueprint->attributeCounts_[i], blueprint->attributeKVs_[i]);
+        if (auto rayTracing = std::dynamic_pointer_cast<RayTracingModule>(worldModules_[i])) {
+            uint32_t unused = 0;
+            for (size_t output = 0; output < moduleOutputIndices.size(); ++output) {
+                const auto image = moduleOutputIndices[output];
+                bool consumed = image == 0;
+                for (const auto &inputs : blueprint->modulesInputIndices_)
+                    consumed |= std::find(inputs.begin(), inputs.end(), image) != inputs.end();
+                if (!consumed) unused |= 1u << output;
+            }
+            rayTracing->setUnusedOutputMask(singleRayTracing ? unused : 0);
+            // Skip deterministic optical paths only if the checkerboard NRD stage
+            // is their sole consumer. Captures and auxiliary views stay dense.
+            const auto *sparseOptics = std::getenv("RADIANCE_NRD_SPARSE_OPTICS");
+            if (singleRayTracing && (unused & 1u) != 0u && sparseOptics && std::string_view(sparseOptics) == "1") {
+                for (size_t n = i + 1; n < worldModules_.size(); ++n) {
+                    const auto nrd = std::dynamic_pointer_cast<NrdModule>(worldModules_[n]);
+                    if (!nrd) continue;
+                    const auto &nrdInputs = blueprint->modulesInputIndices_[n];
+                    if (nrdInputs[1] != moduleOutputIndices[10] || nrdInputs[12] != moduleOutputIndices[14] ||
+                        nrdInputs[11] != moduleOutputIndices[6] || nrdInputs[14] != moduleOutputIndices[16] ||
+                        nrdInputs[16] != moduleOutputIndices[18])
+                        continue;
+                    bool exclusive = true;
+                    for (size_t consumer = 0; consumer < worldModules_.size(); ++consumer) {
+                        if (consumer == n) continue;
+                        const auto &inputs = blueprint->modulesInputIndices_[consumer];
+                        for (size_t out : {6u, 10u, 14u, 16u, 18u}) {
+                            const auto image = moduleOutputIndices[out];
+                            // SR shares the specular-distance input port but never evaluates it.
+                            if (out == 6u && blueprint->moduleNames_[consumer] == DLSSModule::SR_NAME) continue;
+                            exclusive &= image != 0 && std::find(inputs.begin(), inputs.end(), image) == inputs.end();
+                        }
+                    }
+                    if (exclusive) rayTracing->setSparseOpticalConsumer(nrd);
+                    break;
+                }
+            }
+        }
+
         if (static_cast<size_t>(i) < rebuildStates.size() && rebuildStates[i] != nullptr) {
             worldModules_[i]->restoreRebuildState(rebuildStates[i]);
         }
@@ -181,7 +238,7 @@ void WorldPipeline::init(std::shared_ptr<Framework> framework,
                     inputFormats.push_back(imageFormats[moduleInputIndices[j]]);
                 }
                 bool result = worldModules_[i]->setOrCreateInputImages(inputImages, inputFormats, frameIndex);
-                if (!result) throw std::runtime_error("Input image not set properly");
+                if (!result) throw std::runtime_error(blueprint->moduleNames_[i] + ": input image contract mismatch");
                 for (int j = 0; j < moduleInputIndices.size(); j++) {
                     sharedImages_[frameIndex][moduleInputIndices[j]] = inputImages[j];
                 }
@@ -288,6 +345,7 @@ void WorldPipelineContext::render() {
         mcvr::failure::runCheckedStage([&] { worldModuleContexts[i]->render(); });
         context->auditGpu.end(worldCommandBuffer->vkCommandBuffer(), stamp);
     }
+    mcvr::replay::captureOutput(worldCommandBuffer, outputImage);
 
     worldCommandBuffer->barriersBufferImage(
         {}, {{
@@ -431,7 +489,7 @@ void Pipeline::collectWorldModules() {
                                                 return DLSSModule::create(f, p, false);
                                             });
             worldModuleInOutImageNums.emplace(DLSSModule::SR_NAME,
-                                              std::make_pair(DLSSModule::inputImageNum, DLSSModule::outputImageNum));
+                                              std::make_pair(DLSSModule::srInputImageNum, DLSSModule::outputImageNum));
         }
     } else {
         mcvr::log::error("Pipeline")
@@ -474,7 +532,7 @@ void Pipeline::init(std::shared_ptr<Framework> framework) {
     uiModule_ = UIModule::create(framework);
     contexts_ = std::make_shared<std::vector<std::shared_ptr<PipelineContext>>>();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     contexts_->resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -503,7 +561,7 @@ void Pipeline::recreate(std::shared_ptr<Framework> framework, bool resizeTargets
                                       worldPipeline_->shaderPack() :
                                       nullptr;
         std::vector<std::shared_ptr<WorldModuleRebuildState>> rebuildStates;
-        if (worldPipeline_ != nullptr) {
+        if (worldPipeline_ != nullptr && !mcvr::replay::active()) {
             rebuildStates.reserve(worldPipeline_->worldModules().size());
             for (const auto &module : worldPipeline_->worldModules()) {
                 rebuildStates.push_back(module == nullptr ? nullptr : module->captureRebuildState());
@@ -521,7 +579,7 @@ void Pipeline::recreate(std::shared_ptr<Framework> framework, bool resizeTargets
 
     contexts_ = std::make_shared<std::vector<std::shared_ptr<PipelineContext>>>();
 
-    uint32_t size = framework->swapchain()->imageCount();
+    uint32_t size = framework->mainFrameSlotCount();
     contexts_->resize(size);
 
     for (int i = 0; i < size; i++) {
@@ -551,6 +609,7 @@ void Pipeline::close() {
 }
 
 std::shared_ptr<PipelineContext> Pipeline::acquirePipelineContext(std::shared_ptr<FrameworkContext> context) {
+    mcvr::FrameExecution::checkAccess("pipeline context", context.get());
     return contexts_->at(context->frameIndex);
 }
 
@@ -602,12 +661,12 @@ void PipelineContext::fuseWorld() {
     uiModuleContext->end();
 
     context->finishWorldInputs();
-    context->overlayCommandBuffer->bindDescriptorTable(uiModuleContext->overlayDescriptorTable,
-                                                       VK_PIPELINE_BIND_POINT_GRAPHICS);
+    context->recordingOverlayCommands()->bindDescriptorTable(uiModuleContext->overlayDescriptorTable,
+                                                             VK_PIPELINE_BIND_POINT_GRAPHICS);
     uiModuleContext->syncToCommandBuffer();
 
     auto mainQueueIndex = framework->physicalDevice()->mainQueueIndex();
-    auto overlayCommandBuffer = context->overlayCommandBuffer;
+    auto overlayCommandBuffer = context->recordingOverlayCommands();
 
     overlayCommandBuffer->barriersBufferImage(
         {}, {

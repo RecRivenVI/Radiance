@@ -8,7 +8,7 @@
 int main() {
     try {
         static_assert(sizeof(vk::VertexFormat::InstanceAppearance) == 464);
-        static_assert(sizeof(vk::Data::SkyUBO) == 96);
+        static_assert(sizeof(vk::Data::SkyUBO) == 112);
         static_assert(offsetof(vk::Data::SkyUBO, celestialProfile) == 80);
         static_assert(offsetof(vk::VertexFormat::InstanceAppearance, uvTransform0) == 384);
         static_assert(offsetof(vk::VertexFormat::InstanceAppearance, sourceColour) == 416);

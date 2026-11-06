@@ -1,8 +1,8 @@
 # Production SDK, including the matching signed feature runtimes. No moving URL/OTA.
 include(FetchContent)
 FetchContent_Declare(streamline_sdk
-    URL https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.1/streamline-sdk-v2.14.1.zip
-    URL_HASH SHA256=92c4d954631a1710da86ca3fa8d5034f2b9503838c95fc4ae977ae149319781b
+    URL https://github.com/NVIDIA-RTX/Streamline/releases/download/v2.14.16/streamline-sdk-v2.14.16.zip
+    URL_HASH SHA256=32041e51db0cab709a271b72a352281b690c2abbd669a827809401a5dd23956b
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
 FetchContent_GetProperties(streamline_sdk)
 if(NOT streamline_sdk_POPULATED)

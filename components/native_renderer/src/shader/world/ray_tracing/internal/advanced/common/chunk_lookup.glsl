@@ -3,7 +3,8 @@
 
 int floorMod(int value, int divisor) {
     if (divisor <= 0) { return 0; }
-    return value - divisor * int(floor(float(value) / float(divisor)));
+    int remainder = value - divisor * (value / divisor);
+    return remainder < 0 ? remainder + divisor : remainder;
 }
 
 ivec3 getSectionOriginFromSectionCoordinate(ivec3 sectionCoordinate) {

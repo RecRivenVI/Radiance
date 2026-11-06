@@ -3,7 +3,7 @@ set(PONDER_SOURCE "${MCVR_SOURCE_DIR}/src/core/middleware/com_radiance_client_pr
 file(READ "${PONDER_SOURCE}" SOURCE)
 foreach(REQUIRED IN ITEMS
         "struct CompositeFrame"
-        "scene->compositeFrames.assign(framework->swapchain()->imageCount(), {})"
+        "scene->compositeFrames.assign(framework->mainFrameSlotCount(), {})"
         "auto &composite = scene->compositeFrames.at(mainFrame->frameIndex)"
         "if (!composite.output)"
         "composite.descriptor = builder.build(device)")

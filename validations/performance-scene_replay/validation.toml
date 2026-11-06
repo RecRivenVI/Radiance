@@ -1,0 +1,2 @@
+tool = "render_diagnostics"
+targets = ["1.21.1-neoforge"]

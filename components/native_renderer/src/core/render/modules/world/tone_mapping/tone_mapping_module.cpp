@@ -1,4 +1,5 @@
 #include "core/render/bloom.hpp"
+#include "core/diagnostics/scene_replay.hpp"
 #include "core/render/scene_scope.hpp"
 #include "core/render/modules/world/tone_mapping/tone_mapping_module.hpp"
 
@@ -562,7 +563,7 @@ void ToneMappingModuleContext::render() {
     std::chrono::duration<double> elapsedTime = currentTimePoint - module->lastTimePoint_;
     module->lastTimePoint_ = currentTimePoint;
 
-    float dtSeconds = static_cast<float>(elapsedTime.count());
+    float dtSeconds = mcvr::replay::exposureFrameSeconds(static_cast<float>(elapsedTime.count()));
     if (!std::isfinite(dtSeconds)) dtSeconds = 1.0f / 60.0f;
     dtSeconds = std::clamp(dtSeconds, 0.0f, 1.0f);
     // Rebuild time is not elapsed scene time. Keep inherited exposure on the first

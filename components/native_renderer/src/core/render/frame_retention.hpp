@@ -3,6 +3,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <deque>
+#include <stdexcept>
 #include <utility>
 #include <vector>
 
@@ -23,7 +24,16 @@ class FrameRetention {
         std::vector<Resource> resources;
     };
 
-    void retain(Resource resource) {
+    void retain(Resource resource, uint64_t serial = 0) {
+        if (serial != 0) {
+            for (auto group = groups_.rbegin(); group != groups_.rend(); ++group) {
+                if (group->serial == serial) {
+                    group->resources.push_back(std::move(resource));
+                    return;
+                }
+            }
+            throw std::logic_error("Retained resource has no live frame");
+        }
         if (groups_.empty()) groups_.push_back({});
         groups_.back().resources.push_back(std::move(resource));
     }

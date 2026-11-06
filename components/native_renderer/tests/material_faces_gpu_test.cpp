@@ -258,14 +258,18 @@ int main(int argc, char **argv) {
         if (optics) {
             // An outward-wound closed glass slab. Camera queries retain their
             // production back-face flag; the material instance must expose exits.
-            std::array<float, 18> slab = {-1, -1, 0, 1, -1, 0, 0, 1, 0, -1, -1, -1, 0, 1, -1, 1, -1, -1};
+            // An opaque object inside the volume must not hide its exit from a
+            // medium-information query. Imaging still hits this object normally.
+            std::array<float, 27> slab = {-1, -1, 0,  1,  -1, 0,  0,     1, 0, -1,    -1, -1, 0,    1,
+                                          -1, 1,  -1, -1, -1, -1, -.75f, 0, 1, -.75f, 1,  -1, -.75f};
             auto sv =
                 buffer(sizeof(slab), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, slab.data());
             std::array<uint32_t, 2> media{faces::back | faces::mediumBoundary, faces::back | faces::mediumBoundary};
             std::vector<VkAccelerationStructureGeometryKHR> geoms;
-            for (int g = 0; g < 2; ++g) {
+            for (int g = 0; g < 3; ++g) {
                 VkAccelerationStructureGeometryKHR geom{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
                 geom.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+                geom.flags = g == 2 ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
                 auto &t = geom.geometry.triangles;
                 t.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
                 t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
@@ -275,7 +279,7 @@ int main(int argc, char **argv) {
                 t.indexType = VK_INDEX_TYPE_NONE_KHR;
                 geoms.push_back(geom);
             }
-            auto slabAs = build(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, geoms, {1, 1});
+            auto slabAs = build(VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR, geoms, {1, 1, 1});
             VkAccelerationStructureInstanceKHR instance{};
             instance.transform.matrix[0][0] = instance.transform.matrix[1][1] = instance.transform.matrix[2][2] = 1;
             instance.mask = 16;
@@ -435,18 +439,32 @@ int main(int argc, char **argv) {
                             glm::translate(glm::mat4(1), glm::vec3(2000, 0, 0)));
         auto clip =
             buffer(clipRecords.size() * sizeof(glm::vec4), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, clipRecords.data());
-        std::array<VkDescriptorSetLayoutBinding, 4> bindings{
+        const uint32_t contactWord = 1u << 5;
+        auto contactBits = buffer(sizeof(contactWord), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, &contactWord);
+        const std::array<glm::vec4, 2> contactBounds{glm::vec4(0), glm::vec4(1)};
+        auto contactBoxes = buffer(sizeof(contactBounds), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, contactBounds.data());
+        struct ContactFilter {
+            uint64_t primitives, neighbors;
+            uint32_t count, unknown;
+        };
+        static_assert(sizeof(ContactFilter) == 24);
+        const std::array<ContactFilter, 4> contactFilters{
+            {{0, 0, 0, 0}, {contactBits.address, 0, 0, 0}, {0, contactBoxes.address, 1, 0}, {0, 0, 0, 1}}};
+        auto contactDirectory =
+            buffer(sizeof(contactFilters), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, contactFilters.data());
+        std::array<VkDescriptorSetLayoutBinding, 5> bindings{
             {{0, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
              {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
              {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-             {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}}};
+             {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+             {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}}};
         VkDescriptorSetLayoutCreateInfo li{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
-        li.bindingCount = 4;
+        li.bindingCount = 5;
         li.pBindings = bindings.data();
         VkDescriptorSetLayout layout;
         check(vkCreateDescriptorSetLayout(device, &li, nullptr, &layout));
         std::array<VkDescriptorPoolSize, 2> ps{
-            {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3}}};
+            {{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1}, {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4}}};
         VkDescriptorPoolCreateInfo dpi{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dpi.maxSets = 1;
         dpi.poolSizeCount = 2;
@@ -463,10 +481,12 @@ int main(int argc, char **argv) {
             VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
         aw.accelerationStructureCount = 1;
         aw.pAccelerationStructures = &tlas.handle;
-        std::array<VkDescriptorBufferInfo, 3> bis{
-            {{out.handle, 0, VK_WHOLE_SIZE}, {input.handle, 0, VK_WHOLE_SIZE}, {clip.handle, 0, VK_WHOLE_SIZE}}};
-        std::array<VkWriteDescriptorSet, 4> ws{};
-        for (int i = 0; i < 4; i++) {
+        std::array<VkDescriptorBufferInfo, 4> bis{{{out.handle, 0, VK_WHOLE_SIZE},
+                                                   {input.handle, 0, VK_WHOLE_SIZE},
+                                                   {clip.handle, 0, VK_WHOLE_SIZE},
+                                                   {contactDirectory.handle, 0, VK_WHOLE_SIZE}}};
+        std::array<VkWriteDescriptorSet, 5> ws{};
+        for (int i = 0; i < 5; i++) {
             ws[i].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
             ws[i].dstSet = ds;
             ws[i].dstBinding = i;
@@ -477,7 +497,7 @@ int main(int argc, char **argv) {
             else
                 ws[i].pNext = &aw;
         }
-        vkUpdateDescriptorSets(device, 4, ws.data(), 0, nullptr);
+        vkUpdateDescriptorSets(device, 5, ws.data(), 0, nullptr);
         std::ifstream file(argv[1], std::ios::binary | std::ios::ate);
         if (!file) throw std::runtime_error("Missing shader");
         size_t bytes = size_t(file.tellg());

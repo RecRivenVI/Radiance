@@ -412,6 +412,11 @@ std::shared_ptr<vk::DescriptorTable> vk::DescriptorTableBuilder::build(std::shar
         }
     }
 
+    if (descriptorSetLayouts.empty())
+        return std::make_shared<vk::DescriptorTable>(device, VK_NULL_HANDLE, std::move(descriptorSetLayouts),
+                                                     std::vector<VkDescriptorSet>{},
+                                                     std::vector<std::vector<VkDescriptorType>>{}, pushConstantRanges);
+
     // create descriptor pool according to the bindings
     VkDescriptorPool descriptorPool;
     std::vector<VkDescriptorPoolSize> poolSizes;

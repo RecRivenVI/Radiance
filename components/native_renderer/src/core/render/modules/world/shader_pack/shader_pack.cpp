@@ -946,6 +946,7 @@ ShaderPackLoader::RayTracingPassConfig ShaderPackLoader::parseRayTracingPassConf
     ShaderPackLoader::RayTracingPassConfig pass;
     pass.name = requireString(passJson, ShaderPackLoader::KEY_NAME, context);
     pass.querySharc = optionalBool(passJson, ShaderPackLoader::KEY_QUERY_SHARC, false, context);
+    pass.useInvocationReorder = optionalBool(passJson, ShaderPackLoader::KEY_USE_INVOCATION_REORDER, false, context);
     pass.inputs = parsePassResourceList(passJson, ShaderPackLoader::KEY_INPUTS, context);
     pass.outputs = parsePassResourceList(passJson, ShaderPackLoader::KEY_OUTPUTS, context);
     if (auto widthIter = passJson.find(ShaderPackLoader::KEY_WIDTH); widthIter != passJson.end()) {
@@ -1839,7 +1840,12 @@ bool ShaderPack::initialize(const BuildConfig &config, std::string &error) {
 
     shaderPack_ = std::move(loadResult.shaderPack);
     staticAttributeValues_ = config.staticAttributes;
-    shaderAttributes_ = ShaderPackLoader::buildAttributeDefinitions(shaderPack_.attributes, config.staticAttributes);
+    if (!Renderer::options.collectChunkEmission) {
+        for (const auto &attribute : shaderPack_.attributes)
+            if (attribute.define.direct == "ADV_ENABLE_RESTIR")
+                staticAttributeValues_[attribute.name] = "render_pipeline.false";
+    }
+    shaderAttributes_ = ShaderPackLoader::buildAttributeDefinitions(shaderPack_.attributes, staticAttributeValues_);
 
     initStageRuntime(rayTracingStageRuntime_, shaderPack_.rayTracingExecution);
     initStageRuntime(postRenderStageRuntime_, shaderPack_.postRenderExecution);
@@ -3041,6 +3047,14 @@ void ShaderPack::initRuntimeTextures() {
     });
 
     runtimeTextures_ = std::move(runtimeTextures);
+    if (std::getenv("RADIANCE_IMAGE_VA_REPORT")) {
+        for (const auto &texture : runtimeTextures_)
+            for (size_t frame = 0; frame < texture.frameImages.size(); ++frame)
+                if (texture.frameImages[frame])
+                    mcvr::log::info("ShaderPack")
+                        << "image-va-name " << texture.config.name << " frame=" << frame << " image=0x" << std::hex
+                        << reinterpret_cast<uint64_t>(texture.frameImages[frame]->vkImage()) << std::dec << std::endl;
+    }
     runtimeTextureIndices_.clear();
     runtimeTextureIndices_.reserve(runtimeTextures_.size());
     for (size_t i = 0; i < runtimeTextures_.size(); i++) {

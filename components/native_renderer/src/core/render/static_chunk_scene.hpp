@@ -1,12 +1,14 @@
 #pragma once
 
 #include "core/render/chunk_scene_metadata.hpp"
+#include "core/render/medium_contacts.hpp"
 #include "core/render/scene_space.hpp"
 #include "core/render/scene_table.hpp"
 #include <map>
 #include <set>
 #include <array>
 #include <algorithm>
+#include <cstring>
 #include <type_traits>
 
 namespace vk {
@@ -18,9 +20,21 @@ namespace mcvr {
 // so an old slot/worker cannot invalidate a new world's snapshot (including ABA).
 class ChunkScenePublications {
     uint64_t revision_ = 0;
+    uint32_t sizeX_ = 0, sizeY_ = 0;
 
   public:
     static constexpr uint32_t pageSize = 64;
+    static constexpr uint32_t tileSide = 4;
+    ChunkScenePublications(uint32_t sizeX = 0, uint32_t sizeY = 0) : sizeX_(sizeX), sizeY_(sizeY) {}
+    uint32_t pageOf(uint32_t slot) const {
+        if (!sizeX_ || !sizeY_) return slot / pageSize;
+        const uint32_t x = slot % sizeX_, y = (slot / sizeX_) % sizeY_, z = slot / sizeX_ / sizeY_;
+        const uint64_t width = (uint64_t(sizeX_) + tileSide - 1) / tileSide;
+        const uint64_t height = (uint64_t(sizeY_) + tileSide - 1) / tileSide;
+        const uint64_t page = (uint64_t(z / tileSide) * height + y / tileSide) * width + x / tileSide;
+        if (page > UINT32_MAX) throw std::overflow_error("Static scene page identity exhausted");
+        return uint32_t(page);
+    }
     struct Page {
         uint64_t revision = 0;
         std::set<uint32_t> active;
@@ -31,11 +45,18 @@ class ChunkScenePublications {
 
   public:
     void changed(uint32_t slot, bool present) {
-        auto &page = pages_[slot / pageSize];
-        if (present)
-            page.active.insert(slot);
-        else
-            page.active.erase(slot);
+        const auto id = pageOf(slot);
+        // An empty completion still settles its section generation/handoff, but it
+        // cannot invalidate render data when this slot had no published geometry.
+        if (!present) {
+            auto found = pages_.find(id);
+            if (found == pages_.end() || !found->second.active.erase(slot)) return;
+            ++found->second.revision;
+            ++revision_;
+            return;
+        }
+        auto &page = pages_[id];
+        page.active.insert(slot);
         ++page.revision;
         ++revision_;
     }
@@ -44,6 +65,57 @@ class ChunkScenePublications {
     }
     const auto &pages() const {
         return pages_;
+    }
+};
+
+// A reusable field owns CPU bytes only. Keeping an unchanged appearance block
+// must not pin the old page's BLAS, material buffers or publication owners.
+template <class T>
+class StaticPageField {
+    std::shared_ptr<std::vector<T>> value_;
+    const std::vector<T> &read() const {
+        static const std::vector<T> empty;
+        return value_ ? *value_ : empty;
+    }
+    std::vector<T> &write() {
+        if (!value_)
+            value_ = std::make_shared<std::vector<T>>();
+        else if (value_.use_count() != 1)
+            value_ = std::make_shared<std::vector<T>>(*value_);
+        return *value_;
+    }
+
+  public:
+    operator std::vector<T> &() {
+        return write();
+    }
+    size_t size() const {
+        return read().size();
+    }
+    size_t capacity() const {
+        return read().capacity();
+    }
+    const T *data() const {
+        return read().data();
+    }
+    const T &operator[](size_t index) const {
+        return read()[index];
+    }
+    auto begin() const {
+        return read().begin();
+    }
+    auto end() const {
+        return read().end();
+    }
+    void reserve(size_t count) {
+        write().reserve(count);
+    }
+    std::shared_ptr<const std::vector<T>> share() const {
+        return value_;
+    }
+    void reuse(const StaticPageField &previous) {
+        if (size() == previous.size() && (size() == 0 || !std::memcmp(data(), previous.data(), size() * sizeof(T))))
+            value_ = previous.value_;
     }
 };
 
@@ -68,10 +140,21 @@ struct StaticChunkPage {
     std::vector<VkAccelerationStructureInstanceKHR> packedInstances;
     std::vector<vk::BLAS *> instanceModels;
     std::vector<std::shared_ptr<const ChunkSceneMetadata>> owners;
+    std::vector<uint32_t> mediumInstances;
     std::vector<uint32_t> offsets;
-    std::vector<hitgroups::Id> groups;
-    std::vector<uint64_t> indices, positions, materials, lastIndices, lastPositions;
-    std::vector<vk::VertexFormat::InstanceAppearance> appearances;
+    StaticPageField<hitgroups::Id> groups;
+    StaticPageField<uint64_t> indices, positions, materials, lastIndices, lastPositions;
+    StaticPageField<vk::VertexFormat::InstanceAppearance> appearances;
+
+    void reuseFields(const StaticChunkPage &previous) {
+        groups.reuse(previous.groups);
+        indices.reuse(previous.indices);
+        positions.reuse(previous.positions);
+        materials.reuse(previous.materials);
+        lastIndices.reuse(previous.lastIndices);
+        lastPositions.reuse(previous.lastPositions);
+        appearances.reuse(previous.appearances);
+    }
 
     void reserve(size_t instanceCount, size_t geometryCount) {
         instances.reserve(instanceCount);
@@ -93,7 +176,8 @@ struct StaticChunkPage {
         return instances.capacity() * sizeof(Instance) + modelOwners_->capacity() * sizeof((*modelOwners_)[0]) +
                packedInstances.capacity() * sizeof(packedInstances[0]) +
                instanceModels.capacity() * sizeof(instanceModels[0]) + owners.capacity() * sizeof(owners[0]) +
-               offsets.capacity() * sizeof(uint32_t) + groups.capacity() * sizeof(hitgroups::Id) +
+               (offsets.capacity() + mediumInstances.capacity()) * sizeof(uint32_t) +
+               groups.capacity() * sizeof(hitgroups::Id) +
                (indices.capacity() + positions.capacity() + materials.capacity() + lastIndices.capacity() +
                 lastPositions.capacity()) *
                    sizeof(uint64_t) +
@@ -112,6 +196,9 @@ struct StaticChunkPage {
         const VkTransformMatrixKHR identity{{{1, 0, 0, 0}, {0, 1, 0, 0}, {0, 0, 1, 0}}};
         VkAccelerationStructureInstanceKHR packed{};
         packed.transform = identity;
+        static_assert(sizeof(origin.x) == sizeof(packed.transform.matrix[0][3]));
+        for (int axis = 0; axis < 3; ++axis)
+            std::memcpy(&packed.transform.matrix[axis][3], &origin[axis], sizeof(origin.x));
         packed.mask = 0x01;
         packed.instanceShaderBindingTableRecordOffset = uint32_t(groups.size());
         packed.flags = metadata->faces.instanceFlags(identity);
@@ -119,6 +206,9 @@ struct StaticChunkPage {
         packedInstances.push_back(packed);
         instanceModels.push_back(blas.get());
         modelOwners_->push_back(blas);
+        const auto &medium = metadata->mediumMesh;
+        if (medium && (!medium->complete || !medium->triangles.empty()))
+            mediumInstances.push_back(uint32_t(instances.size()));
         instances.push_back({slot, uint32_t(indices.size()), uint32_t(groups.size()), origin,
                              metadata->faces.instanceFlags(identity), std::move(blas)});
         owners.push_back(metadata);
@@ -164,12 +254,14 @@ struct StaticChunkPage {
                          uint32_t groupBase,
                          std::vector<glm::mat4> &lastTransforms,
                          std::vector<VkAccelerationStructureInstanceKHR> &output,
-                         std::vector<vk::BLAS *> &models) const {
+                         std::vector<vk::BLAS *> &models,
+                         bool assembleOnDevice) const {
         const auto begin = output.size();
         const auto historyBegin = lastTransforms.size();
         output.insert(output.end(), packedInstances.begin(), packedInstances.end());
         models.insert(models.end(), instanceModels.begin(), instanceModels.end());
         lastTransforms.resize(historyBegin + instances.size(), glm::mat4(1));
+        if (assembleOnDevice) return;
         for (size_t i = 0; i < instances.size(); ++i) {
             const auto &instance = instances[i];
             const auto translation = glm::dvec3(instance.origin) - camera;
@@ -213,7 +305,7 @@ struct StaticChunkScene {
         groupCount += page->groups.size();
         bytes += page->storageBytes();
         auto append = [&](size_t table, const auto &records) {
-            tables_[table]->add({std::as_bytes(std::span(records)), page});
+            tables_[table]->add({std::as_bytes(std::span(records)), records.share()});
         };
         append(0, page->indices);
         append(1, page->positions);
@@ -230,7 +322,8 @@ struct StaticChunkScene {
         return result;
     }
     template <class T>
-    SceneTable table(std::span<const T> changing, size_t prefixCount, std::vector<T> StaticChunkPage::*member) const {
+    SceneTable
+    table(std::span<const T> changing, size_t prefixCount, StaticPageField<T> StaticChunkPage::*member) const {
         auto result = sceneTable<T>(changing, prefixCount);
         size_t field = 5;
         if constexpr (std::is_same_v<T, uint64_t>) {
@@ -243,6 +336,17 @@ struct StaticChunkScene {
             static_assert(std::is_same_v<T, vk::VertexFormat::InstanceAppearance>);
         result.directory = tables_[field];
         return result;
+    }
+    void reuseDirectories(const StaticChunkScene &previous) {
+        for (size_t field = 0; field < tables_.size(); ++field) {
+            const auto &a = tables_[field]->segments, &b = previous.tables_[field]->segments;
+            if (a.size() != b.size()) continue;
+            bool same = true;
+            for (size_t i = 0; i < a.size(); ++i)
+                same &= a[i].owner == b[i].owner && a[i].bytes.data() == b[i].bytes.data() &&
+                        a[i].bytes.size() == b[i].bytes.size();
+            if (same) tables_[field] = previous.tables_[field];
+        }
     }
     template <class Visit>
     void eachInstance(Visit &&visit) const {
@@ -278,9 +382,10 @@ struct StaticChunkScene {
                          std::vector<glm::mat4> &history,
                          std::vector<VkAccelerationStructureInstanceKHR> &output,
                          std::vector<vk::BLAS *> &models,
-                         std::vector<std::shared_ptr<const void>> &retainedModels) const {
+                         std::vector<std::shared_ptr<const void>> &retainedModels,
+                         bool assembleOnDevice = false) const {
         for (const auto &page : pages) {
-            page->appendInstances(camera, instanceBase, groupBase, history, output, models);
+            page->appendInstances(camera, instanceBase, groupBase, history, output, models, assembleOnDevice);
             retainedModels.push_back(page->instanceOwner());
             instanceBase += uint32_t(page->instances.size());
             groupBase += uint32_t(page->groups.size());
@@ -316,12 +421,16 @@ class StaticChunkSceneCache {
                 if (sameWorld && old != pages_.end() && old->second.revision == state.revision) {
                     page = old->second.value;
                 } else {
-                    page = factory(state.active);
+                    auto prepared = factory(state.active);
+                    if (!prepared) throw std::invalid_argument("Missing static chunk page");
+                    if (sameWorld && old != pages_.end()) prepared->reuseFields(*old->second.value);
+                    page = std::move(prepared);
                     ++rebuilt;
                 }
                 next->add(page);
                 versions.emplace(id, PageVersion{state.revision, std::move(page)});
             }
+            if (sameWorld && value_) next->reuseDirectories(*value_);
             value_ = std::move(next);
             pages_.swap(versions);
             publications_ = publications;

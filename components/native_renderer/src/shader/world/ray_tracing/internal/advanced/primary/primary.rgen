@@ -1,11 +1,15 @@
 #version 460
 #extension GL_EXT_ray_tracing : require
 #extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_nonuniform_qualifier : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
 
 #include "common/shared.hpp"
 #include "util/disney.glsl"
 #include "util/dielectric.glsl"
 #include "util/camera_ray.glsl"
+#include "util/reconstruction_material.glsl"
 #include "util/random.glsl"
 #include "util/ray_cone.glsl"
 #include "util/ray.glsl"
@@ -49,6 +53,13 @@ layout(set = 3, binding = 13, rgba16f) uniform image2D fogImage;
 layout(set = 3, binding = 14, rgba16f) uniform image2D firstHitRefractionImage;
 
 layout(location = 0) rayPayloadEXT MainRay mainRay;
+layout(location = 1) rayPayloadEXT ShadowRay shadowRay;
+layout(set = 0, binding = 0) uniform sampler2D textures[];
+layout(set=1,binding=1) readonly buffer BLASOffsets { uint offsets[]; } blasOffsets;
+layout(set=1,binding=2) readonly buffer IndexBufferAddr { uint64_t addrs[]; } indexBufferAddrs;
+layout(std430,buffer_reference,buffer_reference_align=8) readonly buffer IndexBuffer { uint indices[]; } indexBuffer;
+layout(set=1,binding=7) readonly buffer TextureMappingBuffer { TextureMapping mapping; };
+#include "util/medium_boundary_trace.glsl"
 
 #include "common/primary_trace.glsl"
 #include "common/constants.glsl"
@@ -111,10 +122,14 @@ void storeSecondaryRayScratchData(ivec2 pixel,
 
 void storePrimaryRayScratch(ivec2 pixel, MainRay rayState, int startBounce, bool hitSky, bool isHand) {
     storePrimaryRayScratchData(pixel, rayState.origin, rayState.direction, rayState.throughput, rayLoadAux(rayState),
-                               rayState.coneWidth, hitSky ? rayState.directLightRadiance.x : rayEncodeBoundary(rayState),
+                               rayState.coneWidth, hitSky ? rayState.directLightRadiance.x : 0.0,
                                rayLobeType(rayState), rayIsNoisy(rayState), rayDirectImage(rayState),
                                raySkipFog(rayState), rayUseIndirectVolumetricCloud(rayState), startBounce, hitSky,
                                isHand);
+    storePrimarySurfaceCacheLayer(pixel, 8, rayState.currentMedium);
+    storePrimarySurfaceCacheLayer(pixel, 9, rayState.enclosingMedium);
+    storePrimarySurfaceCacheLayer(pixel, 11, rayState.boundaryMedium);
+    storePrimarySurfaceCacheLayer(pixel, 10, vec4(rayState.geometricNormal, float(rayMediumDepth(rayState)*8u+rayState.boundaryFlags)));
 }
 
 void clearPrimarySurfaceCache(ivec2 pixel) {
@@ -154,8 +169,8 @@ void copyPrimarySurfaceCacheToSecondary(ivec2 pixel) {
 bool traceSecondarySurface(int startStep, int isHand, inout MainRay rayState, inout MediumHistory mediumHistory, out int nextStartBounce) {
     nextStartBounce = startStep;
     raySetCaptureSurface(rayState, true);
-    for (int step = startStep; ; ++step) {
-        rayAdvanceQuery(rayState, mediumHistory);
+    for (int step = startStep; step < startStep + RADIANCE_FREE_CONTINUATIONS; ++step) {
+        if (!rayAdvanceQuery(rayState, mediumHistory)) break;
         resetMainRay(rayState, startStep);
         raySetSurfaceCacheTargetSecondary(rayState, true);
         MainRay traceInput = rayState;
@@ -170,7 +185,7 @@ bool traceSecondarySurface(int startStep, int isHand, inout MainRay rayState, in
         }
 
         mainRay = rayState;
-        traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), ADV_RAY_FLAGS), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, len, 0);
+        traceImagingRay( queryTraversalFlags(rayQueryPurpose(mainRay), ADV_RAY_FLAGS), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, len, 0);
         rayState = mainRay;
 
         if (rayState.hitT == INF_DISTANCE) {
@@ -228,20 +243,12 @@ bool initTransparentRefractionScratch(MainRay sourceRay,
     dielectric.roughness = mat.roughness;
     vec3 branchDirection, branchThroughput;
     float directionPdf, fresnel;
-    if (!sampleDielectricBranch(dielectric, incident, surfaceNormal, sourceRay.boundaryEta,
+    if (!sampleDielectricBranch(dielectric, incident, surfaceNormal, sourceRay.geometricNormal, sourceRay.boundaryEta,
         false, branchSeed, branchDirection, branchThroughput, directionPdf, fresnel)) return false;
     branchThroughput *= sourceRay.surfaceThroughput;
 
-    float originBias = isWaterSurface ? max(branchAux.x, 0.0002) : 0.0001;
-    vec3 originBiasNormal = surfaceNormal;
-    if (isWaterSurface) {
-        originBiasNormal = surfaceNormal.y >= 0.0 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, -1.0, 0.0);
-    }
-
     branchRay = sourceRay;
-    branchRay.origin =
-        isWaterSurface ? offsetQueryOrigin(worldPos, originBiasNormal, branchDirection) :
-        worldPos + (dot(branchDirection, originBiasNormal) > 0.0 ? originBiasNormal : -originBiasNormal) * originBias;
+    branchRay.origin = offsetQueryOrigin(worldPos, sourceRay.geometricNormal, branchDirection);
     branchRay.direction = branchDirection;
     branchRay.radiance = vec3(0.0);
     branchRay.previousBsdfPdf = -1.0;
@@ -280,7 +287,8 @@ void main() {
     const vec3 eyePos = origin;
     vec3 orgDirection = direction;
 
-    MediumHistory worldHistory, handHistory;
+    MediumHistory worldHistory = MediumHistory(0u, 0u);
+    MediumHistory handHistory = MediumHistory(1u, 0u);
     MainRay worldRay;
     initMainRay(origin, direction, worldUBO.seed, coneSpreadFromFov(fovY, fovX, resolution), worldRay);
     raySetCoverageCapture(worldRay, RADIANCE_COVERAGE_MODE == 1u);
@@ -362,8 +370,7 @@ void main() {
             secondaryImageChain = rayDirectImage(tracedSecondaryRay);
             secondarySkipFog = raySkipFog(tracedSecondaryRay);
 
-            MediumHistory secondaryHistory = mediumHistory;
-            traceSecondarySurface(primaryStartBounce, isHand ? 1 : 0, tracedSecondaryRay, secondaryHistory, tracedSecondaryStartBounce);
+            traceSecondarySurface(primaryStartBounce, isHand ? 1 : 0, tracedSecondaryRay, mediumHistory, tracedSecondaryStartBounce);
             secondaryRay = tracedSecondaryRay;
             secondaryStartBounce = tracedSecondaryStartBounce;
             secondaryHitSky = tracedSecondaryRay.hitT == INF_DISTANCE;
@@ -397,8 +404,10 @@ void main() {
         firstHitMat = primaryHitMat;
 
         imageStore(diffuseAlbedoImage, pixel,
-                   vec4(firstHitMat.albedoValue.rgb * firstHitMat.albedoValue.a, firstHitMat.metallic));
-        imageStore(specularAlbedoImage, pixel, vec4(firstHitMat.f0, 0.0));
+                   vec4(firstHitMat.albedoValue.rgb * (1.0 - firstHitMat.metallic) *
+                        (1.0 - firstHitMat.transmission), firstHitMat.metallic));
+        imageStore(specularAlbedoImage, pixel, vec4(reconstructionSpecularReflectance(firstHitMat.f0, firstHitMat.roughness,
+            dot(mainRay.normal, -selectedFirstHit.incomingDirection)), 0.0));
         imageStore(normalRoughnessImage, pixel, vec4(mainRay.normal, firstHitMat.roughness));
         imageStore(linearDepthImage, pixel, vec4(selectedFirstHit.viewDepth));
 
@@ -411,8 +420,12 @@ void main() {
     storePrimaryRayScratch(pixel, primaryContinuationRay, primaryStartBounce, hitSky, isHand);
     storeSecondaryRayScratchData(pixel, secondaryRay.origin, secondaryRay.direction, secondaryRay.throughput,
                                  rayLoadAux(secondaryRay), secondaryRay.coneWidth,
-                                 secondaryHitSky ? secondaryRay.directLightRadiance.x : rayEncodeBoundary(secondaryRay), secondaryLobeType,
+                                 secondaryHitSky ? secondaryRay.directLightRadiance.x : 0.0, secondaryLobeType,
                                  secondaryNoisy, secondaryImageChain, secondarySkipFog,
                                  rayUseIndirectVolumetricCloud(secondaryRay), secondaryStartBounce, secondaryHitSky,
                                  isHand);
+    storeSecondarySurfaceCacheLayer(pixel, 8, secondaryRay.currentMedium);
+    storeSecondarySurfaceCacheLayer(pixel, 9, secondaryRay.enclosingMedium);
+    storeSecondarySurfaceCacheLayer(pixel, 11, secondaryRay.boundaryMedium);
+    storeSecondarySurfaceCacheLayer(pixel, 10, vec4(secondaryRay.geometricNormal, float(rayMediumDepth(secondaryRay)*8u+secondaryRay.boundaryFlags)));
 }

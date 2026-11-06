@@ -78,9 +78,7 @@ class World : public SharedObject<World> {
     std::shared_ptr<Entities> entities();
     std::shared_ptr<Instancing> instancing();
     std::shared_ptr<mcvr::LodScene> lodScene();
-    mcvr::scene::Spaces &spaces() {
-        return spaces_;
-    }
+    mcvr::scene::Spaces &spaces();
 
     void setCameraPos(glm::dvec3 cameraPos);
     glm::dvec3 getCameraPos();

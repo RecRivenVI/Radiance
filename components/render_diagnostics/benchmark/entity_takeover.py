@@ -9,6 +9,8 @@ import time
 import tomllib
 import zipfile
 
+from memory_guard import check_global_stop, device_lost, guarded_process, physical_reserve
+from memory_diagnostics import diagnostic_environment
 from takeover_experiment import ROOT, TARGET, digest, preserve, probe_jar, recycle, storage_preflight, write
 from takeover_city import assert_stopped, loaded_core
 
@@ -44,31 +46,33 @@ def freeze_small_fixture(name='small-fixture.zip'):
           scope='Normally saved stage-3 vanilla sources, original small-fixture graphics settings'))
 
 
-def extract(source, destination):
+def extract(source, destination, prefix=''):
     with zipfile.ZipFile(source) as z:
-        for name in z.namelist():
-            output = destination / name
+        for name in (name for name in z.namelist() if name.startswith(prefix) and not name.endswith('/')):
+            output = destination / name.removeprefix(prefix)
             if not output.resolve().is_relative_to(destination.resolve()):
                 raise RuntimeError('Template path leaves owned instance')
             output.parent.mkdir(parents=True, exist_ok=True)
-            output.write_bytes(z.read(name))
-        for name in z.namelist():
-            if (destination / name).read_bytes() != z.read(name):
+            contents = z.read(name)
+            output.write_bytes(contents)
+            if output.read_bytes() != contents:
                 raise RuntimeError('Template extraction differs: ' + name)
 
 
-def run(label, product_override=None):
+def run(label, product_override=None, *, diagnostics=None, temporary_storage_waiver=False):
     global VALIDATION, CLIENT, RESULT
     if label == 'replacement':
         VALIDATION = ROOT / 'validations/conformance-renderer'
         CLIENT = VALIDATION / 'instance' / TARGET / 'client'
         RESULT = VALIDATION / 'result'
+    check_global_stop(ROOT, RESULT)
     assert_stopped()
-    occupancy = storage_preflight()
-    if occupancy['workspace'] + 600_000_000 > 16 * 1024**3:
+    occupancy = storage_preflight(temporary_waiver=temporary_storage_waiver)
+    if temporary_storage_waiver:
+        physical_reserve(VALIDATION, 600_000_000)
+    elif (occupancy['workspace'] + 600_000_000 > 16 * 1024**3
+          or occupancy['validations'] + 600_000_000 > 8 * 1024**3):
         raise RuntimeError('Insufficient owned-client storage reserve')
-    if occupancy['validations'] + 600_000_000 > 8 * 1024**3:
-        raise RuntimeError('Insufficient validation storage reserve')
     if CLIENT.exists(): raise RuntimeError('Prior client retained; inspect before continuing')
     if (RESULT / 'DEVICE_LOST.json').exists(): raise RuntimeError('Device loss stopped this group')
     directory = ROOT / f'versions/{TARGET}/build/libs'
@@ -82,21 +86,19 @@ def run(label, product_override=None):
         if not product.is_relative_to(ROOT) or not product.is_file():
             raise ValueError('Candidate is not a repository artifact')
     probe = probe_jar()
+    fixture = ROOT / 'validations/conformance-entity_takeover/result/small-vanilla-fixture.zip'
+    world = fixture if label == 'replacement' else TEMPLATES / 'world-template.zip'
+    settings = fixture if label == 'replacement' else TEMPLATES / 'settings-template.zip'
+    world_digest, settings_digest = digest(world), digest(settings)
     case = RESULT / (label + '-' + time.strftime('%Y%m%d-%H%M%S'))
     case.mkdir(parents=True, exist_ok=False)
     CLIENT.mkdir(parents=True)
-    if label != 'replacement':
-        extract(TEMPLATES / 'world-template.zip', CLIENT / 'saves')
-    extract(TEMPLATES / 'settings-template.zip', CLIENT)
     if label == 'replacement':
-        fixture = ROOT / 'validations/conformance-entity_takeover/result/small-vanilla-fixture.zip'
-        with zipfile.ZipFile(fixture) as z:
-            for name in z.namelist():
-                if not name.startswith('world/') or name.endswith('/'): continue
-                output = CLIENT / 'saves/Audit Benchmark' / name.removeprefix('world/')
-                if not output.resolve().is_relative_to(CLIENT.resolve()): raise ValueError(name)
-                output.parent.mkdir(parents=True, exist_ok=True)
-                output.write_bytes(z.read(name))
+        extract(world, CLIENT / 'saves/Audit Benchmark', 'world/')
+        extract(settings, CLIENT, 'settings/')
+    else:
+        extract(world, CLIENT / 'saves')
+        extract(settings, CLIENT)
     for marker in ('.radiance-entity-takeover', '.radiance-takeover-stages',
                    '.radiance-audit-test-instance', '.radiance-acceptance'):
         (CLIENT / marker).write_text('Owned entity source fixture\n', encoding='utf8')
@@ -140,21 +142,24 @@ def run(label, product_override=None):
             '-Xmx4G', f'@{moddev / "packagedClientRunProgramArgs.txt"}',
             '--username', 'RecRivenVI', '--width', '1920', '--height', '1080']
     env = dict(os.environ, MCVR_DEVICE_LOSS_TRACE='1', MCVR_LOCAL_AFTERMATH='1', RADIANCE_CHUNK_TRACE='0')
+    if diagnostics is not None and not diagnostic_environment(env, diagnostics):
+        args = [argument for argument in args if not argument.startswith('-agentpath:')]
     env.pop('MOD_CLASSES', None)
     write(case / 'launch.json', dict(args=args, product=digest(product), probe=digest(probe),
-          world=digest(TEMPLATES / 'world-template.zip'), settings=digest(TEMPLATES / 'settings-template.zip'),
-          storage=occupancy, mods=mod_inputs, performanceMeasured=False))
+          world=world_digest, settings=settings_digest,
+          storage=occupancy, mods=mod_inputs, diagnostics=diagnostics, performanceMeasured=False))
     process = None
     try:
-        with (case / 'console.log').open('x', encoding='utf8') as console:
-            process = subprocess.Popen(args, cwd=CLIENT, env=env, stdout=console, stderr=subprocess.STDOUT)
+        with (case / 'console.log').open('x', encoding='utf8') as console, guarded_process(
+                case, args, cwd=CLIENT, env=env, stdout=console, stderr=subprocess.STDOUT) as process:
             write(case / 'process.json', dict(pid=process.pid))
             until = time.monotonic() + 450
             verified = False
             while process.poll() is None and time.monotonic() < until:
                 log = CLIENT / 'logs/latest.log'
                 content = log.read_text(encoding='utf8', errors='replace') if log.is_file() else ''
-                if 'VK_ERROR_DEVICE_LOST' in content and not (RESULT / 'DEVICE_LOST.json').exists():
+                content += (case / 'console.log').read_text(encoding='utf8', errors='replace')
+                if device_lost(content) and not (RESULT / 'DEVICE_LOST.json').exists():
                     write(RESULT / 'DEVICE_LOST.json', dict(case=str(case), pid=process.pid, automaticRetry=False))
                     until = min(until, time.monotonic() + 30)
                 if not verified and 'ENTITY_TAKEOVER world-ready' in content:
@@ -165,14 +170,15 @@ def run(label, product_override=None):
             code = process.returncode
         saved = preserve(VALIDATION, CLIENT, case.name + '-evidence')
         log = (CLIENT / 'logs/latest.log').read_text(encoding='utf8', errors='replace')
-        if 'VK_ERROR_DEVICE_LOST' in log:
+        lost = device_lost(log) or device_lost((case / 'console.log').read_text(encoding='utf8', errors='replace'))
+        if lost and not (RESULT / 'DEVICE_LOST.json').exists():
             write(RESULT / 'DEVICE_LOST.json', dict(case=str(case), evidence=str(saved), automaticRetry=False))
         passed = ('PART_LIFECYCLE PASS' in log if label == 'lifecycle'
                   else 'ENTITY_TAKEOVER PASS normal-stop' in log)
         if (code or not verified or not passed
                 or 'All dimensions are saved' not in log or 'ENTITY_TAKEOVER FAIL' in log
                 or 'PART_LIFECYCLE FAIL' in log
-                or 'VK_ERROR_DEVICE_LOST' in log):
+                or lost):
             raise RuntimeError('Functional fixture failed; inspect retained evidence: ' + str(case))
         if digest(product) != json.loads((case / 'launch.json').read_text())['product']:
             raise RuntimeError('Release changed during functional test')
@@ -194,5 +200,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('case', choices=('functional', 'foreign', 'modded', 'lifecycle', 'replacement'))
     parser.add_argument('--product',type=Path)
+    parser.add_argument('--diagnostics', choices=('basic', 'resource', 'source'))
+    parser.add_argument('--temporary-storage-waiver', action='store_true')
     args=parser.parse_args()
-    run(args.case,args.product)
+    run(args.case, args.product, diagnostics=args.diagnostics, temporary_storage_waiver=args.temporary_storage_waiver)

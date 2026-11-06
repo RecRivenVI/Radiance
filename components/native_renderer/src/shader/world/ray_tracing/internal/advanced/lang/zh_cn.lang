@@ -1,4 +1,5 @@
-render_pipeline.module.ray_tracing.attribute.num_ray_bounces=光线反射次数
+render_pipeline.module.ray_tracing.attribute.num_reflections=反射次数
+render_pipeline.module.ray_tracing.attribute.num_refractions=折射次数
 render_pipeline.module.ray_tracing.attribute.pbr_sampling_mode=PBR采样模式
 render_pipeline.module.ray_tracing.attribute.emission_size_xz=发光收集XZ半径
 render_pipeline.module.ray_tracing.attribute.emission_size_y=发光收集Y半径
@@ -9,6 +10,7 @@ render_pipeline.module.ray_tracing.attribute.spatial_reuse_radius=空间重用�
 render_pipeline.module.ray_tracing.attribute.spatial_reuse_disocclusion_boost_samples=遮挡增强采样数
 render_pipeline.module.ray_tracing.attribute.temporal_confidence_cap=时间历史上限
 render_pipeline.module.ray_tracing.attribute.enable_parallax=启用视差
+render_pipeline.module.ray_tracing.attribute.parallax_depth=最大视差深度（相对贴图尺寸）
 render_pipeline.module.ray_tracing.attribute.cloud_mode=云模式
 render_pipeline.module.ray_tracing.attribute.cloud_mode.off=关闭
 render_pipeline.module.ray_tracing.attribute.cloud_mode.vanilla=原版

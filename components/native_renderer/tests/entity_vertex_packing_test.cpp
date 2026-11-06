@@ -11,6 +11,50 @@
 
 int main() {
     {
+        auto model = std::make_shared<RigidModelResource>();
+        const auto placement = [&](uint64_t identity) {
+            RigidInstance instance{};
+            instance.history = identity;
+            instance.model = model.get();
+            return instance;
+        };
+        auto first = std::make_shared<RetainedRigidPlacements>();
+        auto second = std::make_shared<RetainedRigidPlacements>();
+        first->models.push_back(model);
+        second->models.push_back(model);
+        first->instances = {placement(2), placement(3)};
+        second->instances = {placement(5), placement(6)};
+        RigidInstanceBatch batch;
+        batch.instances.push_back(placement(1));
+        batch.appendRetained(first);
+        batch.instances.push_back(placement(4));
+        batch.appendRetained(second);
+        batch.instances.push_back(placement(7));
+        batch.appendRetained(std::make_shared<RetainedRigidPlacements>());
+        first.reset();
+        second.reset();
+        model.reset();
+        size_t page = 0;
+        if (batch.count() != 7 || batch.at(5, page).history != 6) return 30;
+        for (size_t index = 0; index < batch.count(); ++index)
+            if (batch.at(index, page).history != index + 1 || !batch.at(index, page).model) return 31;
+        batch.clearPlacements();
+        if (batch.count() || !batch.retained.empty()) return 32;
+    }
+    {
+        RigidInstanceBatch batch;
+        for (uint64_t group = 0; group < 12; ++group) {
+            batch.instances.emplace_back().history = group * 3;
+            auto page = std::make_shared<RetainedRigidPlacements>();
+            page->instances.emplace_back().history = group * 3 + 1;
+            page->instances.emplace_back().history = group * 3 + 2;
+            batch.appendRetained(std::move(page));
+        }
+        size_t page = 0;
+        for (size_t row : {26, 27, 31, 14, 0, 4, 32, 35, 5})
+            if (batch.at(row, page).history != row) return 33;
+    }
+    {
         auto geometry = std::make_shared<RigidModelResource>();
         auto appearance = std::make_shared<RigidModelResource>();
         appearance->geometryOwner = geometry;

@@ -8,6 +8,8 @@
 #include "core/render/upload_staging_budget.hpp"
 #include "core/render/texture_upload_region.hpp"
 
+#include <array>
+#include <atomic>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -51,9 +53,10 @@ class Textures : public SharedObject<Textures> {
     void registerFrameAlias(uint32_t id, FrameAliasKind kind);
     std::optional<FrameAliasKind> frameAliasKind(uint32_t id) const;
     bool isFramebufferTexture(uint32_t id) const;
+    bool producerFramebufferTexture(uint32_t id) const;
     void releaseTexture(uint32_t id, uint32_t fallbackId);
     void setWorldMaterial(uint32_t id, const vk::Data::LayeredWorldMaterial &material);
-    uint64_t copyWorldMaterials(vk::Data::TextureMapping &mapping) const;
+    uint64_t copyWorldMaterials(vk::Data::TextureMapping &mapping, bool includeEmitters) const;
     uint64_t worldMaterialRevision() const;
     void initializeTexture(uint32_t id, uint32_t maxLevel, uint32_t width, uint32_t height, VkFormat format);
     void initializeAttachmentTexture(uint32_t id,
@@ -92,7 +95,8 @@ class Textures : public SharedObject<Textures> {
     std::map<uint32_t, std::shared_ptr<vk::Sampler>> samplers;
     std::map<uint32_t, uint32_t> releasedTextureFallbacks_;
     std::shared_ptr<Emission> emission_;
-    mcvr::TextureNamePool textureNames_{4096};
+    static constexpr uint32_t textureCapacity = 4096;
+    mcvr::TextureNamePool textureNames_{textureCapacity};
     mutable std::recursive_mutex mtx_;
     std::map<uint32_t, vk::Data::LayeredWorldMaterial> worldMaterials_;
     uint64_t worldMaterialRevision_ = 1;
@@ -133,6 +137,7 @@ class Textures : public SharedObject<Textures> {
 
     std::map<uint32_t, AttachmentMetadata> attachmentMetadata_;
     std::map<uint32_t, FrameAliasKind> frameAliases_;
+    std::array<std::atomic<bool>, textureCapacity> framebufferTextureNames_{};
 };
 
 class ImageBufferCache : public SharedObject<ImageBufferCache> {

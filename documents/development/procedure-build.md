@@ -13,7 +13,7 @@
 
    ```powershell
    git submodule update --init --recursive
-   python -m pip install -r components/render_diagnostics/inventory/requirements.txt
+   python -m pip install -r components/render_diagnostics/benchmark/requirements.txt
    ```
 
 3. 按 `inputs.toml` 下载固定兼容发行包，在 ignored `local.toml` 的 `[inputs]` 指定本机文件；窗口尺寸也写入 `local.toml`，不擅自接受 EULA。
@@ -39,7 +39,7 @@
 
 冻结验收包时，在所有会触发 Native 构建的检查结束后重新打包，并核对 JAR 内 DLL 的 CodeView GUID／age 与保留 PDB 一致，再同时固定 JAR、符号和源码身份。后续检查可能再次链接 Native；不能用更新后的 PDB 解释旧 JAR。重包若只改变链接调试信息或着色器 ZIP 容器信息，也应保留差异核验与实际包运行回执，启动缓存与性能数据按各自产物身份记录。
 
-二进制云噪声资源由 `.gitattributes` 的 `*.raw binary` 登记，合规检查跳过其文本编码检查。具体执行证据见[当前状态](../project/status-current.md)。Windows CI 安装固定版本的 Python、盘点工具依赖与完整 Vulkan SDK 后执行 `checkRepository`。SDK 位于托管运行器的临时目录；CI 只上传合规报告，不上传原生运行库或发行包。本地验证与实际 GitHub Actions 结果分别记录。
+二进制云噪声资源由 `.gitattributes` 的 `*.raw binary` 登记，合规检查跳过其文本编码检查。具体执行证据见[当前状态](../project/status-current.md)。Windows CI 安装固定版本的 Python、渲染诊断工具依赖与完整 Vulkan SDK 后执行 `checkRepository`。SDK 位于托管运行器的临时目录；CI 只上传合规报告，不上传原生运行库或发行包。本地验证与实际 GitHub Actions 结果分别记录。
 
 ## 日常运行与自动化边界
 

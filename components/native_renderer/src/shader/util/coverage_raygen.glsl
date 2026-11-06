@@ -1,13 +1,14 @@
-#if RADIANCE_COVERAGE_MODE == 1
+#if RADIANCE_COVERAGE_MODE != 0
 #ifndef COVERAGE_TRACE_LAYER
 #define COVERAGE_TRACE_LAYER(origin, incident) \
-    traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), COVERAGE_RAY_FLAGS), \
+    traceImagingRay( queryTraversalFlags(rayQueryPurpose(mainRay), COVERAGE_RAY_FLAGS), \
                 queryMask(rayQueryPurpose(mainRay), worldUBO.isFirstPerson > 0), \
                 1, 1, COVERAGE_MISS_INDEX, origin, 0.0, incident, imagingTraceLimit(mainRay, 1000.0), 0)
 #endif
 // Every foreground runs the existing PT lighting path. The straight sibling keeps
 // the original query ownership and its own immutable state, not the reflected ray.
-vec3 traceCoverageBackground(MainRay source, MediumHistory sourceHistory, vec3 position, vec3 direction, int isHand) {
+vec3 traceCoverageBackground(MainRay source, MediumHistory sourceHistory, vec3 position, vec3 direction, int isHand, out float backgroundHitDistance) {
+    backgroundHitDistance = 0.0;
     MainRay layerRay = source;
     layerRay.origin = offsetQueryOrigin(position, direction, direction);
     layerRay.direction = direction;
@@ -29,11 +30,16 @@ vec3 traceCoverageBackground(MainRay source, MediumHistory sourceHistory, vec3 p
         layerRay = mainRay;
         float alpha = rayLoadCoverage(layerRay);
         MainRay straightSource = layerRay;
+#ifdef COVERAGE_CAPTURE_GUIDE
+        if (layer == 0) { COVERAGE_CAPTURE_GUIDE(straightSource, origin, incident); }
+#endif
         vec3 hitPosition = origin + incident * layerRay.hitT;
         if (alpha > 0.0 && layerRay.hitT != INF_DISTANCE) {
-            MediumHistory lightingHistory = sourceHistory;
-            completeCoverageLighting(layerRay, lightingHistory, isHand);
+            MediumHistory lightingHistory = forkMediumHistory(layerRay, sourceHistory, 2u);
+            float hitDistance = completeCoverageLighting(layerRay, lightingHistory, isHand);
+            if (layer == 0) backgroundHitDistance = hitDistance;
         }
+        if (layer == 0 && straightSource.hitT == INF_DISTANCE) backgroundHitDistance = INF_DISTANCE;
         accumulateCoverage(radiance, remaining, layerRay.radiance, alpha);
         if (remaining == 0.0) break;
 

@@ -25,8 +25,16 @@
 
 class DlssFrameGeneration;
 class Framework;
+class Textures;
 class UIModule;
 struct UIModuleContext;
+struct EntityFrameInputs;
+namespace sl {
+struct FrameToken;
+}
+namespace mcvr::scene {
+class Spaces;
+}
 
 class FrameResourceRetainer : public SharedObject<FrameResourceRetainer> {
   public:
@@ -39,22 +47,25 @@ class FrameResourceRetainer : public SharedObject<FrameResourceRetainer> {
     // fence has signaled. See mcvr::FrameRetention for the release rule.
     void beginFrame(uint64_t frameSerial, uint64_t completedSerial);
     // Swapchain recreation, device idle: releases everything and adopts the new frame count.
-    void resetFrameCount(uint32_t frameCount);
     void clearAfterGpuIdle(uint64_t currentFrameSerial);
     // Diagnostics: held groups, resources and the age of the oldest group in frames.
     std::string census();
 
   private:
-    mcvr::FrameRetention<std::shared_ptr<void>> retention_;
+    static uint64_t workerFrameSerial();
+    mcvr::FrameRetention<std::shared_ptr<const void>> retention_;
     uint32_t framesInFlight_ = 0;
     uint64_t currentSerial_ = 0;
     std::recursive_mutex mtx_;
 };
 
-struct FrameworkContext : public SharedObject<FrameworkContext> {
+class FrameworkContext : public SharedObject<FrameworkContext> {
+  public:
     std::weak_ptr<Framework> framework;
 
     uint32_t frameIndex;
+    uint32_t presentImageIndex = 0;
+    bool lateImageAcquire = false;
     // Serial of the frame being recorded in this context, and of the last frame submitted with its
     // commandFinishedFence (0 before the first submission).
     uint64_t frameSerial = 0;
@@ -68,10 +79,8 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     std::shared_ptr<vk::Device> device;
     std::shared_ptr<vk::VMA> vma;
     std::shared_ptr<vk::Swapchain> swapchain;
-    std::shared_ptr<vk::SwapchainImage> swapchainImage;
     std::shared_ptr<vk::CommandPool> commandPool;
     std::shared_ptr<vk::Semaphore> imageAcquiredSemaphore = nullptr;
-    std::shared_ptr<vk::Semaphore> commandProcessedSemaphore;
     std::shared_ptr<vk::Fence> commandFinishedFence;
 
     std::shared_ptr<vk::CommandBuffer> uploadCommandBuffer;
@@ -81,6 +90,7 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     std::shared_ptr<vk::CommandBuffer> overlayContinuationBuffer;
     mcvr::DeferredFrameCommands<vk::CommandBuffer> uiPtCommands;
     std::shared_ptr<vk::CommandBuffer> fuseCommandBuffer;
+    std::shared_ptr<vk::CommandBuffer> presentCommandBuffer;
 
     mcvr::profile::GpuFrame auditGpu;
     int auditUpload = -1, auditWorld = -1, auditOverlay = -1, auditFuse = -1;
@@ -92,17 +102,43 @@ struct FrameworkContext : public SharedObject<FrameworkContext> {
     bool worldRendered = false;
     bool fgGameFrame = false;
     bool fgHudlessCaptured = false;
+    uint32_t presentedSdkFrames = 0;
     mcvr::ui::GuiRole fgGuiRole = mcvr::ui::GuiRole::Foreground;
     mcvr::dlss::GuiFrameState fgGui;
     uint32_t fgBackgroundDependentDraws = 0;
     uint32_t fgAffineBackgroundDraws = 0;
     uint32_t fgWeightedBlurPasses = 0;
     bool frameSubmitted = false;
+    std::vector<std::function<void(Textures &)>> pendingTextureUpdates;
+    size_t pendingTextureBytes = 0;
+    // The producer can fill this slot before the previously sealed slot finishes.
+    bool splitWorldInputs = false;
+    bool buildWorldEntities = false;
+    std::unique_ptr<EntityFrameInputs> entityInputs;
+    std::shared_ptr<std::vector<std::shared_ptr<vk::DeviceLocalBuffer>>> worldUploads;
+    std::vector<std::function<void()>> pendingWorldUpdates;
+    std::optional<vk::Data::WorldUBO> worldUniform;
+    std::optional<vk::Data::SkyUBO> skyUniform;
+    std::vector<vk::Data::TextureMapEntry> pendingTextureMapping;
+    std::vector<std::function<void(vk::Data::WorldUBO &)>> cameraEffects;
+    std::unique_ptr<mcvr::scene::Spaces> sceneSpaces;
+    glm::dvec3 cameraPosition{};
+    bool renderWorld = false;
+    sl::FrameToken *streamlineToken = nullptr;
+    bool streamlinePacing = false;
+    struct Timeline {
+        enum Event { Handoff, Worker, Inputs, Textures, Buffers, World, Compose, Acquire, Submit, Submitted, Count };
+        std::array<uint64_t, Count> times{};
+        uint64_t owner = 0;
+    } timeline;
+    void noteTimeline(Timeline::Event event);
 
     FrameworkContext(std::shared_ptr<Framework> framework, uint32_t frame_index);
     ~FrameworkContext();
 
-    void fuseFinal();
+    const std::shared_ptr<vk::CommandBuffer> &recordingOverlayCommands() const;
+    std::shared_ptr<vk::DeviceLocalImage> composeFinal();
+    void recordPresentCopy(const std::shared_ptr<vk::DeviceLocalImage> &finalColor);
     void finishWorldInputs();
     std::shared_ptr<vk::CommandBuffer> uiPtCommandStorage();
     std::shared_ptr<vk::CommandBuffer> beginUiPtCommands();
@@ -119,9 +155,17 @@ class Framework : public SharedObject<Framework> {
     ~Framework();
 
     void init(GLFWwindow *window);
-    VkResult acquireContext();
+    VkResult acquireContext(bool lateImageAcquire = false, bool overlayOnly = false);
+    VkResult acquireInputContext();
+    VkResult activateProducerFrame();
+    void deferInputAcquire();
+    VkResult waitForInputLatencyBudget();
+    VkResult dispatchFrame(bool menuFrame);
+    VkResult finishExecutedFrame();
     VkResult submitCommand();
-    VkResult present();
+    VkResult present(bool trackPcl = true);
+    VkResult presentToQueue(bool trackPcl = true);
+    uint64_t frameSerial() const;
     void setMenuFrame(bool value) {
         menuFrame_ = value;
     }
@@ -163,11 +207,22 @@ class Framework : public SharedObject<Framework> {
 
     std::shared_ptr<vk::CommandBuffer> worldAsyncCommandBuffer();
 
-    std::vector<std::shared_ptr<vk::Semaphore>> &commandProcessedSemaphores();
     std::vector<std::shared_ptr<vk::Fence>> &commandFinishedFences();
     std::vector<std::shared_ptr<FrameworkContext>> &contexts();
+    uint32_t mainFrameSlotCount() const {
+        return recordingSlotCount;
+    }
     uint32_t recordingContextCount();
     std::shared_ptr<FrameworkContext> safeAcquireCurrentContext();
+    std::shared_ptr<FrameworkContext> acquireOverlayContext();
+    bool canReadProducerQueries() const;
+    FrameworkContext *producerWorldInput();
+    const FrameworkContext *worldInputSlot() const;
+    void releaseWorldInputs();
+    void prepareWorldComposition();
+    void applyWorldUniforms(FrameworkContext &context);
+    bool stageWorldUpdate(std::function<void()> update);
+    std::shared_ptr<FrameworkContext> deferredTextureContext();
 
     std::shared_ptr<Pipeline> pipeline();
 
@@ -179,12 +234,21 @@ class Framework : public SharedObject<Framework> {
     uint32_t effectiveFrameRateLimit() const;
 
   private:
+    VkResult finishPresentation(VkResult result, const FrameworkContext &frame);
+    std::shared_ptr<FrameworkContext> recordingContext() const;
+    VkResult acquireSwapchainImage(std::shared_ptr<vk::Semaphore> &semaphore, uint32_t &imageIndex);
+    void resetProducerInputs(bool overlayAlreadyOpen);
+    void prepareSharedProducerInputs();
+    void applyWorldUpdates(FrameworkContext &context);
+    void applyWorldInputs(FrameworkContext &context);
     std::shared_ptr<vk::Semaphore> acquireSemaphore();
     void recycleSemaphore(std::shared_ptr<vk::Semaphore> semaphore);
+    void rebuildPresentationSemaphores();
     VkResult waitForDrawableWindow();
-    void limitFrameRate();
+    void limitFrameRate(bool paced);
     VkResult inactiveResult() const;
     VkResult completeGpuProfile(const std::shared_ptr<FrameworkContext> &context);
+    VkResult traceFrameTimeline(const FrameworkContext &context, const uint64_t (&timestamps)[2], uint64_t mask);
     void storeGpuProfileResult(uint32_t sequence, uint64_t durationNs);
 
   private:
@@ -196,6 +260,7 @@ class Framework : public SharedObject<Framework> {
     std::shared_ptr<vk::Swapchain> swapchain_;
     std::shared_ptr<vk::CommandPool> mainCommandPool_;
     std::shared_ptr<vk::CommandPool> asyncCommandPool_;
+    std::vector<std::shared_ptr<vk::CommandPool>> slotCommandPools_;
 
     std::vector<std::shared_ptr<vk::CommandBuffer>> uploadCommandBuffers_;
     std::vector<std::shared_ptr<vk::CommandBuffer>> overlayCommandBuffers_;
@@ -207,16 +272,22 @@ class Framework : public SharedObject<Framework> {
     std::unique_ptr<DisplayOutput> displayOutput_;
     std::shared_ptr<Pipeline> pipeline_;
 
-    std::vector<std::shared_ptr<vk::Semaphore>> commandProcessedSemaphores_;
+    std::vector<std::shared_ptr<vk::Semaphore>> presentReadySemaphores_;
     std::vector<std::shared_ptr<vk::Fence>> commandFinishedFences_;
 
     std::vector<std::shared_ptr<FrameworkContext>> contexts_;
 
-    std::shared_ptr<FrameworkContext> currentContext_ = nullptr;
-    uint32_t currentContextIndex_ = 0;
+    std::shared_ptr<FrameworkContext> producerContext_;
+    std::shared_ptr<FrameworkContext> submittedContext_;
+    bool producerInputsPending_ = false;
+    bool rebuildAfterRecording_ = false;
+    bool forcePresentationRebuild_ = false;
+    const uint32_t recordingSlotCount;
+    uint32_t nextContextIndex_ = 0;
     std::queue<uint32_t> indexHistory_;
 
     std::queue<std::shared_ptr<vk::Semaphore>> recycledImageAcquiredSemaphores_;
+    std::mutex acquiredSemaphoreMtx_;
     std::recursive_mutex recreateMtx_;
     std::chrono::steady_clock::time_point lastSurfaceCheck_{};
     bool suboptimalSwapchain_ = false;
@@ -229,6 +300,8 @@ class Framework : public SharedObject<Framework> {
     std::chrono::steady_clock::time_point frameLimitAnchor_{};
     uint32_t frameLimitFps_ = 0;
 
+    bool timelineClockAvailable_ = false;
+    uint64_t previousGpuFrameSerial_ = 0, previousGpuEnd_ = 0;
     uint32_t timestampValidBits_ = 0;
     float timestampPeriodNs_ = 0.0F;
     uint32_t nextGpuProfileSequence_ = 1;
@@ -244,7 +317,7 @@ void FrameResourceRetainer::retain(std::shared_ptr<T> resource) {
     std::unique_lock<std::recursive_mutex> lck(mtx_);
 
     if (resource != nullptr) {
-        retention_.retain(resource);
+        retention_.retain(resource, workerFrameSerial());
 
 #ifdef DEBUG
         if constexpr (std::is_same_v<T, vk::DeviceLocalImage>) {

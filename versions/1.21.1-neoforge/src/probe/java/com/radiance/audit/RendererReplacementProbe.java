@@ -716,6 +716,28 @@ public final class RendererReplacementProbe {
                     "World BER has no direct source adapter: " + renderer.getClass().getName());
         var variants = new ArrayList<Map<String, Object>>();
         for (int variant = 0; variant < 3; variant++) {
+            if (value instanceof net.minecraft.world.level.block.entity.BannerBlockEntity banner
+                    && variant != 0) {
+                var patterns =
+                        mc.level
+                                .registryAccess()
+                                .registryOrThrow(
+                                        net.minecraft.core.registries.Registries.BANNER_PATTERN);
+                var layers =
+                        new net.minecraft.world.level.block.entity.BannerPatternLayers.Builder()
+                                .add(
+                                        patterns.getHolderOrThrow(
+                                                net.minecraft.world.level.block.entity
+                                                        .BannerPatterns.CROSS),
+                                        net.minecraft.world.item.DyeColor.RED)
+                                .add(
+                                        patterns.getHolderOrThrow(
+                                                net.minecraft.world.level.block.entity
+                                                        .BannerPatterns.STRIPE_DOWNRIGHT),
+                                        net.minecraft.world.item.DyeColor.BLUE)
+                                .build();
+                setProbeField(banner, "patterns", layers);
+            }
             if (value instanceof net.minecraft.world.level.block.piston.PistonMovingBlockEntity) {
                 var moved =
                         variant == 0
@@ -886,13 +908,14 @@ public final class RendererReplacementProbe {
                 var pose = new PoseStack();
                 pose.translate(.25, -.75, 1.5);
                 pose.mulPose(new org.joml.Quaternionf().rotationXYZ(.13F, -.21F, .31F));
+                int light = 15728640;
                 referenceInputs = new ArrayList<>();
                 renderer.render(
                         value,
                         partial,
                         pose,
                         reference,
-                        15728640,
+                        light,
                         net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
                 var originalParts = referenceInputs;
                 referenceInputs = null;
@@ -908,7 +931,7 @@ public final class RendererReplacementProbe {
                                 pose,
                                 candidate,
                                 requests,
-                                15728640,
+                                light,
                                 net.minecraft.client.renderer.texture.OverlayTexture.NO_OVERLAY);
                 requests.submit();
                 var replacementParts = candidateInputs;
@@ -925,11 +948,41 @@ public final class RendererReplacementProbe {
                             || a.overlay != b.overlay
                             || !a.pose.pose().equals(b.pose.pose(), 3e-5F)
                             || !a.pose.normal().equals(b.pose.normal(), 5e-5F))
-                        throw new AssertionError(source + " BER ordered input " + i);
+                        throw new AssertionError(
+                                source
+                                        + " BER ordered input "
+                                        + i
+                                        + " part="
+                                        + (a.part == b.part)
+                                        + " layer="
+                                        + sameLayer(a.layer, b.layer)
+                                        + " color="
+                                        + a.color
+                                        + "/"
+                                        + b.color
+                                        + " light="
+                                        + a.light
+                                        + "/"
+                                        + b.light
+                                        + " overlay="
+                                        + a.overlay
+                                        + "/"
+                                        + b.overlay
+                                        + " pose="
+                                        + a.pose.pose().equals(b.pose.pose(), 3e-5F)
+                                        + " normal="
+                                        + a.pose.normal().equals(b.pose.normal(), 5e-5F));
                 }
                 var a = meshes(reference);
                 var b = meshes(candidate);
                 long vertices = 0;
+                // A unit beam and its composed scale round separately. At 1,024 blocks,
+                // a single float ULP can already exceed the ordinary position tolerance.
+                double positionTolerance =
+                        source.equals("ber/minecraft:beacon")
+                                        || source.equals("ber/minecraft:end_gateway")
+                                ? 1.25e-4
+                                : 3e-5;
                 if (a.size() != b.size()) throw new AssertionError(source + " BER draw count");
                 for (int i = 0; i < a.size(); i++) {
                     var x = a.get(i);
@@ -950,11 +1003,21 @@ public final class RendererReplacementProbe {
                     for (int q = 0; q < x.count / 4; q++) {
                         int match = -1;
                         for (int r = 0; r < found.length; r++)
-                            if (!found[r] && sameQuad(xbuf, ybuf, q, r)) {
+                            if (!found[r] && sameQuad(xbuf, ybuf, q, r, 0, positionTolerance)) {
                                 match = r;
                                 break;
                             }
-                        if (match < 0) throw new AssertionError(source + " BER quad " + q);
+                        if (match < 0)
+                            throw new AssertionError(
+                                    source
+                                            + " BER variant "
+                                            + variant
+                                            + " draw "
+                                            + i
+                                            + " quad "
+                                            + q
+                                            + " "
+                                            + nearestQuadDifference(xbuf, ybuf, q, found));
                         found[match] = true;
                     }
                     vertices += x.count;
@@ -968,7 +1031,9 @@ public final class RendererReplacementProbe {
                                 "vertices",
                                 vertices,
                                 "difference",
-                                "within position 3e-5 and normal 5e-5; other bytes exact"));
+                                "within position "
+                                        + positionTolerance
+                                        + " and normal 5e-5; other bytes exact"));
             } finally {
                 referenceInputs = candidateInputs = null;
             }
@@ -1201,7 +1266,30 @@ public final class RendererReplacementProbe {
                                 || x.color != y.color
                                 || !x.pose.pose().equals(y.pose.pose(), 3e-5F)
                                 || !x.pose.normal().equals(y.pose.normal(), 5e-5F))
-                            throw new AssertionError(source + " ordered part state " + i);
+                            throw new AssertionError(
+                                    source
+                                            + " ordered part state "
+                                            + i
+                                            + " part="
+                                            + (x.part == y.part)
+                                            + " layer="
+                                            + sameLayer(x.layer, y.layer)
+                                            + " light="
+                                            + x.light
+                                            + "/"
+                                            + y.light
+                                            + " overlay="
+                                            + x.overlay
+                                            + "/"
+                                            + y.overlay
+                                            + " color="
+                                            + x.color
+                                            + "/"
+                                            + y.color
+                                            + " pose="
+                                            + x.pose.pose().equals(y.pose.pose(), 3e-5F)
+                                            + " normal="
+                                            + x.pose.normal().equals(y.pose.normal(), 5e-5F));
                     }
                     var a = meshes(reference);
                     var b = meshes(candidate);
@@ -2077,16 +2165,63 @@ public final class RendererReplacementProbe {
         return sameQuad(a, b, x, y, 0);
     }
 
+    private static String nearestQuadDifference(
+            java.nio.ByteBuffer a, java.nio.ByteBuffer b, int quad, boolean[] used) {
+        int nearest = -1;
+        double position = Double.POSITIVE_INFINITY, normal = 0;
+        for (int r = 0; r < used.length; r++) {
+            if (used[r]) continue;
+            double dp = 0, dn = 0;
+            for (int corner = 0; corner < 4; corner++) {
+                int at = (quad * 4 + corner) * 128, bt = (r * 4 + corner) * 128;
+                dp = Math.max(dp, distance(a, b, at, bt));
+                dn = Math.max(dn, distance(a, b, at + 16, bt + 16));
+            }
+            if (dp < position) {
+                nearest = r;
+                position = dp;
+                normal = dn;
+            }
+        }
+        var attributes = new java.util.TreeSet<Integer>();
+        if (nearest >= 0)
+            for (int corner = 0; corner < 4; corner++) {
+                int at = (quad * 4 + corner) * 128, bt = (nearest * 4 + corner) * 128;
+                for (int byteIndex = 12; byteIndex < 128; byteIndex += 4)
+                    if ((byteIndex < 16 || byteIndex >= 28)
+                            && a.getInt(at + byteIndex) != b.getInt(bt + byteIndex))
+                        attributes.add(byteIndex);
+            }
+        return "nearest="
+                + nearest
+                + " position="
+                + position
+                + " normal="
+                + normal
+                + " attributes="
+                + attributes;
+    }
+
     private static boolean sameQuad(
             java.nio.ByteBuffer a,
             java.nio.ByteBuffer b,
             int x,
             int y,
             float projectedUvTolerance) {
+        return sameQuad(a, b, x, y, projectedUvTolerance, 3e-5);
+    }
+
+    private static boolean sameQuad(
+            java.nio.ByteBuffer a,
+            java.nio.ByteBuffer b,
+            int x,
+            int y,
+            float projectedUvTolerance,
+            double positionTolerance) {
         for (int corner = 0; corner < 4; corner++) {
             int at = (x * 4 + corner) * 128, bt = (y * 4 + corner) * 128;
-            if (distance(a, b, at, bt) > 3e-5 || distance(a, b, at + 16, bt + 16) > 5e-5)
-                return false;
+            if (distance(a, b, at, bt) > positionTolerance
+                    || distance(a, b, at + 16, bt + 16) > 5e-5) return false;
             for (int j = 12; j < 128; j++)
                 if ((j < 16 || j >= 28)
                         && !(projectedUvTolerance > 0 && j >= 56 && j < 64)

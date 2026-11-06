@@ -145,20 +145,13 @@ static inline uint16_t DivideRoundUp(uint32_t dividend, uint16_t divisor) {
     return uint16_t((dividend + divisor - 1) / divisor);
 }
 
-void NrdWrapper::init(std::shared_ptr<Framework> framework, uint16_t width, uint16_t height) {
+void NrdWrapper::init(std::shared_ptr<Framework> framework, uint16_t width, uint16_t height, nrd::Denoiser type) {
     framework_ = framework;
 
-    // NrdWrapper currently only exposes REBLUR_DIFFUSE_SPECULAR and RELAX_DIFFUSE_SPECULAR denoisers.
-    // We directly use the nrd::Denoiser enum as 'identifier'.
-    std::vector<nrd::DenoiserDesc> denoisers{
-        {nrd::Identifier(nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR), nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR},
-        {nrd::Identifier(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR), nrd::Denoiser::RELAX_DIFFUSE_SPECULAR},
-        // Have two separate reference denoisers, so we can denoise diffuse and specular separately
-        {nrd::Identifier(nrd::Denoiser::REFERENCE), nrd::Denoiser::REFERENCE},
-        {nrd::Identifier(nrd::Denoiser::REFERENCE) + 1, nrd::Denoiser::REFERENCE},
-    };
-
-    nrd::InstanceCreationDesc instanceDesc{{}, denoisers.data(), uint32_t(denoisers.size())};
+    // Each optical layer owns an independent history; only allocate its used denoiser.
+    denoiser_ = type;
+    const nrd::DenoiserDesc denoiser{nrd::Identifier(type), type};
+    nrd::InstanceCreationDesc instanceDesc{{}, &denoiser, 1};
 
     CALL_NRD(CreateInstance(instanceDesc, m_instance));
 
@@ -314,11 +307,7 @@ void NrdWrapper::setDenoiserSettings(nrd::Identifier identifier, const void *set
 }
 
 void NrdWrapper::setREBLURSettings(nrd::ReblurSettings const &settings) {
-    setDenoiserSettings(nrd::Identifier(nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR), &settings);
-}
-
-void NrdWrapper::setRELAXSettings(const nrd::RelaxSettings &settings) {
-    setDenoiserSettings(nrd::Identifier(nrd::Denoiser::RELAX_DIFFUSE_SPECULAR), &settings);
+    setDenoiserSettings(nrd::Identifier(denoiser_), &settings);
 }
 
 std::shared_ptr<vk::DeviceLocalImage>
@@ -405,7 +394,7 @@ void NrdWrapper::createPipelines() {
                                                             .descriptorSetCount = 1,
                                                             .pSetLayouts = &m_samplerConstBufferDescriptorLayout};
 
-        vkAllocateDescriptorSets(device->vkDevice(), &descriptorSetInfo, &m_samplerConstBufferDescriptorSet);
+        result = vkAllocateDescriptorSets(device->vkDevice(), &descriptorSetInfo, &m_samplerConstBufferDescriptorSet);
         if (result != VK_SUCCESS) { throw std::runtime_error("NRD: failed to allocate descriptor sets!"); }
     }
 

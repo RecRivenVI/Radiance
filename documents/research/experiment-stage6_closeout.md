@@ -16,7 +16,7 @@
 
 - 最小复现：`crouch-frame_only-20261021-025141/`，20／2／20／2／20 秒。该入口随后发现仍加载生产者观察 Mixin，引起合法安全回退，故其时间只作现象复现，不能当正常接管性能。
 - 修复前有效同步样本：`crouch-timed-20261021-030720/`，8／2／8／2／8 秒，实际 PARTS 与 BAKED 为直接路径，原生队列归零。
-- 修复后有效同步样本：`crouch-timed-20261021-031324/`，相同序列、相同设置。每个目录的 `launch.json`、`loaded-core.json` 和 `result.json` 分别记录产物、实际加载及保存关闭；最终交付只从[当前清单](../../components/render_diagnostics/build/takeover-stage6-closeout/manifest.json)取身份。
+- 修复后有效同步样本：`crouch-timed-20261021-031324/`，相同序列、相同设置。每个目录的 `launch.json`、`loaded-core.json` 和 `result.json` 分别记录产物、实际加载及保存关闭；最终交付只从当前清单（`components/render_diagnostics/build/takeover-stage6-closeout/manifest.json`）取身份。
 
 初次 TIMED 的 `crouch-timed-20261021-030412/` 因探针漏选已有 vanillaPerformance 配置，触发来源退回和玩家盔甲断言，在测量前退出；已纠正入口，不放宽产品来源检查。两次更早的启动参数错误与一次未进入序列的预热用例也保留在各自目录，不计入有效样本。没有以反复重跑 GPU 故障获得通过。
 

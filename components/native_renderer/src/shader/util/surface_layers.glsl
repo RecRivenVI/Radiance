@@ -2,6 +2,7 @@
 #define SURFACE_LAYERS_GLSL
 #include "util/material_faces.glsl"
 #include "util/ray_cone.glsl"
+#include "util/scene_sample_key.glsl"
 layout(std430, buffer_reference, buffer_reference_align=8) readonly buffer SurfaceLayerRanges {
     SurfaceLayerRange values[];
 };
@@ -22,7 +23,7 @@ bool selectSurfaceLayer(uint geometry, uint primitive, vec3 bary, bool hardwareF
     SurfaceLayerRange range=SurfaceLayerRanges(address).values[primitive];
     if (range.count==0u) return true;
     uint64_t records=(uint64_t(range.addressHi)<<32u)|uint64_t(range.addressLo);
-    float choice=surfaceLayerRandom(origin,direction,frameSeed,geometry,primitive);
+    float choice=surfaceLayerRandom(origin,direction,frameSeed,sceneSamplingGeometry(geometry),primitive);
     MaterialVertex base[3]=MaterialVertex[3](m0,m1,m2);
     for (uint remaining=range.count;remaining>0u;--remaining) {
         SurfaceLayerTriangle source=SurfaceLayerRecords(records).values[remaining-1u];

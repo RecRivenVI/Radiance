@@ -63,6 +63,7 @@ void Textures::reset() {
     samplers.clear();
     attachmentMetadata_.clear();
     frameAliases_.clear();
+    for (auto &name : framebufferTextureNames_) name.store(false, std::memory_order_relaxed);
     releasedTextureFallbacks_.clear();
     if (emission_ != nullptr) { emission_->reset(); }
     resourceReloadActive_ = false;
@@ -113,6 +114,7 @@ void Textures::registerFrameAlias(uint32_t id, FrameAliasKind kind) {
         }
         frameAliases_.insert_or_assign(id, kind);
         attachmentMetadata_.erase(id);
+        framebufferTextureNames_[id].store(true, std::memory_order_release);
         ++worldMaterialRevision_;
     }
     notifyFrameAlias(id);
@@ -146,6 +148,7 @@ void Textures::releaseTexture(uint32_t id, uint32_t fallbackId) {
             textures_.erase(id);
             samplers.erase(id);
             attachmentMetadata_.erase(id);
+            framebufferTextureNames_[id].store(false, std::memory_order_release);
             caches_.erase(id);
             if (uploadQueue_ != nullptr) uploadQueue_->erase(id);
             textureNames_.release(id);
@@ -197,6 +200,7 @@ void Textures::releaseTexture(uint32_t id, uint32_t fallbackId) {
     textures_.erase(textureIter);
     samplers.erase(samplerIter);
     attachmentMetadata_.erase(id);
+    framebufferTextureNames_[id].store(false, std::memory_order_release);
     caches_.erase(id);
     if (uploadQueue_ != nullptr) { uploadQueue_->erase(id); }
     if (emission_ != nullptr) { emission_->resetTexture(id); }
@@ -227,7 +231,7 @@ uint64_t Textures::worldMaterialRevision() const {
     std::lock_guard lock(mtx_);
     return worldMaterialRevision_;
 }
-uint64_t Textures::copyWorldMaterials(vk::Data::TextureMapping &mapping) const {
+uint64_t Textures::copyWorldMaterials(vk::Data::TextureMapping &mapping, bool includeEmitters) const {
     std::lock_guard lock(mtx_);
     std::memset(mapping.programs, 0, sizeof(mapping.programs));
     mapping.programInfo = {};
@@ -254,7 +258,8 @@ uint64_t Textures::copyWorldMaterials(vk::Data::TextureMapping &mapping) const {
             if (images[slot] >= 0 && isFramebufferTexture(static_cast<uint32_t>(images[slot])))
                 mapping.programs[id].settings.w |= bit;
         }
-        if ((material.settings.w & 2u) && material.origin.w > 0) mapping.programEmitters[mapping.programInfo.x++] = id;
+        if (includeEmitters && (material.settings.w & 2u) && material.origin.w > 0)
+            mapping.programEmitters[mapping.programInfo.x++] = id;
     }
     return worldMaterialRevision_;
 }
@@ -346,6 +351,7 @@ void Textures::initializeTextureImpl(uint32_t id,
     );
 
     attachmentMetadata_.erase(id);
+    framebufferTextureNames_[id].store(false, std::memory_order_release);
     ++worldMaterialRevision_;
     if (attachmentAspects != 0) {
         AttachmentMetadata metadata{.aspects = attachmentAspects};
@@ -384,6 +390,7 @@ void Textures::initializeTextureImpl(uint32_t id,
             }
         }
         attachmentMetadata_.emplace(id, std::move(metadata));
+        framebufferTextureNames_[id].store(true, std::memory_order_release);
     }
 
     auto samplerIter = samplers.find(id);
@@ -580,10 +587,10 @@ void Textures::queueUpload(uint8_t *srcPointer,
 
     auto cacheIter = caches_.find(dstId);
     if (cacheIter == caches_.end()) {
-        cacheIter = caches_
-                        .emplace(std::make_pair(
-                            dstId, ImageBufferCache::create(vma, device, framework->swapchain()->imageCount())))
-                        .first;
+        cacheIter =
+            caches_
+                .emplace(std::make_pair(dstId, ImageBufferCache::create(vma, device, framework->mainFrameSlotCount())))
+                .first;
     }
 
     auto cache = cacheIter->second;
@@ -614,7 +621,12 @@ void Textures::queueUpload(uint8_t *srcPointer,
 
 void Textures::performQueuedUpload() {
     mcvr::profile::Scope auditProfile("texture-upload-record");
-    std::scoped_lock lck(mtx_, Renderer::instance().framework()->recreateMtx());
+    std::unique_lock texturesLock(mtx_, std::defer_lock);
+    std::unique_lock recreateLock(Renderer::instance().framework()->recreateMtx(), std::defer_lock);
+    {
+        mcvr::profile::Scope wait("texture-upload-lock");
+        std::lock(texturesLock, recreateLock);
+    }
     collectCompletedUploadsImpl();
     flushQueuedUploadImpl();
 }
@@ -990,6 +1002,10 @@ Textures::attachmentTexture(uint32_t id, uint32_t level, VkImageAspectFlags requ
 bool Textures::isFramebufferTexture(uint32_t id) const {
     std::lock_guard lock(mtx_);
     return frameAliases_.contains(id) || attachmentMetadata_.contains(id);
+}
+
+bool Textures::producerFramebufferTexture(uint32_t id) const {
+    return id < framebufferTextureNames_.size() && framebufferTextureNames_[id].load(std::memory_order_acquire);
 }
 
 std::shared_ptr<Emission> Textures::emission() {

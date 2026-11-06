@@ -11,6 +11,10 @@
 #define MCVR_PROFILE_TIMING 1u
 #define MCVR_PROFILE_CONTENT_AUDIT 2u
 #define MCVR_PROFILE_RESIDENCY_CENSUS 4u
+// Targeted pipeline/content observation, without the residency census or source capture.
+#define MCVR_PROFILE_FLOW_AUDIT 8u
+// Explicit CPU attribution only; detailed allocation boundaries, without a census.
+#define MCVR_PROFILE_ALLOCATION_TIMING 16u
 struct McvrProfileSink {
     uint32_t abi, size;
     void (*sample)(uint64_t frame, uint32_t domain, const char *label, uint64_t inclusiveNs, uint64_t selfNs);

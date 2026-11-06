@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 
 #include "common/singleton.hpp"
 #include "core/all_extern.hpp"
@@ -163,6 +164,9 @@ class Framebuffers : public SharedObject<Framebuffers> {
 
     void bindFramebuffer(uint32_t target, uint32_t id);
     void bindRenderbuffer(uint32_t id);
+    uint64_t producerBindings() const {
+        return producerBindings_.load(std::memory_order_acquire);
+    }
     uint32_t readFramebufferBinding() const;
     uint32_t drawFramebufferBinding() const;
     uint32_t renderbufferBinding() const;
@@ -230,5 +234,7 @@ class Framebuffers : public SharedObject<Framebuffers> {
     uint32_t nextRenderbufferId_ = 1;
     uint32_t readFramebufferBinding_ = 0;
     uint32_t drawFramebufferBinding_ = 0;
+    std::atomic<uint64_t> producerBindings_{0};
+    void publishProducerBindings();
     uint32_t renderbufferBinding_ = 0;
 };

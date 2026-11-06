@@ -23,6 +23,8 @@ struct LightInfo {
     uint32_t textureID;
     glm::vec2 uv0{}, uv1{}, uv2{};
     uint32_t sourceFaceFlags = 0;
+    bool evaluateTexture = false;
+    bool neutralOverlay = false;
     uint64_t stableID;
 };
 

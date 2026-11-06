@@ -1,6 +1,9 @@
 #pragma once
 
 #include "common/shared.hpp"
+namespace mcvr::medium {
+class Mesh;
+}
 #include "common/singleton.hpp"
 #include "core/all_extern.hpp"
 #include "core/vulkan/all_core_vulkan.hpp"
@@ -41,6 +44,7 @@ struct ChunkPackedData {
     uint32_t geometryCount;
     uint32_t lightCount = 0;
     VkDeviceAddress lightBufferAddress = 0;
+    bool operator==(const ChunkPackedData &) const = default;
 };
 static_assert(sizeof(ChunkPackedData) == 32);
 
@@ -78,6 +82,7 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     std::vector<World::GeometryTypes> geometryTypes;
     std::vector<std::string> geometryGroupNames;
     std::vector<uint32_t> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
     std::vector<std::vector<vk::VertexFormat::PBRVertex>> vertices;
     std::vector<std::vector<uint32_t>> indices;
     std::vector<VkDeviceAddress> indexBufferAddresses;
@@ -87,7 +92,6 @@ struct ChunkBuildData : public SharedObject<ChunkBuildData> {
     std::shared_ptr<vk::DeviceLocalBuffer> positionBuffer;
     std::shared_ptr<vk::DeviceLocalBuffer> materialBuffer;
     std::shared_ptr<vk::BLAS> blas;
-    std::shared_ptr<vk::BLASBuilder> blasBuilder;
     std::vector<LightInfo> lightInfos;
     std::vector<std::vector<uint32_t>> topologyVertexFlags;
     std::shared_ptr<vk::DeviceLocalBuffer> lightBuffer;
@@ -128,6 +132,8 @@ struct ChunkBuildDataBatch : public SharedObject<ChunkBuildDataBatch> {
     std::shared_ptr<vk::HostVisibleBuffer> geometryStaging;
     std::vector<GeometryUpload> geometryUploads;
     std::shared_ptr<vk::BLASBatchBuilder> blasBatchBuilder;
+    std::unique_ptr<vk::BLASCompactionQueries> compactionQueries;
+    std::vector<std::shared_ptr<vk::BLAS>> compactionSources;
     std::chrono::steady_clock::time_point submittedAt{};
     std::shared_ptr<vk::Semaphore> readySemaphore;
     uint64_t reservedInputBytes = 0;
@@ -142,7 +148,7 @@ struct ChunkBuildDataBatch : public SharedObject<ChunkBuildDataBatch> {
                         uint64_t admissionSequence,
                         uint64_t byteBudget,
                         uint64_t &sourceCursor);
-    void build();
+    void build(bool compact = false);
 };
 
 class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
@@ -152,6 +158,7 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
                         std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas,
                         std::recursive_mutex &mutex,
                         std::vector<ChunkPackedData> &chunkPackedData,
+                        uint64_t &chunkPackedRevision,
                         mcvr::ExternalChunkHandleTable &externalHandles,
                         uint32_t chunkBuildingBatchSize,
                         uint32_t chunkBuildingTotalBatches);
@@ -181,12 +188,16 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
   private:
     void scheduleBatches(uint32_t maxBatchSize);
     void pollBatches(bool wait);
+    VkResult compactBatch(ChunkBuildDataBatch &batch,
+                          const std::shared_ptr<vk::CommandBuffer> &commands,
+                          const std::shared_ptr<vk::Fence> &fence);
     void publishCompleted();
     std::set<int64_t> &queuedIndex_;
     std::vector<std::shared_ptr<Chunk1>> &chunks_;
     std::vector<std::shared_ptr<ChunkBuildData>> &chunkBuildDatas_;
     std::recursive_mutex &mutex_;
     std::vector<ChunkPackedData> &chunkPackedData_;
+    uint64_t &chunkPackedRevision_;
     mcvr::ExternalChunkHandleTable &externalHandles_;
 
     std::queue<std::shared_ptr<vk::Fence>> freeFences_;
@@ -197,6 +208,9 @@ class ChunkBuildScheduler : public SharedObject<ChunkBuildScheduler> {
     struct Completed {
         std::shared_ptr<ChunkBuildDataBatch> batch;
     };
+    // Publication only consumes completed owners. It must not wait for the
+    // worker to allocate or record a compaction under the pipeline lock.
+    mutable std::mutex completedMutex_;
     std::vector<Completed> completed_;
     std::shared_ptr<vk::CommandPool> commandPool_;
     mutable std::mutex pipelineMutex_;
@@ -228,6 +242,7 @@ struct ChunkRenderData : public SharedObject<ChunkRenderData> {
     uint32_t geometryCount;
     std::shared_ptr<std::vector<std::string>> geometryGroupNames;
     std::shared_ptr<std::vector<uint32_t>> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
 };
 
 struct Chunk1 : public SharedObject<Chunk1> {
@@ -267,6 +282,7 @@ struct Chunk1 : public SharedObject<Chunk1> {
     uint32_t geometryCount;
     std::shared_ptr<std::vector<std::string>> geometryGroupNames;
     std::shared_ptr<std::vector<uint32_t>> geometryMaterialFlags;
+    std::shared_ptr<const mcvr::medium::Mesh> mediumMesh;
     bool hasCustomTransform = false;
     glm::dmat4 customTransform = glm::dmat4(1.0);
 
@@ -293,7 +309,6 @@ class Chunks : public SharedObject<Chunks> {
 
     void reset(uint32_t numChunks, uint32_t sizeX, uint32_t sizeY, uint32_t sizeZ, int32_t bottomSectionCoord);
     void resetScheduler();
-    void resetFrame();
     void markChunkDirty(int64_t handle, int64_t generation);
     void invalidateChunk(int64_t handle, int64_t generation = -1);
     void relocateChunk(int64_t handle, int x, int y, int z, int64_t generation = -1);
@@ -316,6 +331,7 @@ class Chunks : public SharedObject<Chunks> {
     uint32_t countReadyPrimaryChunks();
     std::string performanceSnapshot();
     std::pair<uint64_t, uint64_t> buildBacklog();
+    bool canSkipBuildAdmission();
 
     void close();
     // GPU idle, client left its world: drop every slot, queued build and in-flight batch until the
@@ -329,6 +345,8 @@ class Chunks : public SharedObject<Chunks> {
     // slot nor an in-flight batch references them. Empty when disabled.
     std::string orphanCensus();
     std::shared_ptr<vk::DeviceLocalBuffer> chunkPackedData();
+    // Caller holds mutex() while recording the matching geometry publication.
+    void recordChunkLights(uint32_t frameIndex, const std::shared_ptr<vk::CommandBuffer> &commands);
     glm::ivec4 chunkGridInfo();
     void setChunkStorageSectionPos(glm::ivec3 sectionPos);
     glm::ivec4 chunkStorageSectionPos();
@@ -339,6 +357,9 @@ class Chunks : public SharedObject<Chunks> {
     const std::shared_ptr<const mcvr::StaticChunkScene> &staticScene();
     uint64_t staticSceneBuilds() const {
         return staticSceneCache_.builds();
+    }
+    uint64_t staticScenePageBuilds() const {
+        return staticSceneCache_.pageBuilds();
     }
 
   private:
@@ -356,6 +377,8 @@ class Chunks : public SharedObject<Chunks> {
     std::shared_ptr<mcvr::ChunkScenePublications> scenePublications_;
     mcvr::StaticChunkSceneCache staticSceneCache_;
     std::vector<ChunkPackedData> chunkPackedData_;
+    uint64_t chunkPackedRevision_ = 1;
+    std::vector<uint64_t> uploadedChunkPackedRevisions_;
     std::vector<std::shared_ptr<vk::DeviceLocalBuffer>> chunkPackedDataBuffers_;
     std::vector<std::shared_ptr<ChunkBuildData>> chunkBuildDatas_;
     std::set<int64_t> queuedIndex_;

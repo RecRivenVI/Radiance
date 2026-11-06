@@ -59,7 +59,6 @@ void testTrace(accelerationStructureEXT scene,uint flags,uint mask,uint offset,u
 #define PRIORITY_IMAGE_EXTERNAL_PAYLOAD
 #define traceRayEXT testTrace
 #define rayLoadMaterial testMaterial
-#define VPT_NUM_RAY_BOUNCES 16
 #include "util/priority_image.glsl"
 #undef traceRayEXT
 #undef rayLoadMaterial
@@ -68,32 +67,35 @@ bool vptShouldCaptureIndirectVolumetricCloud(uint lobe,float roughness) { return
 #define SHARC_QUERY 0
 // PRODUCTION_INIT
 
-void traceTransparent(inout MainRay ray,inout MediumHistory mediumHistory,int bounce,int hand,out bool second,out float distance) {
+void traceTransparent(inout MainRay ray,inout MediumHistory mediumHistory,int bounce,int hand,out bool second,out float distance,out float resolvedDistance) {
     rayAdvanceQuery(ray, mediumHistory);
     mainRay=ray;
     testTrace(topLevelAS,0u,queryMask(rayQueryPurpose(ray),worldUBO.isFirstPerson>0),1u,1u,1u,
               ray.origin,0.0,ray.direction,4.0,0);
     ray=mainRay;
-    second=ray.hitT!=INF_DISTANCE;distance=ray.hitT;
+    second=ray.hitT!=INF_DISTANCE;distance=ray.hitT;resolvedDistance=ray.hitT;
 }
 bool splitDispatch(bool firstPerson) {
-    MediumHistory mediumHistory;
+    MediumHistory mediumHistory = MediumHistory(0u, 0u);
     initPriorityQuery(vec3(60,0,0),vec3(0,0,-1),0u,42u);
     rayInitializeMedium(mainRay, 1.0);
     rayPrepareMedium(mainRay, 1.333, vec3(0.0), true, 0.0);
+    MediumHistory coverageHistory = forkMediumHistory(mainRay, mediumHistory, 1u);
     worldUBO.isFirstPerson=firstPerson?1u:0u;
     MaterialInfo firstHitMat=testMaterial(mainRay);
     vec3 firstHitIncomingDirection=vec3(0,0,-1),firstHitNormal=vec3(0,0,1),firstHitWorldPos=vec3(60,0,0);
     vec3 transparentReflectionRadiance=vec3(0),transparentRefractionRadiance=vec3(0);
     bool hasTransparentReflection=false,hasTransparentRefraction=false,hasTransparentReflectionSecondHit=false;
     float transparentReflectionSecondHitDistance=0;
+    float transmissionHitDistance=0,reflectionResolvedDistance=0,transmissionResolvedDistance=0;
     bool useTransparentSplit=true;
     int startBounce=1,isHand=0;
+    mainRay.geometricNormal=firstHitNormal;
     // PRODUCTION_SPLIT
     return hasTransparentReflection && hasTransparentRefraction
         && transparentReflectionRadiance.x==2.0 && transparentReflectionRadiance.y==0.0
         && transparentRefractionRadiance.x==(firstPerson?6.0:2.0)
-        && transparentRefractionRadiance.y==1.0;
+        && transparentRefractionRadiance.y==1.0 && transmissionHitDistance > 0.0;
 }
 void main() {
     uint i=gl_GlobalInvocationID.x;
@@ -122,5 +124,13 @@ void main() {
     testTrace(topLevelAS,0u,queryMask(queryTransport,true),1u,1u,1u,
         mainRay.origin,0.0,mainRay.direction,imagingTraceLimit(mainRay,1000.0),0);
     passed=passed && mainRay.hitT!=INF_DISTANCE;
+    MainRay flagged=mainRay;
+    flagged.stateBits=rayUiPrimaryBit|rayReconstructionQueryBit;
+    raySetBounce(flagged,127u);
+    passed=passed && rayBounce(flagged)==127u && rayReconstructionQuery(flagged)
+        && (flagged.stateBits&rayUiPrimaryBit)!=0u;
+    flagged.stateBits&=~rayReconstructionQueryBit;
+    passed=passed && !rayReconstructionQuery(flagged) && rayBounce(flagged)==127u
+        && (flagged.stateBits&rayUiPrimaryBit)!=0u;
     result[i]=passed?1u:0u;
 }

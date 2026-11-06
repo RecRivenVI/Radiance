@@ -1,5 +1,6 @@
 package com.radiance.api.render;
 
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.lang.ref.*;
 import java.nio.ByteBuffer;
 import java.util.*;
@@ -15,7 +16,7 @@ public final class PersistentInstances {
     }
 
     private static final int MAX_RECORDS = 65536;
-    private static final Map<Long, State> STATES = new HashMap<>();
+    private static final Long2ObjectOpenHashMap<State> STATES = new Long2ObjectOpenHashMap<>();
     private static final ReferenceQueue<Object> COLLECTED = new ReferenceQueue<>();
     private static final Map<Owner, Owner> OWNERS = new HashMap<>();
     private static final Set<Long> REMOVED = new LinkedHashSet<>();
@@ -63,6 +64,15 @@ public final class PersistentInstances {
         }
     }
 
+    static synchronized void remove(long identity, Object source) {
+        State state = STATES.get(identity);
+        if (state == null || state.owner.get() != source) return;
+        STATES.remove(identity);
+        state.owner.records.remove(identity);
+        if (state.owner.records.isEmpty()) OWNERS.remove(state.owner);
+        REMOVED.add(identity);
+    }
+
     static synchronized void collect() {
         Owner owner;
         while ((owner = (Owner) COLLECTED.poll()) != null) {
@@ -80,9 +90,19 @@ public final class PersistentInstances {
         State old = STATES.get(identity);
         if (old == null || !old.group.equals(group)) return true;
         // A CPU source address and local group-table ordinal are not persistent content.
-        for (int i = 0; i < old.bytes.length; i++)
-            if ((i < 16 || i >= 24 && i < 128 || i >= 132) && old.bytes[i] != data.get(offset + i))
-                return true;
+        boolean reverse = data.order() != java.nio.ByteOrder.nativeOrder();
+        for (int i = 0; i < old.bytes.length; i += Long.BYTES) {
+            if (i == 16) continue;
+            if (i == 128) {
+                int value = data.getInt(offset + 132);
+                if (old.values.getInt(132) != (reverse ? Integer.reverseBytes(value) : value))
+                    return true;
+            } else {
+                long value = data.getLong(offset + i);
+                if (old.values.getLong(i) != (reverse ? Long.reverseBytes(value) : value))
+                    return true;
+            }
+        }
         return false;
     }
 
@@ -113,14 +133,25 @@ public final class PersistentInstances {
                 || data.getInt(124) != mask
                 || data.getLong(152) != space
                 || data.getInt(132) != coordinates
-                || Double.doubleToRawLongBits(data.getDouble(24)) != Double.doubleToRawLongBits(x)
-                || Double.doubleToRawLongBits(data.getDouble(32)) != Double.doubleToRawLongBits(y)
-                || Double.doubleToRawLongBits(data.getDouble(40)) != Double.doubleToRawLongBits(z))
-            return false;
-        for (int column = 0; column < 4; column++)
-            for (int row = 0; row < 4; row++)
-                if (Float.floatToRawIntBits(transform.get(column, row))
-                        != data.getInt(48 + (column * 4 + row) * 4)) return false;
+                || data.getLong(24) != Double.doubleToRawLongBits(x)
+                || data.getLong(32) != Double.doubleToRawLongBits(y)
+                || data.getLong(40) != Double.doubleToRawLongBits(z)) return false;
+        if (Float.floatToRawIntBits(transform.m00()) != data.getInt(48)
+                || Float.floatToRawIntBits(transform.m01()) != data.getInt(52)
+                || Float.floatToRawIntBits(transform.m02()) != data.getInt(56)
+                || Float.floatToRawIntBits(transform.m03()) != data.getInt(60)
+                || Float.floatToRawIntBits(transform.m10()) != data.getInt(64)
+                || Float.floatToRawIntBits(transform.m11()) != data.getInt(68)
+                || Float.floatToRawIntBits(transform.m12()) != data.getInt(72)
+                || Float.floatToRawIntBits(transform.m13()) != data.getInt(76)
+                || Float.floatToRawIntBits(transform.m20()) != data.getInt(80)
+                || Float.floatToRawIntBits(transform.m21()) != data.getInt(84)
+                || Float.floatToRawIntBits(transform.m22()) != data.getInt(88)
+                || Float.floatToRawIntBits(transform.m23()) != data.getInt(92)
+                || Float.floatToRawIntBits(transform.m30()) != data.getInt(96)
+                || Float.floatToRawIntBits(transform.m31()) != data.getInt(100)
+                || Float.floatToRawIntBits(transform.m32()) != data.getInt(104)
+                || Float.floatToRawIntBits(transform.m33()) != data.getInt(108)) return false;
         return surface.matches(data, com.radiance.render.contract.RenderAbi.RIGID_SURFACE_OFFSET)
                 && Float.floatToRawIntBits(colour.red()) == data.getInt(136)
                 && Float.floatToRawIntBits(colour.green()) == data.getInt(140)
@@ -205,6 +236,7 @@ public final class PersistentInstances {
     }
 
     public static synchronized void invalidate() {
+        BlockEntityPublications.restInvalidated();
         STATES.clear();
         OWNERS.clear();
         REMOVED.clear();

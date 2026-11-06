@@ -113,6 +113,13 @@ class UIModule : public SharedObject<UIModule> {
     void init(std::shared_ptr<Framework> framework);
     void resize(std::shared_ptr<Framework> framework);
     std::vector<std::shared_ptr<UIModuleContext>> &contexts();
+    const auto &producerViewport() const {
+        return producerViewport_;
+    }
+    const auto &producerStencil() const {
+        return producerStencil_;
+    }
+    std::optional<VkExtent2D> defaultFramebufferExtent() const;
     std::vector<std::shared_ptr<vk::DescriptorTable>> &overlayDescriptorTables();
     const std::vector<OverlayDynamicDrawShaderInfo> &overlayDynamicDrawShaders() const;
     uint32_t registerOverlayDrawShader(const std::string &key,
@@ -200,7 +207,7 @@ class UIModule : public SharedObject<UIModule> {
     std::vector<std::shared_ptr<vk::Sampler>> overlayPostColorImageSamplers_;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> spiderSmallBlurImages_;
     std::vector<std::shared_ptr<vk::Sampler>> spiderSmallBlurSamplers_;
-    std::shared_ptr<vk::RenderPass> overlayPostRenderPass_;
+    std::shared_ptr<vk::RenderPass> overlayPostRenderPass_, overlayPostUnormRenderPass_;
     std::vector<std::shared_ptr<vk::Framebuffer>> overlayPostFramebuffers_;
     std::vector<std::shared_ptr<vk::Framebuffer>> spiderLargeBlurFramebuffers_;
     std::vector<std::shared_ptr<vk::Framebuffer>> spiderSmallBlurFramebuffers_;
@@ -208,12 +215,15 @@ class UIModule : public SharedObject<UIModule> {
     std::map<OverlayPostPipelineType, GraphicsPipelineShaders> overlayPostPipelineShaders_;
     std::map<OverlayPostPipelineType, std::shared_ptr<vk::GraphicsPipeline>> overlayPostPipelines_;
     std::map<uint32_t, std::shared_ptr<EffectProgramRecord>> effectPrograms_;
-    std::map<std::tuple<uint32_t, uint32_t, uint32_t>, std::shared_ptr<vk::GraphicsPipeline>> effectPipelines_;
+    std::map<std::tuple<uint32_t, uint32_t, uint32_t, VkFormat>, std::shared_ptr<vk::GraphicsPipeline>>
+        effectPipelines_;
     uint32_t nextEffectProgram_ = MAX_OVERLAY_POST_PIPELINE_TYPE;
     std::shared_ptr<vk::Sampler> effectNearestSampler_;
 
     std::vector<std::shared_ptr<UIModuleContext>> contexts_;
     std::weak_ptr<UIModuleContext> lastActiveContext_;
+    std::array<int, 4> producerViewport_{};
+    std::array<int, 14> producerStencil_{};
 };
 
 struct UIModuleContext : public SharedObject<UIModuleContext> {
@@ -321,6 +331,8 @@ struct UIModuleContext : public SharedObject<UIModuleContext> {
     bool switchFramebufferDraw();
     void endFramebufferDraw();
     VkExtent2D drawExtent() const;
+    std::array<int, 14> stencilState() const;
+    void publishQueryState() const;
     uint32_t drawAttachmentCount() const;
     void syncColorAttachments();
     void clearMaskedFramebuffer(bool color, bool depth, bool stencil);
@@ -415,6 +427,7 @@ struct UIModuleContext : public SharedObject<UIModuleContext> {
     void postOverlay(OverlayPostPipelineType type, uint32_t uniformOffset);
     void refreshOverlayDescriptorTable();
 
-    void begin(std::shared_ptr<UIModuleContext> lastContext);
+    void begin(std::shared_ptr<UIModuleContext> lastContext, bool overlayOnly = false);
+    void bindOverlayForFrame();
     void end();
 };

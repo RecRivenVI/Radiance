@@ -107,7 +107,7 @@ void main() {
     // A synthetic imaging boundary can lie inside a real dielectric. Keep the
     // Beer absorption of this final finite segment; fading does not turn it into air.
     if (rayDirectImage(mainRay) && worldUBO.uiPrimaryOwner == 0u &&
-        worldUBO.fadeEnd > worldUBO.fadeStart && mainRay.mediumDepth > 0u)
+        worldUBO.fadeEnd > worldUBO.fadeStart && rayMediumDepth(mainRay) > 0u)
         backgroundRadiance *= exp(-max(mainRay.currentMedium.xyz, vec3(0.0)) * max(gl_RayTmaxEXT, 0.0));
     mainRay.radiance += backgroundRadiance * mainRay.throughput;
     raySetStop(mainRay, true);

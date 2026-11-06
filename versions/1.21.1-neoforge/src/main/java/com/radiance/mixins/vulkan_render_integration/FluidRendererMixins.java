@@ -192,7 +192,7 @@ public abstract class FluidRendererMixins {
             float x = pos.getX() & 15;
             float y = pos.getY() & 15;
             float z = pos.getZ() & 15;
-            float bottomYOffset = renderBottom ? 0.001F : 0.0F;
+            float bottomYOffset = 0.0F;
 
             // ==========================================
             // 1. 渲染顶面 (Surface)
@@ -204,11 +204,8 @@ public abstract class FluidRendererMixins {
                             Direction.UP,
                             Math.min(Math.min(heightNW, heightSW), Math.min(heightSE, heightNE)),
                             stateUp)) {
-                // 稍微调低一点避免 Z-Fighting
-                heightNW -= 0.001F;
-                heightSW -= 0.001F;
-                heightSE -= 0.001F;
-                heightNE -= 0.001F;
+                // PT needs the actual fluid boundary. Raster depth offsets would
+                // insert a fictitious air gap between water and adjacent glass.
 
                 Vec3 flowVector = fluidState.getFlow(world, pos);
                 float u1, v1, u2, v2, u3, v3, u4, v4; // 对应四个角的UV
@@ -338,6 +335,7 @@ public abstract class FluidRendererMixins {
                         normalY,
                         normalZ);
 
+                // Reversed raster winding does not reverse the physical fluid boundary.
                 if (fluidState.shouldRenderBackwardUpFace(world, pos.above())) {
                     // 绘制内顶面 (Backface)，法线取反
                     this.vertex(
@@ -352,9 +350,9 @@ public abstract class FluidRendererMixins {
                             u1,
                             v1,
                             packedLight,
-                            -normalX,
-                            -normalY,
-                            -normalZ);
+                            normalX,
+                            normalY,
+                            normalZ);
                     this.vertex(
                             vertexConsumer,
                             x + 1.0F,
@@ -367,9 +365,9 @@ public abstract class FluidRendererMixins {
                             u4,
                             v4,
                             packedLight,
-                            -normalX,
-                            -normalY,
-                            -normalZ);
+                            normalX,
+                            normalY,
+                            normalZ);
                     this.vertex(
                             vertexConsumer,
                             x + 1.0F,
@@ -382,9 +380,9 @@ public abstract class FluidRendererMixins {
                             u3,
                             v3,
                             packedLight,
-                            -normalX,
-                            -normalY,
-                            -normalZ);
+                            normalX,
+                            normalY,
+                            normalZ);
                     this.vertex(
                             vertexConsumer,
                             x + 0.0F,
@@ -397,9 +395,9 @@ public abstract class FluidRendererMixins {
                             u2,
                             v2,
                             packedLight,
-                            -normalX,
-                            -normalY,
-                            -normalZ);
+                            normalX,
+                            normalY,
+                            normalZ);
                 }
             }
 
@@ -495,8 +493,8 @@ public abstract class FluidRendererMixins {
                         yEnd = heightNE;
                         xStart = x;
                         xEnd = x + 1.0F;
-                        zStart = z + 0.001F;
-                        zEnd = z + 0.001F;
+                        zStart = z;
+                        zEnd = z;
                         shouldRenderSide = renderNorth;
                         break;
                     case SOUTH:
@@ -504,15 +502,15 @@ public abstract class FluidRendererMixins {
                         yEnd = heightSW;
                         xStart = x + 1.0F;
                         xEnd = x;
-                        zStart = z + 1.0F - 0.001F;
-                        zEnd = z + 1.0F - 0.001F;
+                        zStart = z + 1.0F;
+                        zEnd = z + 1.0F;
                         shouldRenderSide = renderSouth;
                         break;
                     case WEST:
                         yStart = heightSW;
                         yEnd = heightNW;
-                        xStart = x + 0.001F;
-                        xEnd = x + 0.001F;
+                        xStart = x;
+                        xEnd = x;
                         zStart = z + 1.0F;
                         zEnd = z;
                         shouldRenderSide = renderWest;
@@ -520,8 +518,8 @@ public abstract class FluidRendererMixins {
                     default: // EAST
                         yStart = heightNE;
                         yEnd = heightSE;
-                        xStart = x + 1.0F - 0.001F;
-                        xEnd = x + 1.0F - 0.001F;
+                        xStart = x + 1.0F;
+                        xEnd = x + 1.0F;
                         zStart = z;
                         zEnd = z + 1.0F;
                         shouldRenderSide = renderEast;
@@ -620,8 +618,7 @@ public abstract class FluidRendererMixins {
                             dirZ);
 
                     if (sideSprite != overlaySprite) {
-                        // 双面渲染（通常用于查看背面时），法线保持几何方向或取反均可。
-                        // 这里为了保持光照一致性，通常使用与面朝向相同的法线。
+                        // Both raster members retain the same physical outward normal.
                         this.vertex(
                                 vertexConsumer,
                                 xStart,

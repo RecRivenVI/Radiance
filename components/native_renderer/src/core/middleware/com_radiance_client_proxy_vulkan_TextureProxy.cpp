@@ -1,9 +1,34 @@
 #include "com_radiance_client_proxy_vulkan_TextureProxy.h"
 
+#include "core/diagnostics/state_bridge_audit.hpp"
 #include "core/render/emission.hpp"
 #include "core/render/renderer.hpp"
+#include "core/render/render_framework.hpp"
 #include "core/render/textures.hpp"
 #include "core/middleware/jni_exception.hpp"
+
+namespace {
+constexpr size_t pendingTextureLimit = 4096;
+constexpr size_t pendingTextureBytesLimit = 64 * 1024 * 1024;
+
+template <class Update>
+void applyTextureInput(const char *operation, Update update) {
+    mcvr::FrameExecution::Producer gate(mcvr::FrameExecution::producerOverlayDeferred(), operation);
+    mcvr::FrameExecution::prepareDeferredProducer();
+    if (auto textures = Renderer::instance().textures()) update(*textures);
+}
+
+template <class Update>
+void stageSamplerInput(const char *operation, Update update) {
+    auto framework = Renderer::instance().framework();
+    if (auto frame = framework ? framework->deferredTextureContext() : nullptr;
+        frame && frame->pendingTextureUpdates.size() < pendingTextureLimit) {
+        frame->pendingTextureUpdates.emplace_back(std::move(update));
+        return;
+    }
+    applyTextureInput(operation, std::move(update));
+}
+} // namespace
 
 extern "C" {
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_setWorldMaterial(JNIEnv *env,
@@ -53,25 +78,31 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_prepar
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_setFilter(
     JNIEnv *env, jclass, jint id, jint samplingMode, jint mipmapMode) {
-    jni::invokeVoid(env, "Configure Vulkan texture filtering", [&] {
-        auto textures = Renderer::instance().textures();
-        if (textures == nullptr) return;
-        auto vkSamplingMode = static_cast<VkFilter>(samplingMode);
-        auto vkMipmapMode = static_cast<VkSamplerMipmapMode>(mipmapMode);
-        textures->setSamplingMode(id, vkSamplingMode, vkMipmapMode);
-    });
+    constexpr const char *operation = "Configure Vulkan texture filtering";
+    jni::invokeVoid(
+        env, operation,
+        [&] {
+            stageSamplerInput(operation, [=](Textures &textures) {
+                textures.setSamplingMode(id, static_cast<VkFilter>(samplingMode),
+                                         static_cast<VkSamplerMipmapMode>(mipmapMode));
+            });
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_setClamp(JNIEnv *env,
                                                                                    jclass,
                                                                                    jint id,
                                                                                    jint addressMode) {
-    jni::invokeVoid(env, "Configure Vulkan texture addressing", [&] {
-        auto textures = Renderer::instance().textures();
-        if (textures == nullptr) return;
-        auto vkSamplerAddressMode = static_cast<VkSamplerAddressMode>(addressMode);
-        textures->setAddressMode(id, vkSamplerAddressMode);
-    });
+    constexpr const char *operation = "Configure Vulkan texture addressing";
+    jni::invokeVoid(
+        env, operation,
+        [&] {
+            stageSamplerInput(operation, [=](Textures &textures) {
+                textures.setAddressMode(id, static_cast<VkSamplerAddressMode>(addressMode));
+            });
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_queueUpload(JNIEnv *env,
@@ -87,12 +118,37 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_queueU
                                                                                       jint width,
                                                                                       jint height,
                                                                                       jint level) {
-    jni::invokeVoid(env, "Queue Vulkan texture upload", [&] {
-        auto textures = Renderer::instance().textures();
-        if (textures == nullptr) return;
-        textures->queueUpload(reinterpret_cast<uint8_t *>(srcPointer), srcSizeInBytes, srcRowPixels, dstId, srcOffsetX,
-                              srcOffsetY, dstOffsetX, dstOffsetY, width, height, level);
-    });
+    constexpr const char *operation = "Queue Vulkan texture upload";
+    jni::invokeVoid(
+        env, operation,
+        [&] {
+            auto framework = Renderer::instance().framework();
+            if (auto frame = framework ? framework->deferredTextureContext() : nullptr;
+                frame && width > 0 && height > 0 && frame->pendingTextureUpdates.size() < pendingTextureLimit) {
+                auto destination = Renderer::instance().textures(frame.get())->texture(dstId);
+                if (!destination) throw std::invalid_argument("Texture upload requires initialized storage");
+                const auto texelBytes = vk::formatToByte(destination->vkFormat());
+                const auto region = mcvr::TextureUploadRegion::checked(srcSizeInBytes, srcRowPixels, srcOffsetX,
+                                                                       srcOffsetY, width, height, texelBytes);
+                if (region.packedBytes <= pendingTextureBytesLimit - frame->pendingTextureBytes) {
+                    std::vector<uint8_t> pixels(region.packedBytes);
+                    region.copy(pixels.data(), reinterpret_cast<const void *>(srcPointer));
+                    frame->pendingTextureUpdates.emplace_back([pixels = std::move(pixels), dstId, dstOffsetX,
+                                                               dstOffsetY, width, height,
+                                                               level](Textures &textures) mutable {
+                        textures.queueUpload(pixels.data(), static_cast<uint32_t>(pixels.size()), width, dstId, 0, 0,
+                                             dstOffsetX, dstOffsetY, width, height, level);
+                    });
+                    frame->pendingTextureBytes += region.packedBytes;
+                    return;
+                }
+            }
+            applyTextureInput(operation, [&](Textures &textures) {
+                textures.queueUpload(reinterpret_cast<uint8_t *>(srcPointer), srcSizeInBytes, srcRowPixels, dstId,
+                                     srcOffsetX, srcOffsetY, dstOffsetX, dstOffsetY, width, height, level);
+            });
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_downloadTexture(
@@ -111,13 +167,23 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_downlo
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_radiance_client_proxy_vulkan_TextureProxy_isFramebufferTexture(JNIEnv *env, jclass, jint id) {
-    jboolean result = JNI_FALSE;
-    jni::invokeVoid(env, "Query framebuffer texture storage", [&] {
-        auto textures = Renderer::instance().textures();
-        if (!textures) throw std::runtime_error("Texture manager is unavailable");
-        result = textures->isFramebufferTexture(id) ? JNI_TRUE : JNI_FALSE;
-    });
-    return result;
+    return jni::invoke<jboolean>(
+        env, "Query framebuffer texture storage", JNI_FALSE,
+        [&] {
+            auto &renderer = Renderer::instance();
+            const auto serial = [&] {
+                mcvr::FrameExecution::Producer gate(true, "Verify framebuffer texture query");
+                auto textures = renderer.textures();
+                if (!textures) throw std::runtime_error("Texture manager is unavailable");
+                return textures->isFramebufferTexture(id);
+            };
+            if (!mcvr::FrameExecution::enabled()) return serial();
+            const bool value = renderer.producerFramebufferTexture(id);
+            if (mcvr::state_audit::verifyQueryMirrors())
+                mcvr::state_audit::verifyQuery("isFramebufferTexture", value, serial());
+            return value;
+        },
+        jni::BoundaryPolicy::frameHandoff);
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_TextureProxy_uploadEmissionTileNative(

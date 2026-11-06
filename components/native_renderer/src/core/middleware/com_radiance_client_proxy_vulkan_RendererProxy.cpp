@@ -15,6 +15,7 @@
 #include "core/diagnostics/lifecycle_acceptance.hpp"
 #include "core/diagnostics/audit_sink.hpp"
 #include "core/diagnostics/device_loss_trace.hpp"
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/middleware/jni_string.hpp"
 #include "core/loading/loading_renderer.hpp"
 #include "common/render_abi.hpp"
@@ -172,8 +173,10 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_initR
 
 JNIEXPORT jlong JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_presentationRatesNative(JNIEnv *env,
                                                                                                     jclass) {
-    return jni::invoke<jlong>(env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.presentationRatesNative", 0,
-                              [&]() -> jlong { return static_cast<jlong>(mcvr::presentationRates.snapshot()); });
+    // The atomic snapshot is available while the worker is presenting.
+    return jni::invoke<jlong>(
+        env, "Read presentation rates", 0, [] { return static_cast<jlong>(mcvr::presentationRates.snapshot()); },
+        jni::BoundaryPolicy::frameHandoff);
 }
 
 JNIEXPORT jlong JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_sectionCountsNative(JNIEnv *env, jclass) {
@@ -233,12 +236,12 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_capab
 JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_tessellationSupported(JNIEnv *env,
                                                                                                      jclass) {
     return jni::invoke<jboolean>(
-        env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.tessellationSupported", JNI_FALSE, [&]() -> jboolean {
-            auto framework = Renderer::instance().framework();
-            if (!framework || !framework->device() || !framework->pipeline() || !framework->pipeline()->uiModule())
-                return JNI_FALSE;
-            return framework->device()->hasTessellation() ? JNI_TRUE : JNI_FALSE;
-        });
+        env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.tessellationSupported", JNI_FALSE,
+        []() -> jboolean {
+            const auto *renderer = Renderer::try_instance();
+            return renderer && renderer->tessellationSupported() ? JNI_TRUE : JNI_FALSE;
+        },
+        jni::BoundaryPolicy::frameHandoff);
 }
 
 JNIEXPORT jstring JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_backendString(JNIEnv *env,
@@ -280,16 +283,33 @@ JNIEXPORT jstring JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_ba
 }
 
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_acquireContextNative(JNIEnv *env, jclass) {
-    return jni::invokeForVkResult(env, "Acquire frame", [] {
-        auto framework = Renderer::instance().framework();
-        return framework == nullptr ? VK_NOT_READY : framework->acquireContext();
-    });
+    return jni::invokeForVkResult(
+        env, "Acquire frame",
+        [] {
+            auto framework = Renderer::instance().framework();
+            if (!framework) return VK_NOT_READY;
+            return framework->activateProducerFrame();
+        },
+        jni::BoundaryPolicy::frameHandoff);
+}
+
+JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_executeFrameNative(JNIEnv *env,
+                                                                                              jclass,
+                                                                                              jboolean menuFrame) {
+    return jni::invokeForVkResult(
+        env, "Hand off native frame",
+        [&] {
+            auto framework = Renderer::instance().framework();
+            return framework ? framework->dispatchFrame(menuFrame == JNI_TRUE) : VK_NOT_READY;
+        },
+        jni::BoundaryPolicy::frameHandoff);
 }
 
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_submitCommandNative(JNIEnv *env, jclass) {
     if (mcvr::audit::enabled(MCVR_AUDIT_LIFECYCLE)) mcvr::diagnostics::lifecycle::noteSubmitAttempt();
     return jni::invokeForVkResult(env, "Submit frame", [] {
         auto framework = Renderer::instance().framework();
+        mcvr::StreamlineRuntime::get().beginRenderSubmission();
         const auto result = framework == nullptr ? VK_NOT_READY : framework->submitCommand();
         if (result == VK_SUCCESS && mcvr::audit::enabled(MCVR_AUDIT_LIFECYCLE))
             mcvr::diagnostics::lifecycle::noteSuccessfulSubmit();
@@ -328,14 +348,19 @@ Java_com_radiance_client_proxy_vulkan_RendererProxy_warmupCurrentPipelineNative(
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_fuseWorld(JNIEnv *env, jclass) {
-    jni::invokeVoid(env, "Fuse world", [] {
-        auto framework = Renderer::instance().framework();
-        if (framework == nullptr || !framework->isRunning()) return;
-        auto context = framework->safeAcquireCurrentContext();
-        if (context == nullptr) return;
-        auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
-        if (pipelineContext != nullptr) { pipelineContext->fuseWorld(); }
-    });
+    jni::invokeVoid(
+        env, "Fuse world",
+        [] {
+            mcvr::profile::Scope timing("world.fuse");
+            auto framework = Renderer::instance().framework();
+            if (framework == nullptr || !framework->isRunning()) return;
+            auto context = framework->safeAcquireCurrentContext();
+            if (context == nullptr) return;
+            framework->prepareWorldComposition();
+            auto pipelineContext = framework->pipeline()->acquirePipelineContext(context);
+            if (pipelineContext != nullptr) { pipelineContext->fuseWorld(); }
+        },
+        jni::BoundaryPolicy::producerWorld);
 }
 
 namespace {
@@ -345,7 +370,11 @@ bool updateCurrentCameraEffects(Writer &&writer) {
     if (framework == nullptr || !framework->isRunning() || framework->safeAcquireCurrentContext() == nullptr) {
         return false;
     }
-    auto buffers = Renderer::instance().buffers();
+    if (auto *slot = framework->producerWorldInput(); slot && slot->worldUniform) {
+        slot->cameraEffects.emplace_back(std::forward<Writer>(writer));
+        return true;
+    }
+    auto buffers = Renderer::instance().buffers(framework->worldInputSlot());
     auto buffer = buffers == nullptr ? nullptr : buffers->worldUniformBuffer();
     if (buffer == nullptr || buffer->mappedPtr() == nullptr || buffer->size() < sizeof(vk::Data::WorldUBO)) {
         return false;
@@ -364,17 +393,20 @@ bool validCameraEffectTexture(jint textureId) {
 JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_cameraBlockEffect(
     JNIEnv *env, jclass, jint textureId, jfloat u0, jfloat v0, jfloat u1, jfloat v1, jfloat lightScale) {
     jboolean recorded = JNI_FALSE;
-    jni::invokeVoid(env, "Record HDR block camera effect", [&] {
-        if (!validCameraEffectTexture(textureId)) return;
-        recorded = updateCurrentCameraEffects([&](vk::Data::WorldUBO &ubo) {
-            ubo.cameraEffectTextureIDs.x = textureId;
-            ubo.cameraBlockUV = glm::vec4(u0, v0, u1, v1);
-            const float light = std::clamp(lightScale, 0.0f, 1.0f);
-            ubo.cameraBlockColor = glm::vec4(light, light, light, 1.0f);
-        }) ?
-                       JNI_TRUE :
-                       JNI_FALSE;
-    });
+    jni::invokeVoid(
+        env, "Record HDR block camera effect",
+        [&] {
+            if (!validCameraEffectTexture(textureId)) return;
+            recorded = updateCurrentCameraEffects([=](vk::Data::WorldUBO &ubo) {
+                ubo.cameraEffectTextureIDs.x = textureId;
+                ubo.cameraBlockUV = glm::vec4(u0, v0, u1, v1);
+                const float light = std::clamp(lightScale, 0.0f, 1.0f);
+                ubo.cameraBlockColor = glm::vec4(light, light, light, 1.0f);
+            }) ?
+                           JNI_TRUE :
+                           JNI_FALSE;
+        },
+        jni::BoundaryPolicy::producerWorld);
     return recorded;
 }
 
@@ -388,17 +420,20 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_c
                                                                                                  jfloat alpha,
                                                                                                  jfloat brightness) {
     jboolean recorded = JNI_FALSE;
-    jni::invokeVoid(env, "Record HDR fluid camera effect", [&] {
-        if (!validCameraEffectTexture(textureId)) return;
-        recorded = updateCurrentCameraEffects([&](vk::Data::WorldUBO &ubo) {
-            ubo.cameraEffectTextureIDs.y = textureId;
-            ubo.cameraFluidParams = glm::vec4(uBase, vBase, repeatU, std::clamp(alpha, 0.0f, 1.0f));
-            const float light = std::max(brightness, 0.0f);
-            ubo.cameraFluidColor = glm::vec4(light, light, light, repeatV);
-        }) ?
-                       JNI_TRUE :
-                       JNI_FALSE;
-    });
+    jni::invokeVoid(
+        env, "Record HDR fluid camera effect",
+        [&] {
+            if (!validCameraEffectTexture(textureId)) return;
+            recorded = updateCurrentCameraEffects([=](vk::Data::WorldUBO &ubo) {
+                ubo.cameraEffectTextureIDs.y = textureId;
+                ubo.cameraFluidParams = glm::vec4(uBase, vBase, repeatU, std::clamp(alpha, 0.0f, 1.0f));
+                const float light = std::max(brightness, 0.0f);
+                ubo.cameraFluidColor = glm::vec4(light, light, light, repeatV);
+            }) ?
+                           JNI_TRUE :
+                           JNI_FALSE;
+        },
+        jni::BoundaryPolicy::producerWorld);
     return recorded;
 }
 
@@ -412,16 +447,20 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_c
                                                                                                 jfloat alpha,
                                                                                                 jfloat emissionScale) {
     jboolean recorded = JNI_FALSE;
-    jni::invokeVoid(env, "Record HDR fire camera effect", [&] {
-        if (!validCameraEffectTexture(textureId)) return;
-        recorded = updateCurrentCameraEffects([&](vk::Data::WorldUBO &ubo) {
-            ubo.cameraEffectTextureIDs.z = textureId;
-            ubo.cameraFireUV = glm::vec4(u0, v0, u1, v1);
-            ubo.cameraFireParams = glm::vec4(std::clamp(alpha, 0.0f, 1.0f), std::max(emissionScale, 0.0f), 0.0f, 0.0f);
-        }) ?
-                       JNI_TRUE :
-                       JNI_FALSE;
-    });
+    jni::invokeVoid(
+        env, "Record HDR fire camera effect",
+        [&] {
+            if (!validCameraEffectTexture(textureId)) return;
+            recorded = updateCurrentCameraEffects([=](vk::Data::WorldUBO &ubo) {
+                ubo.cameraEffectTextureIDs.z = textureId;
+                ubo.cameraFireUV = glm::vec4(u0, v0, u1, v1);
+                ubo.cameraFireParams =
+                    glm::vec4(std::clamp(alpha, 0.0f, 1.0f), std::max(emissionScale, 0.0f), 0.0f, 0.0f);
+            }) ?
+                           JNI_TRUE :
+                           JNI_FALSE;
+        },
+        jni::BoundaryPolicy::producerWorld);
     return recorded;
 }
 
@@ -525,6 +564,14 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_close
             if (!Renderer::is_initialized()) { return VK_SUCCESS; }
             auto framework = Renderer::instance().framework();
             if (framework == nullptr) { return VK_SUCCESS; }
+            if (mcvr::FrameExecution::enabled()) {
+                try {
+                    (void)mcvr::FrameExecution::instance().consume();
+                } catch (...) {
+                    Renderer::instance().close();
+                    throw;
+                }
+            }
             const VkResult priorFailure = framework->lastFailure();
             Renderer::instance().close();
             return priorFailure;
@@ -603,15 +650,18 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_endRe
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_shouldRenderWorld(
     JNIEnv *env, jclass, jboolean shouldRenderWorld, jboolean allowFrameGeneration) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.shouldRenderWorld", [&] {
-        auto world = Renderer::instance().world();
-        if (world == nullptr) return;
-        world->shouldRender() = shouldRenderWorld;
-        if (shouldRenderWorld) {
-            auto context = Renderer::instance().framework()->safeAcquireCurrentContext();
-            if (context) context->fgGameFrame = allowFrameGeneration;
-        }
-    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.shouldRenderWorld",
+        [&] {
+            auto world = Renderer::instance().inputWorld();
+            if (world == nullptr) return;
+            world->shouldRender() = shouldRenderWorld;
+            if (shouldRenderWorld) {
+                auto context = Renderer::instance().framework()->safeAcquireCurrentContext();
+                if (context) context->fgGameFrame = allowFrameGeneration;
+            }
+        },
+        jni::BoundaryPolicy::producerWorld);
 }
 
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_takeScreenshotNative(
@@ -639,24 +689,51 @@ JNIEXPORT jstring JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_la
         jni::BoundaryPolicy::allowAfterFatal);
 }
 
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_radiance_client_proxy_vulkan_RendererProxy_tryPrepareInputFrame(JNIEnv *env, jclass, jint mode, jint maxFps) {
+    mcvr::profile::Scope timing("streamline.prepare-input-frame");
+    return jni::invoke<jboolean>(
+        env, "Prepare next input frame", JNI_FALSE,
+        [&] {
+            const uint32_t fpsLimit = maxFps > 0 && maxFps < 260 ? maxFps : 0;
+            auto framework = Renderer::instance().framework();
+            if (!framework) return JNI_FALSE;
+            const auto budget = framework->waitForInputLatencyBudget();
+            if (budget != VK_SUCCESS)
+                mcvr::failure::raise(mcvr::failure::Kind::runtime, budget, "Wait for input GPU budget");
+            if (!mcvr::StreamlineRuntime::get().prepareNextFrame(mode, fpsLimit)) return JNI_FALSE;
+            framework->deferInputAcquire();
+            return JNI_TRUE;
+        },
+        jni::BoundaryPolicy::frameHandoff);
+}
+
 extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_streamlineFrameEvent(JNIEnv *env,
                                                                                                            jclass,
                                                                                                            jint event) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.streamlineFrameEvent", [&] {
-        if (!Renderer::is_initialized()) return;
-        auto &sl = mcvr::StreamlineRuntime::get();
-        switch (event) {
-            case 0:
-                sl.beginFrame(Renderer::options.dlssFrameGeneration ? std::max(1, Renderer::options.reflexMode) :
-                                                                      Renderer::options.reflexMode,
-                              Renderer::instance().framework()->effectiveFrameRateLimit());
-                break;
-            case 1: sl.marker(sl::PCLMarker::eSimulationStart); break;
-            case 2:
-                sl.marker(sl::PCLMarker::eSimulationEnd);
-                sl.marker(sl::PCLMarker::eRenderSubmitStart);
-                break;
-            case 3: sl.marker(sl::PCLMarker::eRenderSubmitEnd); break;
-        }
-    });
+    mcvr::profile::Scope timing("streamline.frame-event");
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.vulkan.RendererProxy.streamlineFrameEvent",
+        [&] {
+            if (!Renderer::is_initialized()) return;
+            auto &sl = mcvr::StreamlineRuntime::get();
+            switch (event) {
+                case 0:
+                    if (mcvr::FrameExecution::producerWorldActive() && sl.activatePreparedFrame()) break;
+                    mcvr::failure::runCheckedStage([&] {
+                        mcvr::profile::Scope finish("streamline.finish-previous-frame");
+                        const auto result = Renderer::instance().framework()->finishExecutedFrame();
+                        if (result != VK_SUCCESS && result != VK_NOT_READY)
+                            mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "finish presented frame");
+                    });
+                    sl.beginFrame(Renderer::options.dlssFrameGeneration ? std::max(1, Renderer::options.reflexMode) :
+                                                                          Renderer::options.reflexMode,
+                                  Renderer::instance().framework()->effectiveFrameRateLimit());
+                    break;
+                case 1: sl.beginSimulation(); break;
+                case 2: sl.beginRenderSubmission(); break;
+                case 4: sl.beginSimulation(true); break;
+            }
+        },
+        event == 4 ? jni::BoundaryPolicy::frameHandoff : jni::BoundaryPolicy::producerWorld);
 }

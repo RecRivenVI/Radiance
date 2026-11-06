@@ -2,6 +2,7 @@ package com.radiance.client.texture;
 
 import com.mojang.blaze3d.platform.NativeImage;
 import com.mojang.blaze3d.platform.TextureUtil;
+import com.radiance.client.option.Options;
 import com.radiance.client.proxy.vulkan.TextureProxy;
 import com.radiance.mixin_related.extensions.vanilla_resource_tracker.INativeImageExt;
 import java.io.IOException;
@@ -101,6 +102,8 @@ public enum AuxiliaryTextures {
             Collections.unmodifiableList(Arrays.stream(values()).collect(Collectors.toList()));
     private static final Object DECODED_IMAGE_CACHE_LOCK = new Object();
     private static final Map<CacheKey, CacheEntry> DECODED_IMAGE_CACHE = new ConcurrentHashMap<>();
+    private static final boolean FILTER_METAL_ROUGHNESS =
+            Boolean.getBoolean("radiance.filterMetalRoughness");
     private final String suffix;
     private final IdentifierCandidateProvider identifierCandidateProvider;
     private final Getter getter;
@@ -311,7 +314,9 @@ public enum AuxiliaryTextures {
                     }
                     ((INativeImageExt) (Object) auxiliaryImage)
                             .radiance$setTargetID(auxiliaryTargetId);
-                    if (level == 0 && auxiliaryTexture == SPECULAR) {
+                    if (level == 0
+                            && auxiliaryTexture == SPECULAR
+                            && Options.collectChunkEmission) {
                         // Null specular publishes an empty tile, clearing any prior emission.
                         TextureProxy.uploadEmissionTile(
                                 EmissionRecorder.buildTileUpdate(
@@ -504,7 +509,8 @@ public enum AuxiliaryTextures {
             Resource resource = entry.getValue();
             futures.add(
                     CompletableFuture.supplyAsync(
-                            () -> decodePreparedEntry(cacheKey, resource), prepareExecutor));
+                            () -> decodePreparedEntry(cacheKey, resource, resourceManager),
+                            prepareExecutor));
         }
 
         CompletableFuture<Void> allFutures =
@@ -519,13 +525,49 @@ public enum AuxiliaryTextures {
                 });
     }
 
-    private static DecodedEntry decodePreparedEntry(CacheKey cacheKey, Resource resource) {
+    private static DecodedEntry decodePreparedEntry(
+            CacheKey cacheKey, Resource resource, ResourceManager resourceManager) {
         try (InputStream inputStream = resource.open()) {
             NativeImage image = NativeImage.read(inputStream);
-            NativeImage[] levels = MipmapUtil.buildMipmapChain(image);
+            NativeImage[] levels;
+            if (cacheKey.texture() != FLAG
+                    && cacheKey.identifier().getPath().startsWith("textures/block/")) {
+                try (NativeImage base = readBaseImage(resourceManager, cacheKey.identifier())) {
+                    levels = MipmapUtil.buildMipmapChain(image, cacheKey.texture(), base);
+                    if (FILTER_METAL_ROUGHNESS
+                            && cacheKey.texture() == SPECULAR
+                            && base != null
+                            && base.format() == NativeImage.Format.RGBA
+                            && image.format() == NativeImage.Format.RGBA) {
+                        String path = cacheKey.identifier().getPath();
+                        ResourceLocation normalId =
+                                cacheKey.identifier()
+                                        .withPath(path.substring(0, path.length() - 4) + "_n.png");
+                        try (NativeImage normal = readBaseImage(resourceManager, normalId)) {
+                            MipmapUtil.filterMetalRoughness(levels, normal, base);
+                        } catch (RuntimeException | Error failure) {
+                            for (NativeImage level : levels) level.close();
+                            throw failure;
+                        }
+                    }
+                }
+            } else {
+                levels = MipmapUtil.buildMipmapChain(image, cacheKey.texture(), null);
+            }
             return new DecodedEntry(cacheKey, new CacheEntry(levels));
         } catch (IOException e) {
             throw new RuntimeException(e);
+        }
+    }
+
+    private static NativeImage readBaseImage(ResourceManager resourceManager, ResourceLocation id) {
+        var resource = resourceManager.getResource(id);
+        if (resource.isEmpty()) return null;
+        try (InputStream stream = resource.get().open()) {
+            return NativeImage.read(stream);
+        } catch (IOException ignored) {
+            // The base texture loader owns handling invalid base images.
+            return null;
         }
     }
 

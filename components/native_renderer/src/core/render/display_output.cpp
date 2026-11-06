@@ -16,7 +16,7 @@ std::shared_ptr<vk::DeviceLocalImage> DisplayOutput::encode(Framework &f,
                                                             const std::shared_ptr<vk::DeviceLocalImage> &source) {
     if (!source || role > 1) throw std::invalid_argument("Invalid display output source");
     const auto &profile = f.swapchain()->displayProfile();
-    if (frames_.empty()) frames_.resize(f.swapchain()->imageCount());
+    if (frames_.empty()) frames_.resize(f.mainFrameSlotCount());
     auto &slot = frames_.at(frame).at(role);
     if (!slot.image) {
         if (!pass_) {

@@ -686,6 +686,10 @@ public final class RigidModelCapture {
                     && com.radiance.api.render.PersistentInstances.known(submittedHistory);
         }
 
+        public long submittedIdentity() {
+            return submittedHistory;
+        }
+
         private Object instanceDomain;
         private int coordinates;
         private com.radiance.render.contract.SourceEmission.Role role =

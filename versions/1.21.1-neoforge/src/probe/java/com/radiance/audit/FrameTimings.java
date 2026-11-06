@@ -1,6 +1,8 @@
 package com.radiance.audit;
 
+import java.util.IdentityHashMap;
 import java.util.function.LongSupplier;
+import net.minecraft.world.entity.Entity;
 
 /** A render-thread tree, not the sum of overlapping inclusive method timers. */
 public final class FrameTimings {
@@ -9,8 +11,24 @@ public final class FrameTimings {
         TICK,
         GAME_RENDER_OTHER,
         WORLD_RENDER_OTHER,
+        WORLD_LIGHT_TEXTURE,
+        WORLD_CAMERA_SETUP,
+        WORLD_CAMERA_FOV,
+        WORLD_OUTLINE_CHECK,
+        WORLD_FRUSTUM_SETUP,
+        WORLD_SCENE_BEGIN,
+        WORLD_AUDIT_OUTCOMES,
+        WORLD_AFTER_RENDER,
+        WORLD_SOURCE_UPDATE,
+        WORLD_SOURCE_BEGIN,
+        WORLD_SOURCE_BLOCK_ENTITIES,
+        WORLD_BLOCK_ENTITY_PUBLICATION,
+        WORLD_BLOCK_ENTITY_RESIDENT_SUBMIT,
+        WORLD_SOURCE_EFFECTS,
         ENTITIES,
         BLOCK_ENTITIES,
+        BLOCK_ENTITY_STABLE_INPUTS,
+        BLOCK_ENTITY_SELECT,
         PARTICLES,
         HAND,
         WEATHER,
@@ -22,7 +40,11 @@ public final class FrameTimings {
         ACQUIRE,
         CHUNK_COMPILE,
         LEVEL_SETUP,
-        LIGHT_UPDATES,
+        LIGHT_QUEUE,
+        LIGHT_PACKET_APPLY,
+        LIGHT_CHUNK_ENABLE,
+        LIGHT_PROPAGATION,
+        LIGHT_SECTION_NOTIFY,
         FLYWHEEL_BEGIN,
         FLYWHEEL_DRAW,
         SABLE_UPDATE,
@@ -55,6 +77,11 @@ public final class FrameTimings {
     public final long[] self = new long[Stage.values().length];
     public long generatedPbrVertices, generatedPbrBytes;
     public long optionalSourceLookups;
+    public long lightQueueBefore, lightQueueAfter, lightQueueDrained;
+    public long lightPackets, lightChunks, lightNotifies, lightPropagationNodes;
+    public long blockEntityVisits, blockEntityStable, blockEntityCapture, entities;
+    public long[] blockEntityRest;
+    public final IdentityHashMap<Entity, Boolean> persistentEntityMatches = new IdentityHashMap<>();
     private final LongSupplier clock;
     private Span top;
 

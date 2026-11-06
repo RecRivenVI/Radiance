@@ -85,12 +85,15 @@ void UIModuleContext::writeMainDepth(std::shared_ptr<WorldPipelineContext> world
     auto frame = frameworkContext.lock();
     auto framework = frame->framework.lock();
     auto module = uiModule.lock();
-    auto worldBuffer = Renderer::instance().buffers()->worldUniformBuffer();
-    if (framework == nullptr || module == nullptr || worldBuffer == nullptr || worldBuffer->mappedPtr() == nullptr) {
-        return;
+    if (!framework || !module) return;
+    glm::mat4 projection;
+    if (frame->worldUniform) {
+        projection = Buffers::vulkanWorldProjection(frame->worldUniform->cameraProjMat);
+    } else {
+        auto worldBuffer = Renderer::instance().buffers(frame.get())->worldUniformBuffer();
+        if (!worldBuffer || !worldBuffer->mappedPtr()) return;
+        projection = static_cast<const vk::Data::WorldUBO *>(worldBuffer->mappedPtr())->cameraProjMat;
     }
-    auto *world = static_cast<vk::Data::WorldUBO *>(worldBuffer->mappedPtr());
-    const glm::mat4 &projection = world->cameraProjMat;
     MainDepthPushConstant push{
         .projection = {projection[2][2], projection[3][2], projection[2][3], projection[3][3]},
         .targetSize = {static_cast<float>(overlayDrawDepthStencilImage->width()),
@@ -126,16 +129,16 @@ void UIModuleContext::writeMainDepth(std::shared_ptr<WorldPipelineContext> world
     // World commands are recorded later but submitted before this overlay buffer.
     // PostRender exports first-hit depth in SHADER_READ_ONLY_OPTIMAL; its current
     // CPU layout belongs to the preceding frame and must not be restored here.
-    transition(frame->overlayCommandBuffer, destination, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+    transition(frame->recordingOverlayCommands(), destination, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 
-    frame->overlayCommandBuffer->beginRenderPass({
+    frame->recordingOverlayCommands()->beginRenderPass({
         .renderPass = module->mainDepthRenderPass_,
         .framebuffer = mainDepthFramebuffer,
         .renderAreaExtent = destination.extent,
     });
-    auto commands = frame->overlayCommandBuffer->vkCommandBuffer();
+    auto commands = frame->recordingOverlayCommands()->vkCommandBuffer();
     vkCmdBindPipeline(commands, VK_PIPELINE_BIND_POINT_GRAPHICS, module->mainDepthPipeline_->vkPipeline());
-    frame->overlayCommandBuffer->bindDescriptorTable(descriptor, VK_PIPELINE_BIND_POINT_GRAPHICS);
+    frame->recordingOverlayCommands()->bindDescriptorTable(descriptor, VK_PIPELINE_BIND_POINT_GRAPHICS);
     vkCmdPushConstants(commands, descriptor->vkPipelineLayout(), VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(push), &push);
     VkViewport viewport{
         0.0f, 0.0f, static_cast<float>(destination.extent.width), static_cast<float>(destination.extent.height),
@@ -150,8 +153,8 @@ void UIModuleContext::writeMainDepth(std::shared_ptr<WorldPipelineContext> world
     vkCmdSetDepthWriteEnable(commands, VK_TRUE);
     vkCmdSetDepthCompareOp(commands, VK_COMPARE_OP_ALWAYS);
     vkCmdSetStencilTestEnable(commands, VK_FALSE);
-    frame->overlayCommandBuffer->draw(3, 1);
-    frame->overlayCommandBuffer->endRenderPass();
+    frame->recordingOverlayCommands()->draw(3, 1);
+    frame->recordingOverlayCommands()->endRenderPass();
     overlayDrawDepthStencilImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     framework->frameResourceRetainer().retain(postRender->firstHitDepthImage);
     framework->frameResourceRetainer().retain(descriptor);
@@ -174,7 +177,7 @@ void UIModuleContext::captureMainAliases() {
     }
     if (!captureColor && !captureDepth) return;
 
-    auto commands = frame->overlayCommandBuffer;
+    auto commands = frame->recordingOverlayCommands();
     const uint32_t queue = frame->physicalDevice->mainQueueIndex();
     auto copy = [&](const std::shared_ptr<vk::DeviceLocalImage> &source,
                     const std::shared_ptr<vk::DeviceLocalImage> &destination, VkImageAspectFlags aspects,
@@ -237,7 +240,7 @@ void UIModuleContext::captureMainAliases() {
 }
 
 Framebuffers::Snapshot UIModuleContext::framebufferSnapshot(uint32_t target) const {
-    auto registry = Renderer::instance().framebuffers();
+    auto registry = Renderer::instance().framebuffers(frameworkContext.lock().get());
     if (!registry) throw std::runtime_error("Framebuffer registry is not initialized");
     auto snapshot = registry->snapshot(target);
     if (snapshot.framebufferId != 0) return snapshot;
@@ -272,7 +275,7 @@ VkExtent2D UIModuleContext::drawExtent() const {
     if (overlayMode == FRAMEBUFFER_DRAW) return activeFramebuffer.extent;
     if (overlayMode == DIAGRAM_DRAW && diagramDrawColorImage)
         return {diagramDrawColorImage->width(), diagramDrawColorImage->height()};
-    auto registry = Renderer::instance().framebuffers();
+    auto registry = Renderer::instance().framebuffers(frameworkContext.lock().get());
     if (registry && registry->drawFramebufferBinding() != 0) {
         auto snapshot = registry->snapshot(mcvr::framebuffer::DRAW_FRAMEBUFFER);
         if (snapshot.status == mcvr::framebuffer::FRAMEBUFFER_COMPLETE) return snapshot.extent;
@@ -302,14 +305,14 @@ void UIModuleContext::syncColorAttachments() {
     }
     std::vector<VkColorBlendEquationEXT> equations(count, effectiveEquation);
     std::vector<VkColorComponentFlags> masks(count, overlayColorWriteMask);
-    auto commands = context->overlayCommandBuffer->vkCommandBuffer();
+    auto commands = context->recordingOverlayCommands()->vkCommandBuffer();
     vkCmdSetColorBlendEnableEXT(commands, 0, count, enabled.data());
     vkCmdSetColorBlendEquationEXT(commands, 0, count, equations.data());
     vkCmdSetColorWriteMaskEXT(commands, 0, count, masks.data());
 }
 
 bool UIModuleContext::switchFramebufferDraw() {
-    auto registry = Renderer::instance().framebuffers();
+    auto registry = Renderer::instance().framebuffers(frameworkContext.lock().get());
     if (!registry || registry->drawFramebufferBinding() == 0) return false;
     if (overlayMode == FRAMEBUFFER_DRAW && activeFramebuffer.framebufferId == registry->drawFramebufferBinding())
         return true;
@@ -320,8 +323,7 @@ bool UIModuleContext::switchFramebufferDraw() {
     auto context = frameworkContext.lock();
     auto framework = context->framework.lock();
     auto module = uiModule.lock();
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(context->physicalDevice->vkPhysicalDevice(), &properties);
+    const auto properties = context->physicalDevice->properties();
     if (activeFramebuffer.drawBuffers.size() > properties.limits.maxColorAttachments)
         throw std::runtime_error("Framebuffer draw-buffer count exceeds the device limit");
     activeFramebufferPassKey = passKey(activeFramebuffer);
@@ -382,12 +384,12 @@ bool UIModuleContext::switchFramebufferDraw() {
     vk::FramebufferBuilder builder;
     auto &attachments = builder.beginAttachment();
     for (const auto &color : activeFramebuffer.colors) {
-        transition(context->overlayCommandBuffer, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        transition(context->recordingOverlayCommands(), color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         attachments.defineAttachment(color.image, color.viewIndex);
         framework->frameResourceRetainer().retain(color.image);
     }
     if (activeFramebuffer.depthStencil) {
-        transition(context->overlayCommandBuffer, *activeFramebuffer.depthStencil,
+        transition(context->recordingOverlayCommands(), *activeFramebuffer.depthStencil,
                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         attachments.defineAttachment(activeFramebuffer.depthStencil->image, activeFramebuffer.depthStencil->viewIndex);
         framework->frameResourceRetainer().retain(activeFramebuffer.depthStencil->image);
@@ -397,7 +399,7 @@ bool UIModuleContext::switchFramebufferDraw() {
         builder.build(framework->device(), pass, activeFramebuffer.extent.width, activeFramebuffer.extent.height);
     framework->frameResourceRetainer().retain(pass);
     framework->frameResourceRetainer().retain(activeFramebufferHandle);
-    context->overlayCommandBuffer->beginRenderPass({
+    context->recordingOverlayCommands()->beginRenderPass({
         .renderPass = pass,
         .framebuffer = activeFramebufferHandle,
         .renderAreaExtent = activeFramebuffer.extent,
@@ -436,11 +438,11 @@ std::shared_ptr<vk::DynamicGraphicsPipeline> UIModuleContext::framebufferPipelin
 void UIModuleContext::endFramebufferDraw() {
     if (overlayMode != FRAMEBUFFER_DRAW) return;
     auto context = frameworkContext.lock();
-    context->overlayCommandBuffer->endRenderPass();
+    context->recordingOverlayCommands()->endRenderPass();
     for (const auto &color : activeFramebuffer.colors)
-        transition(context->overlayCommandBuffer, color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+        transition(context->recordingOverlayCommands(), color, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     if (activeFramebuffer.depthStencil)
-        transition(context->overlayCommandBuffer, *activeFramebuffer.depthStencil,
+        transition(context->recordingOverlayCommands(), *activeFramebuffer.depthStencil,
                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     bool wroteMain =
         activeFramebuffer.depthStencil && activeFramebuffer.depthStencil->image == overlayDrawDepthStencilImage;
@@ -463,7 +465,7 @@ void UIModuleContext::clearMaskedFramebuffer(bool color, bool depth, bool stenci
 
     auto frame = frameworkContext.lock();
     auto module = uiModule.lock();
-    auto commands = frame->overlayCommandBuffer->vkCommandBuffer();
+    auto commands = frame->recordingOverlayCommands()->vkCommandBuffer();
     auto extent = drawExtent();
     VkRect2D scissor = overlayScissorEnabled ? overlayScissor : VkRect2D{{0, 0}, extent};
     if (scissor.extent.width == 0 || scissor.extent.height == 0) return;
@@ -526,7 +528,7 @@ void UIModuleContext::clearMaskedFramebuffer(bool color, bool depth, bool stenci
         vkCmdSetColorBlendEquationEXT(commands, 0, count, equations.data());
         vkCmdSetColorWriteMaskEXT(commands, 0, count, masks.data());
     }
-    frame->overlayCommandBuffer->draw(3, 1);
+    frame->recordingOverlayCommands()->draw(3, 1);
     syncToCommandBuffer();
 }
 
@@ -567,8 +569,8 @@ void UIModuleContext::blitFramebuffer(
         bool sameImage = src.image->vkImage() == dst.image->vkImage();
         auto sourceLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         auto destinationLayout = sameImage ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
-        transition(frame->overlayCommandBuffer, src, sourceLayout);
-        transition(frame->overlayCommandBuffer, dst, destinationLayout);
+        transition(frame->recordingOverlayCommands(), src, sourceLayout);
+        transition(frame->recordingOverlayCommands(), dst, destinationLayout);
         VkImageBlit region{};
         region.srcSubresource = {aspect, src.level, 0, 1};
         region.dstSubresource = {aspect, dst.level, 0, 1};
@@ -576,15 +578,15 @@ void UIModuleContext::blitFramebuffer(
         region.srcOffsets[1] = {sx1, static_cast<int>(source.extent.height) - sy1, 1};
         region.dstOffsets[0] = {dx0, static_cast<int>(destination.extent.height) - dy0, 0};
         region.dstOffsets[1] = {dx1, static_cast<int>(destination.extent.height) - dy1, 1};
-        vkCmdBlitImage(frame->overlayCommandBuffer->vkCommandBuffer(), src.image->vkImage(), sourceLayout,
+        vkCmdBlitImage(frame->recordingOverlayCommands()->vkCommandBuffer(), src.image->vkImage(), sourceLayout,
                        dst.image->vkImage(), destinationLayout, 1, &region,
                        filter == 0x2601 ? VK_FILTER_LINEAR : VK_FILTER_NEAREST);
         framework->frameResourceRetainer().retain(src.image);
         framework->frameResourceRetainer().retain(dst.image);
-        transition(frame->overlayCommandBuffer, src,
+        transition(frame->recordingOverlayCommands(), src,
                    aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
                                                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
-        transition(frame->overlayCommandBuffer, dst,
+        transition(frame->recordingOverlayCommands(), dst,
                    aspect == VK_IMAGE_ASPECT_COLOR_BIT ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL :
                                                          VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
     };

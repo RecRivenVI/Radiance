@@ -74,7 +74,10 @@ class NrdWrapper : public SharedObject<NrdWrapper> {
     NrdWrapper() = default;
     ~NrdWrapper();
 
-    void init(std::shared_ptr<Framework> framework, uint16_t width, uint16_t height);
+    void init(std::shared_ptr<Framework> framework,
+              uint16_t width,
+              uint16_t height,
+              nrd::Denoiser denoiser = nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR);
 
     void setUserPoolTexture(
         std::shared_ptr<std::array<std::shared_ptr<vk::DeviceLocalImage>, size_t(nrd::ResourceType::MAX_NUM)>>
@@ -85,7 +88,6 @@ class NrdWrapper : public SharedObject<NrdWrapper> {
 
     /* Denoiser specifc settings */
     void setREBLURSettings(const nrd::ReblurSettings &ssettings);
-    void setRELAXSettings(const nrd::RelaxSettings &settings);
 
     /* Perform the actual denoising. NRD will read from a number of 'IN_*' images in the user texture pool
      * and write to the 'OUT_' images specified by the denoiser.
@@ -116,6 +118,7 @@ class NrdWrapper : public SharedObject<NrdWrapper> {
 
     std::weak_ptr<Framework> framework_;
     nrd::Instance *m_instance = nullptr;
+    nrd::Denoiser denoiser_ = nrd::Denoiser::REBLUR_DIFFUSE_SPECULAR;
 
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> m_permanentTextures;
     std::vector<std::shared_ptr<vk::DeviceLocalImage>> m_transientTextures;

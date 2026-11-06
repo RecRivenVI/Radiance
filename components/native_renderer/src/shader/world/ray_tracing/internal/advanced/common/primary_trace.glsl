@@ -36,6 +36,7 @@ void initMainRay(vec3 origin, vec3 direction, uint seed, float coneSpread, out M
     ray.coneSpread = coneSpread;
     ray.stateBits = 0u;
     rayInitializeMedium(ray, skyUBO.cameraSubmersionType == 1u ? 1.333 : 1.0);
+    initializeCameraMedium(ray, skyUBO);
     raySetBounce(ray, 0u);
     raySetDirectImage(ray, true);
     raySetStop(ray, false);
@@ -97,7 +98,7 @@ void tracePrimary(vec3 eyePos,
     firstHit.worldPos = vec3(0.0);
 
     bool surfaceDepthSampled = false;
-    for (int step = 0; ; ++step) {
+    for (int step = 0; step < RADIANCE_FREE_CONTINUATIONS; ++step) {
         if (step > 0) {
             rayAdvanceQuery(rayState, mediumHistory);
             raySetCoverageCapture(rayState, false);
@@ -113,7 +114,7 @@ void tracePrimary(vec3 eyePos,
         vec3 tracedDirection = rayState.direction;
         mainRay = rayState;
         mainRay.stateBits = uiPrimaryTraceState(mainRay.stateBits, uint(step));
-        traceRayEXT(topLevelAS, queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, (isHand != 0 && step == 0 ? len : imagingTraceLimit(mainRay, len)), 0);
+        traceImagingRay( queryTraversalFlags(rayQueryPurpose(mainRay), rayFlags), mask, 1, 1, missId, mainRay.origin, 0.0, mainRay.direction, (isHand != 0 && step == 0 ? len : imagingTraceLimit(mainRay, len)), 0);
         mainRay.stateBits &= ~rayUiPrimaryBit;
         rayState = mainRay;
 

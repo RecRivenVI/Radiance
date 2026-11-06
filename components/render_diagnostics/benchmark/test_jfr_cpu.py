@@ -1,8 +1,41 @@
 import unittest
-from jfr_cpu import summarize, duration_seconds
+from jfr_cpu import summarize, duration_seconds, attribute_frames
 
 
 class JfrCpuTest(unittest.TestCase):
+    def test_frame_clock_join_keeps_other_threads_and_nested_events_separate(self):
+        thread = dict(javaThreadId=7, osThreadId=17)
+        def event(kind, start, **values):
+            return dict(type=kind, values=dict(startTime='2026-11-04T00:00:00.'+start+'Z', **values))
+        events = [event('radiance.RenderFrame', '000', duration='PT0.2S', measuredWallNs='PT0.2S', frameToken=31, eventThread=thread),
+                  event('jdk.ExecutionSample', '050', sampledThread=thread, stackTrace=dict(frames=[])),
+                  event('jdk.ExecutionSample', '060', sampledThread=dict(javaThreadId=8, osThreadId=18)),
+                  event('jdk.ExecutionSample', '200', sampledThread=thread),
+                  event('jdk.ClassLoad', '190', duration='PT0.05S', eventThread=thread, loadedClass=dict(name='Renderer')),
+                  event('jdk.GCPhasePause', '010', duration='PT0.01S'),
+                  event('jdk.SafepointBegin', '010', duration='PT0.01S')]
+        rows = attribute_frames(events)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]['frame'], 31)
+        self.assertEqual(rows[0]['renderSamples'], 1)
+        self.assertEqual(len(rows[0]['overlappingEvents']), 3)
+        loaded = next(e for e in rows[0]['overlappingEvents'] if e['event'] == 'jdk.ClassLoad')
+        self.assertAlmostEqual(loaded['overlapMs'], 10, places=2)
+        self.assertEqual(loaded['className'], 'Renderer')
+
+    def test_parallel_compilations_do_not_hide_stop_the_world_events(self):
+        start = '2026-11-04T00:00:00Z'
+        events = [dict(type='radiance.RenderFrame', values=dict(
+            startTime=start, duration=.2, measuredWallNs=200000000, frameToken=9,
+            eventThread=dict(javaThreadId=7, osThreadId=17)))]
+        events += [dict(type='jdk.Compilation', values=dict(
+            startTime=start, duration=.15, eventThread=dict(javaThreadId=8, osThreadId=18)))
+                   for _ in range(30)]
+        events.append(dict(type='jdk.GCPhasePause', values=dict(startTime=start, duration=.01)))
+        row = attribute_frames(events)[0]
+        self.assertEqual(len(row['overlappingCompilations']), 8)
+        self.assertEqual([e['event'] for e in row['overlappingEvents']], ['jdk.GCPhasePause'])
+
     def test_native_entity_build_is_not_misreported_as_java_entity_rendering(self):
         def frame(owner, method):
             return dict(method=dict(type=dict(name=owner), name=method))

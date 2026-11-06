@@ -32,6 +32,9 @@ public final class BakedModelTakeover {
     private static final List<Version> VERSIONS = new ArrayList<>();
     private static final int CAPACITY = 512;
     private static final long BYTE_CAPACITY = 32L * 1024 * 1024;
+    private static final boolean REUSE_UNTINTED_REQUEST =
+            !"0".equals(System.getenv("RADIANCE_J2_REUSE_UNTINTED_REQUEST"));
+    private static final Tint UNTINTED_REQUEST = quad -> -1;
     private static long frame, bytes, sourceBytes, registrations, builds, draws, declines;
 
     private BakedModelTakeover() {}
@@ -45,6 +48,7 @@ public final class BakedModelTakeover {
         VERSIONS.removeIf(
                 v -> {
                     if (frame - v.used <= 120) return false;
+                    v.source.versions.remove(v);
                     bytes -= v.bytes;
                     v.geometry.close();
                     return true;
@@ -114,23 +118,16 @@ public final class BakedModelTakeover {
             int overlay,
             PoseStack.Pose pose,
             VertexConsumer consumer) {
-        if (submit(
-                model,
-                pose,
-                consumer,
-                light,
-                overlay,
-                true,
-                quad ->
-                        !item.isEmpty() && quad.isTinted()
-                                ? Minecraft.getInstance()
-                                        .getItemColors()
-                                        .getColor(item, quad.getTintIndex())
-                                : -1,
-                1,
-                1,
-                1,
-                true)) return;
+        Tint tint =
+                item.isEmpty()
+                        ? UNTINTED_REQUEST
+                        : quad ->
+                                quad.isTinted()
+                                        ? Minecraft.getInstance()
+                                                .getItemColors()
+                                                .getColor(item, quad.getTintIndex())
+                                        : -1;
+        if (submit(model, pose, consumer, light, overlay, true, tint, 1, 1, 1, true)) return;
         // Unsupported affine/glint consumers still use the immutable published quad definition;
         // no renderer or model-output callback is invoked by this execution path.
         Source source = SOURCES.get(model);
@@ -143,19 +140,21 @@ public final class BakedModelTakeover {
             }
         }
         source.used = frame;
-        var colors = new ArrayList<Integer>(source.quads.size());
-        for (var quad : source.quads)
-            colors.add(
-                    !item.isEmpty() && quad.isTinted()
-                            ? Minecraft.getInstance()
-                                    .getItemColors()
-                                    .getColor(item, quad.getTintIndex())
-                            : -1);
-        emit(
-                source,
-                new Appearance(light, overlay, true, 1, 1, 1, List.copyOf(colors)),
-                consumer,
-                pose);
+        List<Integer> tints;
+        if (REUSE_UNTINTED_REQUEST && (item.isEmpty() || !source.hasTintedQuads)) {
+            tints = source.untinted;
+        } else {
+            var colors = new ArrayList<Integer>(source.quads.size());
+            for (var quad : source.quads)
+                colors.add(
+                        !item.isEmpty() && quad.isTinted()
+                                ? Minecraft.getInstance()
+                                        .getItemColors()
+                                        .getColor(item, quad.getTintIndex())
+                                : -1);
+            tints = List.copyOf(colors);
+        }
+        emit(source, new Appearance(light, overlay, true, 1, 1, 1, tints), consumer, pose);
     }
 
     public static boolean item(
@@ -165,23 +164,16 @@ public final class BakedModelTakeover {
             int overlay,
             PoseStack.Pose pose,
             VertexConsumer consumer) {
-        return submit(
-                model,
-                pose,
-                consumer,
-                light,
-                overlay,
-                true,
-                quad ->
-                        !item.isEmpty() && quad.isTinted()
-                                ? Minecraft.getInstance()
-                                        .getItemColors()
-                                        .getColor(item, quad.getTintIndex())
-                                : -1,
-                1,
-                1,
-                1,
-                false);
+        Tint tint =
+                item.isEmpty()
+                        ? UNTINTED_REQUEST
+                        : quad ->
+                                quad.isTinted()
+                                        ? Minecraft.getInstance()
+                                                .getItemColors()
+                                                .getColor(item, quad.getTintIndex())
+                                        : -1;
+        return submit(model, pose, consumer, light, overlay, true, tint, 1, 1, 1, false);
     }
 
     public static boolean block(
@@ -200,7 +192,7 @@ public final class BakedModelTakeover {
                 light,
                 overlay,
                 false,
-                quad -> -1,
+                UNTINTED_REQUEST,
                 Mth.clamp(red, 0, 1),
                 Mth.clamp(green, 0, 1),
                 Mth.clamp(blue, 0, 1),
@@ -220,8 +212,17 @@ public final class BakedModelTakeover {
         green = Mth.clamp(green, 0, 1);
         blue = Mth.clamp(blue, 0, 1);
         if (submit(
-                model, pose, consumer, light, overlay, false, quad -> -1, red, green, blue, true))
-            return;
+                model,
+                pose,
+                consumer,
+                light,
+                overlay,
+                false,
+                UNTINTED_REQUEST,
+                red,
+                green,
+                blue,
+                true)) return;
         Source source = SOURCES.get(model);
         if (source == null) {
             source = new Source(model, BYTE_CAPACITY);
@@ -234,14 +235,7 @@ public final class BakedModelTakeover {
         source.used = frame;
         emit(
                 source,
-                new Appearance(
-                        light,
-                        overlay,
-                        false,
-                        red,
-                        green,
-                        blue,
-                        java.util.Collections.nCopies(source.quads.size(), -1)),
+                new Appearance(light, overlay, false, red, green, blue, source.untinted),
                 consumer,
                 pose);
     }
@@ -253,6 +247,9 @@ public final class BakedModelTakeover {
 
     static final class Source {
         final List<BakedQuad> quads;
+        final List<Integer> untinted;
+        final boolean hasTintedQuads;
+        final List<Version> versions = new ArrayList<>(2);
         final long bytes;
         long used;
 
@@ -282,6 +279,15 @@ public final class BakedModelTakeover {
                                                     q.isShade(),
                                                     q.hasAmbientOcclusion()))
                             .toList();
+            boolean tinted = false;
+            for (var q : quads) {
+                if (q.isTinted()) {
+                    tinted = true;
+                    break;
+                }
+            }
+            hasTintedQuads = tinted;
+            untinted = Collections.nCopies(quads.size(), -1);
             bytes = (long) quads.size() * 256;
         }
 
@@ -384,17 +390,21 @@ public final class BakedModelTakeover {
         }
         source.used = frame;
         if (source.quads.isEmpty()) return true;
-        List<Integer> tints = new ArrayList<>(source.quads.size());
-        // Keep the original number and order of item-colour callbacks. Only appearance
-        // scalars are inspected here; vertex arrays and recipe hashes are cold-path work.
-        for (var quad : source.quads) tints.add(tint.colour(quad));
-        var appearance =
-                new Appearance(light, overlay, existing, red, green, blue, List.copyOf(tints));
+        List<Integer> tints;
+        if (REUSE_UNTINTED_REQUEST && (tint == UNTINTED_REQUEST || !source.hasTintedQuads)) {
+            tints = source.untinted;
+        } else {
+            // Preserve the count and order of callbacks supplied by item sources.
+            var colours = new ArrayList<Integer>(source.quads.size());
+            for (var quad : source.quads) colours.add(tint.colour(quad));
+            tints = List.copyOf(colours);
+        }
+        var appearance = new Appearance(light, overlay, existing, red, green, blue, tints);
         Version found = null;
         var material = PBRMaterialContext.snapshot();
-        for (var version : VERSIONS) {
-            if (version.source == source
-                    && version.geometry.layer == pbr.rigidLayer
+        for (int i = 0, n = source.versions.size(); i < n; i++) {
+            var version = source.versions.get(i);
+            if (version.geometry.layer == pbr.rigidLayer
                     && version.geometry.texture.equals(texture)
                     && version.glint == glint
                     && java.util.Objects.equals(version.glintTexture, glintTexture)
@@ -423,6 +433,7 @@ public final class BakedModelTakeover {
                     return true;
                 }
                 VERSIONS.remove(oldest);
+                oldest.source.versions.remove(oldest);
                 bytes -= oldest.bytes;
                 oldest.geometry.close();
             }
@@ -438,6 +449,7 @@ public final class BakedModelTakeover {
                             glintTexture);
             found = new Version(source, appearance, geometry, glint, glintTexture);
             VERSIONS.add(found);
+            source.versions.add(found);
             bytes += required;
             ++builds;
         }

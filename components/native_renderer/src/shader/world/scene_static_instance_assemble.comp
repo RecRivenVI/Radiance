@@ -1,0 +1,39 @@
+#version 460
+#extension GL_EXT_buffer_reference2 : require
+
+layout(local_size_x = 64) in;
+
+layout(buffer_reference, std430, buffer_reference_align = 16) buffer TlasInstances {
+    uint words[];
+};
+layout(buffer_reference, std430, buffer_reference_align = 16) readonly buffer StaticPages {
+    uvec4 pages[];
+};
+layout(push_constant, std430) uniform Assembly {
+    TlasInstances instances;
+    StaticPages staticPages;
+    double cameraX, cameraY, cameraZ;
+    uint firstPage;
+    uint instanceBase;
+    uint groupBase;
+} assembly;
+
+void main() {
+    uvec4 page = assembly.staticPages.pages[assembly.firstPage + gl_WorkGroupID.x];
+    for (uint local = gl_LocalInvocationID.x; local < page.y; local += gl_WorkGroupSize.x) {
+        uint index = assembly.instanceBase + page.x + local;
+        uint base = index * 16u;
+        // Packed static rows contain exact integer origins until this pass runs.
+        dvec3 origin = dvec3(int(assembly.instances.words[base + 3]),
+                            int(assembly.instances.words[base + 7]),
+                            int(assembly.instances.words[base + 11]));
+        vec3 translation = vec3(origin - dvec3(assembly.cameraX, assembly.cameraY, assembly.cameraZ));
+        assembly.instances.words[base + 3] = floatBitsToUint(translation.x);
+        assembly.instances.words[base + 7] = floatBitsToUint(translation.y);
+        assembly.instances.words[base + 11] = floatBitsToUint(translation.z);
+        const uint low24 = 0x00ffffffu;
+        assembly.instances.words[base + 12] = (assembly.instances.words[base + 12] & ~low24) | (index & low24);
+        uint sbt = assembly.instances.words[base + 13];
+        assembly.instances.words[base + 13] = (sbt & ~low24) | ((sbt + assembly.groupBase + page.z) & low24);
+    }
+}

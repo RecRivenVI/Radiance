@@ -1,4 +1,4 @@
-"""Expected effective settings for the owned, built-in Vanilla PT city baseline."""
+"""Expected effective settings for the owned Vanilla PT comparison fixtures."""
 import io
 import json
 from pathlib import Path
@@ -24,10 +24,16 @@ def expectations(core, client):
     if text.startswith('!!com.radiance.client.pipeline.Pipeline$PipelineConfigStorage'):
         text = text.split('\n',1)[1]
     pipeline = yaml.safe_load(text)
-    if pipeline['mode'] != 'PRESET' or pipeline['presetName'] != 'render_pipeline.preset.rt_dlss':
-        raise ValueError('This city baseline requires the reviewed built-in RT+DLSS preset')
+    if pipeline['mode'] != 'PRESET' or pipeline['presetName'] not in (
+        'render_pipeline.preset.rt_dlss', 'render_pipeline.preset.rt_nrd_dlss',
+    ):
+        raise ValueError('Expected a built-in RT+DLSS RR or RT+NRD+DLSS SR preset')
     modules = {m['entryName']:{a['name']:str(a['value']) for a in m.get('attributes',[])}
                for m in pipeline['presetModules']}
+    if pipeline['presetName'] == 'render_pipeline.preset.rt_nrd_dlss':
+        required = {'render_pipeline.module.nrd.name', 'render_pipeline.module.dlss_sr.name'}
+        if not required <= modules.keys() or 'render_pipeline.module.dlss.name' in modules:
+            raise ValueError('The NRD fixture must record NRD and DLSS SR settings explicitly')
     ray = modules['render_pipeline.module.ray_tracing.name']
     if ray['render_pipeline.module.ray_tracing.attribute.shader_pack_path'] not in ('','shaders/world/ray_tracing/vanilla-pt.zip'):
         raise ValueError('This baseline does not interpret custom shader packs')

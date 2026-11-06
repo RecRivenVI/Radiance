@@ -2,11 +2,15 @@
 #include "com_radiance_client_proxy_world_ChunkProxy.h"
 #include <glm/gtc/type_ptr.hpp>
 
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/render/chunks.hpp"
 #include "core/render/renderer.hpp"
+#include "core/render/render_framework.hpp"
 #include "core/middleware/jni_exception.hpp"
 
+#include <cstdlib>
 #include <iostream>
+#include <string_view>
 
 extern "C" JNIEXPORT jlong JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_beginHandoffNative(JNIEnv *env,
                                                                                                       jclass) {
@@ -96,6 +100,24 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_completeB
 }
 
 JNIEXPORT jlong JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_advanceBuildsNative(JNIEnv *env, jclass) {
+    static const bool skipIdle = [] {
+        const auto *value = std::getenv("RADIANCE_IDLE_SECTION_ADMISSION");
+        return value && std::string_view(value) == "1";
+    }();
+    if (skipIdle && mcvr::FrameExecution::producerWorldActive()) {
+        const bool idle = jni::invoke<bool>(
+            env, "Inspect idle section admission", false,
+            [] {
+                auto world = Renderer::instance().inputWorld();
+                return world && world->chunks()->canSkipBuildAdmission();
+            },
+            jni::BoundaryPolicy::producerWorld);
+        if (idle) {
+            if (mcvr::profile::enabled()) mcvr::profile::emit(mcvr::profile::frame, 5, "chunk.admission-idle", 1, 0);
+            return 0;
+        }
+        if (env->ExceptionCheck()) return 0;
+    }
     return jni::invoke<jlong>(env, "Chunk pipeline admission budget", 0, [&]() -> jlong {
         auto world = Renderer::instance().world();
         if (!world) return 0;
@@ -228,11 +250,18 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_markChunk
                                                                                             jclass,
                                                                                             jlong index,
                                                                                             jlong generation) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.world.ChunkProxy.markChunkDirtyNative", [&] {
-        auto world = Renderer::instance().world();
-        if (world == nullptr) return;
-        world->chunks()->markChunkDirty(index, generation);
-    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.world.ChunkProxy.markChunkDirtyNative",
+        [&] {
+            auto &renderer = Renderer::instance();
+            auto world = renderer.inputWorld();
+            if (!world) return;
+            auto chunks = world->chunks();
+            if (!renderer.framework()->stageWorldUpdate(
+                    [chunks, index, generation] { chunks->markChunkDirty(index, generation); }))
+                chunks->markChunkDirty(index, generation);
+        },
+        jni::BoundaryPolicy::producerWorld);
 }
 
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_relocateSingle(
@@ -248,11 +277,18 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_invalidat
                                                                                         jclass,
                                                                                         jlong index,
                                                                                         jlong generation) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.world.ChunkProxy.invalidateSingle", [&] {
-        auto world = Renderer::instance().world();
-        if (world == nullptr) return;
-        world->chunks()->invalidateChunk(index, generation);
-    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.world.ChunkProxy.invalidateSingle",
+        [&] {
+            auto &renderer = Renderer::instance();
+            auto world = renderer.inputWorld();
+            if (!world) return;
+            auto chunks = world->chunks();
+            if (!renderer.framework()->stageWorldUpdate(
+                    [chunks, index, generation] { chunks->invalidateChunk(index, generation); }))
+                chunks->invalidateChunk(index, generation);
+        },
+        jni::BoundaryPolicy::producerWorld);
 }
 
 JNIEXPORT jstring JNICALL Java_com_radiance_client_proxy_world_ChunkProxy_drainUpdateTraceNative(JNIEnv *env, jclass) {

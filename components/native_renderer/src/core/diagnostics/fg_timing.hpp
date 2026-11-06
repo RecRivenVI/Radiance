@@ -17,6 +17,9 @@ enum Metric {
     GpuFrame,
     GpuPrepare,
     GpuEvaluate,
+    GpuFrameGap,
+    PcLatency,
+    SimulationToGpu,
     Count
 };
 inline Clock::time_point start() noexcept {

@@ -2,6 +2,7 @@
 #include "core/failure_state.hpp"
 #include "core/diagnostics/frame_profile.hpp"
 #include "core/vulkan/sbt.hpp"
+#include "core/diagnostics/table_delta.hpp"
 #include "core/render/render_framework.hpp"
 #include "core/render/renderer.hpp"
 
@@ -94,12 +95,20 @@ void vk::SBT::uploadStaticSBT(std::shared_ptr<CommandBuffer> commandBuffer) {
 }
 
 void vk::SBT::setupHitSBT(const std::shared_ptr<const std::vector<uint32_t>> &hitGroupIndices,
-                          std::shared_ptr<CommandBuffer> commandBuffer) {
+                          std::shared_ptr<CommandBuffer> commandBuffer,
+                          const std::string &auditName,
+                          std::span<const mcvr::HitRange> stable,
+                          std::span<const uint32_t> palette) {
     if (!hitGroupIndices || hitGroupIndices->empty()) {
         mcvr::log::error("Sbt") << "Hit group should contains something!" << std::endl;
         mcvr::failure::invariant("SBT::setupHitSBT", "hit group list is empty");
     }
     const VkDeviceSize rhitSBTSize = mcvr::hitTableBytes(hitGroupIndices->size(), alignedHandleSize_);
+    if (mcvr::profile::flowAuditEnabled()) {
+        mcvr::profile::observeTable(mcvr::sceneTable<uint32_t>(hitTable_.observedRecords()),
+                                    mcvr::sceneTable<uint32_t>(*hitGroupIndices), sizeof(uint32_t),
+                                    "sbt.records/" + auditName);
+    }
 
     if (mcvr::profile::contentAuditEnabled()) {
         mcvr::profile::Scope observed("pt.sbt.content-check");
@@ -119,16 +128,33 @@ void vk::SBT::setupHitSBT(const std::shared_ptr<const std::vector<uint32_t>> &hi
     const auto selection = hitTable_.acquire(
         hitGroupIndices,
         [&] {
-            auto packed = mcvr::packHitTable(*hitGroupIndices, shaderHandleStorage_, handleSize_, alignedHandleSize_,
-                                             size_t{1} + missCount_, hitCount_);
-            auto buffer = DeviceLocalBuffer::create(vma_, device_, false, rhitSBTSize,
-                                                    VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
-                                                        VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
-                                                    0, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, baseAlignment_);
-            buffer->uploadToStagingBuffer(packed.data());
+            std::shared_ptr<DeviceLocalBuffer> buffer;
+            {
+                mcvr::profile::Scope allocation("pt.sbt.allocation");
+                buffer = DeviceLocalBuffer::create(vma_, device_, false, rhitSBTSize,
+                                                   VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR |
+                                                       VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                                   0, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, baseAlignment_);
+            }
+            {
+                mcvr::profile::Scope staging("pt.sbt.staging-write");
+                buffer->writeToStagingBuffer([&](void *destination, size_t size) {
+                    mcvr::profile::Scope packing("pt.sbt.pack-handles");
+                    packedHitBlocks_.pack({static_cast<uint8_t *>(destination), size}, *hitGroupIndices, stable,
+                                          palette, shaderHandleStorage_, handleSize_, alignedHandleSize_,
+                                          size_t{1} + missCount_, hitCount_);
+                });
+            }
+            if (mcvr::profile::enabled()) {
+                mcvr::profile::emit(mcvr::profile::frame, 5, "sbt.pack.generated", 1, packedHitBlocks_.generatedBytes);
+                mcvr::profile::emit(mcvr::profile::frame, 5, "sbt.pack.reused", 1, packedHitBlocks_.reusedBytes);
+                mcvr::profile::emit(mcvr::profile::frame, 5, "sbt.pack.cpu-capacity", 1,
+                                    packedHitBlocks_.cachedBytes());
+            }
             return buffer;
         },
         [&](const auto &buffer) {
+            mcvr::profile::Scope upload("pt.sbt.upload-record");
             buffer->uploadToBuffer(commandBuffer);
             commandBuffer->barriersBufferImage({vk::CommandBuffer::BufferMemoryBarrier{
                                                    .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,

@@ -8,6 +8,7 @@
 #include "core/vulkan/render_pass.hpp"
 #include "core/vulkan/shader.hpp"
 
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -344,12 +345,29 @@ vk::RayTracingPipelineBuilder::definePipelineLayout(std::shared_ptr<DescriptorTa
 std::shared_ptr<vk::RayTracingPipeline> vk::RayTracingPipelineBuilder::build(std::shared_ptr<Device> device) {
     VkRayTracingPipelineCreateInfoKHR pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_RAY_TRACING_PIPELINE_CREATE_INFO_KHR;
+    if (device->opacityMicromapEnabled()) pipelineInfo.flags = VK_PIPELINE_CREATE_RAY_TRACING_OPACITY_MICROMAP_BIT_EXT;
     pipelineInfo.stageCount = shaderStageBuilder_.shaderStageCreateInfos.size();
     pipelineInfo.pStages = shaderStageBuilder_.shaderStageCreateInfos.data();
     pipelineInfo.groupCount = shaderGroupBuilder_.shaderGroupCreateInfos.size();
     pipelineInfo.pGroups = shaderGroupBuilder_.shaderGroupCreateInfos.data();
     pipelineInfo.layout = pipelineLayout_;
     pipelineInfo.maxPipelineRayRecursionDepth = 3;
+    // Experiment only: the stack reserved per path grows with the declared depth. A pack whose
+    // deepest chain is ray generation, hit, shadow can state 2 here to measure that reserve.
+    if (const char *depth = std::getenv("RADIANCE_RT_RECURSION_DEPTH");
+        depth != nullptr && depth[0] >= '1' && depth[0] <= '3' && depth[1] == '\0') {
+        pipelineInfo.maxPipelineRayRecursionDepth = static_cast<uint32_t>(depth[0] - '0');
+    }
+
+    // Diagnosis only: RADIANCE_RT_STACK_BYTES replaces the driver's default pipeline stack size
+    // with an explicit one (set again before every trace in CommandBuffer::raytracing).
+    static const VkDynamicState stackState = VK_DYNAMIC_STATE_RAY_TRACING_PIPELINE_STACK_SIZE_KHR;
+    VkPipelineDynamicStateCreateInfo dynamicInfo{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
+    if (const char *stack = std::getenv("RADIANCE_RT_STACK_BYTES"); stack != nullptr && std::atoi(stack) > 0) {
+        dynamicInfo.dynamicStateCount = 1;
+        dynamicInfo.pDynamicStates = &stackState;
+        pipelineInfo.pDynamicState = &dynamicInfo;
+    }
 
     VkPipeline rayTracingPipeline;
     if (const auto result =
@@ -357,6 +375,27 @@ std::shared_ptr<vk::RayTracingPipeline> vk::RayTracingPipelineBuilder::build(std
         result != VK_SUCCESS) {
         mcvr::log::error("Pipeline") << "Cannot build ray tracing pipeline" << std::endl;
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateRayTracingPipelinesKHR");
+    }
+
+    // Diagnosis only: RADIANCE_RT_STACK_REPORT logs the driver's per-group stack sizes.
+    if (std::getenv("RADIANCE_RT_STACK_REPORT") != nullptr) {
+        auto query = reinterpret_cast<PFN_vkGetRayTracingShaderGroupStackSizeKHR>(
+            vkGetDeviceProcAddr(device->vkDevice(), "vkGetRayTracingShaderGroupStackSizeKHR"));
+        for (uint32_t g = 0; query != nullptr && g < pipelineInfo.groupCount; ++g) {
+            const auto &group = pipelineInfo.pGroups[g];
+            auto size = [&](uint32_t shader, VkShaderGroupShaderKHR which) -> long long {
+                return shader == VK_SHADER_UNUSED_KHR ?
+                           -1 :
+                           (long long)query(device->vkDevice(), rayTracingPipeline, g, which);
+            };
+            mcvr::log::info("RtStack") << "group=" << g << " type=" << group.type << " general=" << group.generalShader
+                                       << " chit=" << group.closestHitShader << " ahit=" << group.anyHitShader
+                                       << " stackGeneral="
+                                       << size(group.generalShader, VK_SHADER_GROUP_SHADER_GENERAL_KHR) << " stackChit="
+                                       << size(group.closestHitShader, VK_SHADER_GROUP_SHADER_CLOSEST_HIT_KHR)
+                                       << " stackAhit=" << size(group.anyHitShader, VK_SHADER_GROUP_SHADER_ANY_HIT_KHR)
+                                       << " depth=" << pipelineInfo.maxPipelineRayRecursionDepth << std::endl;
+        }
     }
 
     auto result = RayTracingPipeline::create(device, rayTracingPipeline);

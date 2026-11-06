@@ -27,6 +27,16 @@ public final class VanillaSignDefinitionMixins {
         @Shadow @Final private Map<WoodType, SignRenderer.SignModel> signModels;
         @Shadow @Final private Font font;
 
+        public boolean radiance$restable(BlockEntity value) {
+            // A glowing outline is selected by camera distance, which no source event reports.
+            var sign = (SignBlockEntity) value;
+            return !sign.getFrontText().hasGlowingText() && !sign.getBackText().hasGlowingText();
+        }
+
+        public Object radiance$stableInputs(BlockEntity value, float partial) {
+            return VanillaSignRequests.stableInputs((SignBlockEntity) value);
+        }
+
         @Shadow
         public abstract float getSignModelRenderScale();
 

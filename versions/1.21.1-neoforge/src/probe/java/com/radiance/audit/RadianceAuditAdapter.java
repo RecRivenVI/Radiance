@@ -46,6 +46,33 @@ final class RadianceAuditAdapter implements RenderAuditSink {
                                                                 + "\n");
                                                 java.nio.file.Files.writeString(
                                                         java.nio.file.Path.of(result)
+                                                                .resolve("block-entity-rest.json"),
+                                                        new com.google.gson.Gson()
+                                                                        .toJson(
+                                                                                java.util.Map.of(
+                                                                                        "layout",
+                                                                                        "sections,restingSections,restingInstances,skippedMembersLastFrame,pollsPassed,pollsFailed,eventWakes,retains,releases",
+                                                                                        "counters",
+                                                                                        com.radiance
+                                                                                                .api
+                                                                                                .render
+                                                                                                .BlockEntityPublications
+                                                                                                .restCounters(),
+                                                                                        "blockers",
+                                                                                        com.radiance
+                                                                                                .api
+                                                                                                .render
+                                                                                                .BlockEntityPublications
+                                                                                                .restBlockers(),
+                                                                                        "pollCaught",
+                                                                                        com.radiance
+                                                                                                .api
+                                                                                                .render
+                                                                                                .BlockEntityPublications
+                                                                                                .restMisses()))
+                                                                + "\n");
+                                                java.nio.file.Files.writeString(
+                                                        java.nio.file.Path.of(result)
                                                                 .resolve("rigid-packing.json"),
                                                         new com.google.gson.Gson()
                                                                         .toJson(

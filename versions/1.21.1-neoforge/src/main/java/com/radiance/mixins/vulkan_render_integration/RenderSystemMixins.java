@@ -50,7 +50,7 @@ public abstract class RenderSystemMixins {
     @Inject(method = "flipFrame(J)V", at = @At("HEAD"))
     private static void prepareNextInputFrame(
             long window, org.spongepowered.asm.mixin.injection.callback.CallbackInfo ci) {
-        com.radiance.client.proxy.vulkan.RendererProxy.streamlineFrameEvent(0);
+        RendererProxy.prepareInputFrame();
     }
 
     @Redirect(

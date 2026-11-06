@@ -36,7 +36,7 @@ foreach(WORLD_RGEN IN ITEMS "${VANILLA_WORLD_RGEN}" "${ADVANCED_WORLD_RGEN}")
     foreach(REQUIRED_MASK IN ITEMS
             "receiverQueryMask(purpose, worldUBO.isFirstPerson > 0"
             "cacheUpdateMask(rayQueryPurpose(mainRay), worldUBO.isFirstPerson > 0)"
-            "if (b != 0) rayAdvanceQuery(mainRay, mediumHistory);")
+            "if (b != 0 && !rayAdvanceQuery(mainRay, mediumHistory)) break;")
         string(FIND "${WORLD_RGEN_TEXT}" "${REQUIRED_MASK}" MASK_INDEX)
         if(MASK_INDEX EQUAL -1)
             message(FATAL_ERROR "Particle queries bypass the shared channel policy: ${WORLD_RGEN}")

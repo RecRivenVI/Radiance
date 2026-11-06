@@ -1,0 +1,18 @@
+#version 460
+layout(local_size_x = 16, local_size_y = 16) in;
+layout(set = 0, binding = 0, rgba16f) uniform readonly image2D noisyColor;
+layout(set = 0, binding = 1, rgba16f) uniform readonly image2D refraction;
+layout(set = 0, binding = 2, rgba16f) uniform writeonly image2D colorBeforeTransparency;
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(noisyColor)))) return;
+    vec4 color = imageLoad(noisyColor, pixel);
+    vec4 layer = imageLoad(refraction, pixel);
+    // Only the explicit alpha-coverage layer exposes its unweighted background.
+    // Physical transmission is not an alpha-composited overlay.
+    if (layer.a > 2.0 && layer.a < 3.0) {
+        float remaining = 3.0 - layer.a;
+        if (remaining > 1e-4) color.rgb = layer.rgb / remaining;
+    }
+    imageStore(colorBeforeTransparency, pixel, color);
+}

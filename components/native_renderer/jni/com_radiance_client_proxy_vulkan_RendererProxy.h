@@ -31,6 +31,14 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_strea
 
 /*
  * Class:     com_radiance_client_proxy_vulkan_RendererProxy
+ * Method:    tryPrepareInputFrame
+ * Signature: (II)Z
+ */
+JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_tryPrepareInputFrame
+  (JNIEnv *, jclass, jint, jint);
+
+/*
+ * Class:     com_radiance_client_proxy_vulkan_RendererProxy
  * Method:    initFolderPath
  * Signature: (Ljava/lang/String;)V
  */
@@ -99,6 +107,14 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_submi
  * Signature: (Z)I
  */
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_presentNative
+  (JNIEnv *, jclass, jboolean);
+
+/*
+ * Class:     com_radiance_client_proxy_vulkan_RendererProxy
+ * Method:    executeFrameNative
+ * Signature: (Z)I
+ */
+JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_RendererProxy_executeFrameNative
   (JNIEnv *, jclass, jboolean);
 
 /*

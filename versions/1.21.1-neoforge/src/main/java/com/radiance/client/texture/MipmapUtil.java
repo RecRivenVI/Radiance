@@ -69,7 +69,8 @@ public class MipmapUtil {
         return currentSource;
     }
 
-    public static NativeImage[] buildMipmapChain(NativeImage original) {
+    public static NativeImage[] buildMipmapChain(
+            NativeImage original, AuxiliaryTextures texture, NativeImage base) {
         int maxLevel = 0;
         int width = original.getWidth();
         int height = original.getHeight();
@@ -81,7 +82,10 @@ public class MipmapUtil {
 
         NativeImage[] levels = new NativeImage[maxLevel + 1];
         levels[0] = original;
-        boolean hasAlpha = hasAlpha(original);
+        boolean hasAlpha = texture == AuxiliaryTextures.FLAG && hasAlpha(original);
+        int[] coverage = binaryCoverage(base, original);
+        int[] pixels = new int[4];
+        int[] weights = {1, 1, 1, 1};
 
         for (int level = 1; level <= maxLevel; level++) {
             NativeImage previous = levels[level - 1];
@@ -91,25 +95,296 @@ public class MipmapUtil {
                             previous.getWidth() >> 1,
                             previous.getHeight() >> 1,
                             false);
+            int[] nextCoverage =
+                    coverage == null ? null : new int[next.getWidth() * next.getHeight()];
 
             for (int x = 0; x < next.getWidth(); x++) {
                 for (int y = 0; y < next.getHeight(); y++) {
-                    next.setPixelRGBA(
-                            x,
-                            y,
-                            blend(
-                                    previous.getPixelRGBA(x * 2, y * 2),
-                                    previous.getPixelRGBA(x * 2 + 1, y * 2),
-                                    previous.getPixelRGBA(x * 2, y * 2 + 1),
-                                    previous.getPixelRGBA(x * 2 + 1, y * 2 + 1),
-                                    hasAlpha));
+                    int a = previous.getPixelRGBA(x * 2, y * 2);
+                    int b = previous.getPixelRGBA(x * 2 + 1, y * 2);
+                    int c = previous.getPixelRGBA(x * 2, y * 2 + 1);
+                    int d = previous.getPixelRGBA(x * 2 + 1, y * 2 + 1);
+                    int pixel;
+                    if (coverage != null) {
+                        pixels[0] = a;
+                        pixels[1] = b;
+                        pixels[2] = c;
+                        pixels[3] = d;
+                        int start = y * 2 * previous.getWidth() + x * 2;
+                        weights[0] = coverage[start];
+                        weights[1] = coverage[start + 1];
+                        weights[2] = coverage[start + previous.getWidth()];
+                        weights[3] = coverage[start + previous.getWidth() + 1];
+                        int total = weights[0] + weights[1] + weights[2] + weights[3];
+                        nextCoverage[y * next.getWidth() + x] = total;
+                        pixel =
+                                total == 0
+                                        ? a
+                                        : blendCoveredMaterial(pixels, weights, total, texture);
+                    } else {
+                        pixel =
+                                switch (texture) {
+                                    case NORMAL -> blendNormalMap(a, b, c, d);
+                                    case SPECULAR -> blendSpecularMap(a, b, c, d);
+                                    case FLAG -> blend(a, b, c, d, hasAlpha);
+                                };
+                    }
+                    next.setPixelRGBA(x, y, pixel);
                 }
             }
 
             levels[level] = next;
+            coverage = nextCoverage;
         }
 
         return levels;
+    }
+
+    static void filterMetalRoughness(NativeImage[] specular, NativeImage normal, NativeImage base) {
+        if (specular.length < 2 || !sameSize(specular[0], normal) || !sameSize(specular[0], base))
+            return;
+        boolean metal = false;
+        for (int y = 0; y < base.getHeight(); ++y) {
+            for (int x = 0; x < base.getWidth(); ++x) {
+                int alpha = base.getPixelRGBA(x, y) >>> 24;
+                if (alpha != 0 && alpha != 255) return;
+                metal |= alpha == 255 && ((specular[0].getPixelRGBA(x, y) >>> 8) & 255) >= 230;
+            }
+        }
+        if (!metal) return;
+        float[] previous = null;
+        int previousWidth = normal.getWidth();
+        for (int level = 1; level < specular.length; ++level) {
+            NativeImage target = specular[level];
+            int width = target.getWidth(), height = target.getHeight();
+            // Average the authored vectors before renormalization. Keep unnormalized
+            // sums so large mip footprints still weight every covered base texel once.
+            float[] moments = new float[Math.multiplyExact(Math.multiplyExact(width, height), 4)];
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    int i = (y * width + x) * 4;
+                    for (int dy = 0; dy < 2; ++dy) {
+                        for (int dx = 0; dx < 2; ++dx) {
+                            int sx = x * 2 + dx, sy = y * 2 + dy;
+                            if (previous == null) {
+                                if ((base.getPixelRGBA(sx, sy) >>> 24) == 0) continue;
+                                int pixel = normal.getPixelRGBA(sx, sy);
+                                float nx = (pixel & 255) / 127.5F - 1;
+                                float ny = ((pixel >>> 8) & 255) / 127.5F - 1;
+                                float xySquared = nx * nx + ny * ny;
+                                float scale =
+                                        xySquared > 1 ? (float) (1 / Math.sqrt(xySquared)) : 1;
+                                moments[i] += nx * scale;
+                                moments[i + 1] += ny * scale;
+                                moments[i + 2] += (float) Math.sqrt(Math.max(0, 1 - xySquared));
+                                moments[i + 3]++;
+                            } else {
+                                int source = (sy * previousWidth + sx) * 4;
+                                for (int c = 0; c < 4; ++c) moments[i + c] += previous[source + c];
+                            }
+                        }
+                    }
+                }
+            }
+            for (int y = 0; y < height; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    int i = (y * width + x) * 4;
+                    int pixel = target.getPixelRGBA(x, y);
+                    if (((pixel >>> 8) & 255) < 230 || moments[i + 3] < 2) continue;
+                    float nx = moments[i], ny = moments[i + 1], nz = moments[i + 2];
+                    double length = Math.sqrt(nx * nx + ny * ny + nz * nz) / moments[i + 3];
+                    target.setPixelRGBA(x, y, filteredMetalSmoothness(pixel, length));
+                }
+            }
+            previous = moments;
+            previousWidth = width;
+        }
+    }
+
+    private static boolean sameSize(NativeImage first, NativeImage second) {
+        return second != null
+                && second.format() == NativeImage.Format.RGBA
+                && first.getWidth() == second.getWidth()
+                && first.getHeight() == second.getHeight();
+    }
+
+    static int filteredMetalSmoothness(int pixel, double length) {
+        if (length >= 1 - 1e-6) return pixel;
+        double roughness = 1 - (pixel & 255) / 255.0;
+        double alpha = Math.max(1e-4, roughness * roughness);
+        double power = 2 / (alpha * alpha) - 2;
+        double unitLength = Math.clamp(length, 0, 1);
+        // Toksvig's normal variance, with the GGX to Phong conversion from AGAA.
+        double filtered =
+                power == 0 ? 0 : power * unitLength / (unitLength + power * (1 - unitLength));
+        int smoothness = (int) Math.round(255 * (1 - Math.sqrt(Math.sqrt(2 / (filtered + 2)))));
+        return (pixel & ~255) | smoothness;
+    }
+
+    private static int[] binaryCoverage(NativeImage base, NativeImage material) {
+        if (base == null
+                || !base.format().hasAlpha()
+                || base.getWidth() != material.getWidth()
+                || base.getHeight() != material.getHeight()) return null;
+        int width = base.getWidth();
+        int height = base.getHeight();
+        int[] coverage = null;
+        boolean opaque = false;
+        for (int y = 0; y < height; y++) {
+            for (int x = 0; x < width; x++) {
+                int index = y * width + x;
+                int alpha = base.getPixelRGBA(x, y) >>> 24;
+                if (alpha != 0 && alpha != 255) return null;
+                if (alpha == 0 && coverage == null) {
+                    coverage = new int[width * height];
+                    java.util.Arrays.fill(coverage, 0, index, 1);
+                }
+                if (alpha == 255) {
+                    opaque = true;
+                    if (coverage != null) coverage[index] = 1;
+                }
+            }
+        }
+        return opaque ? coverage : null;
+    }
+
+    static int blendCoveredMaterial(
+            int[] pixels, int[] weights, int total, AuxiliaryTextures texture) {
+        int red = weightedChannel(pixels, weights, total, 0, 0, 256);
+        if (texture == AuxiliaryTextures.NORMAL) {
+            return ARGB.color(
+                    weightedChannel(pixels, weights, total, 24, 0, 256),
+                    weightedChannel(pixels, weights, total, 16, 0, 256),
+                    weightedChannel(pixels, weights, total, 8, 0, 256),
+                    red);
+        }
+        int dielectric = 0;
+        int porous = 0;
+        long emission = 0;
+        for (int i = 0; i < pixels.length; ++i) {
+            if (((pixels[i] >>> 8) & 255) < 230) dielectric += weights[i];
+            if (((pixels[i] >>> 16) & 255) < 65) porous += weights[i];
+            emission += (long) emissionByte(pixels[i]) * weights[i];
+        }
+        int green =
+                dielectric >= total - dielectric
+                        ? weightedChannel(pixels, weights, dielectric, 8, 0, 230)
+                        : weightedMetal(pixels, weights);
+        int blue =
+                porous >= total - porous
+                        ? weightedChannel(pixels, weights, porous, 16, 0, 65)
+                        : weightedChannel(pixels, weights, total - porous, 16, 65, 256);
+        return ARGB.color((int) ((emission + total / 2) / total), blue, green, red);
+    }
+
+    private static int weightedMetal(int[] pixels, int[] weights) {
+        int winner = 230;
+        int votes = 0;
+        for (int pixel : pixels) {
+            int candidate = (pixel >>> 8) & 255;
+            if (candidate < 230) continue;
+            int count = 0;
+            for (int i = 0; i < pixels.length; ++i) {
+                if (((pixels[i] >>> 8) & 255) == candidate) count += weights[i];
+            }
+            if (count > votes) {
+                votes = count;
+                winner = candidate;
+            }
+        }
+        return winner;
+    }
+
+    private static int weightedChannel(
+            int[] pixels, int[] weights, int weight, int shift, int min, int max) {
+        long sum = 0;
+        for (int i = 0; i < pixels.length; ++i) {
+            int channel = (pixels[i] >>> shift) & 255;
+            if (channel >= min && channel < max) sum += (long) channel * weights[i];
+        }
+        return (int) ((sum + weight / 2) / weight);
+    }
+
+    static int blendNormalMap(int a, int b, int c, int d) {
+        // LabPBR stores tangent-space XY, AO and height as independent linear data.
+        return ARGB.color(
+                averageChannel(a, b, c, d, 24),
+                averageChannel(a, b, c, d, 16),
+                averageChannel(a, b, c, d, 8),
+                averageChannel(a, b, c, d, 0));
+    }
+
+    static int blendSpecularMap(int a, int b, int c, int d) {
+        // NativeImage packs bytes as ABGR. Alpha 255 means zero emission.
+        int emission =
+                (emissionByte(a) + emissionByte(b) + emissionByte(c) + emissionByte(d) + 2) / 4;
+        int green =
+                dominantReflectance(
+                        (a >>> 8) & 255, (b >>> 8) & 255, (c >>> 8) & 255, (d >>> 8) & 255);
+        int blue =
+                dominantMaterialRange(
+                        (a >>> 16) & 255, (b >>> 16) & 255, (c >>> 16) & 255, (d >>> 16) & 255, 65);
+        return ARGB.color(emission, blue, green, averageChannel(a, b, c, d, 0));
+    }
+
+    private static int emissionByte(int pixel) {
+        int value = pixel >>> 24;
+        return value == 255 ? 0 : value;
+    }
+
+    private static int dominantReflectance(int a, int b, int c, int d) {
+        if (votesBelow(a, b, c, d, 230) >= 2) return dominantMaterialRange(a, b, c, d, 230);
+        // Metal IDs are categorical. Average reflectance only for dielectrics.
+        int winner = a;
+        int votes = 0;
+        for (int i = 0; i < 4; ++i) {
+            int candidate =
+                    switch (i) {
+                        case 0 -> a;
+                        case 1 -> b;
+                        case 2 -> c;
+                        default -> d;
+                    };
+            if (candidate < 230) continue;
+            int count =
+                    (a == candidate ? 1 : 0)
+                            + (b == candidate ? 1 : 0)
+                            + (c == candidate ? 1 : 0)
+                            + (d == candidate ? 1 : 0);
+            if (count > votes) {
+                votes = count;
+                winner = candidate;
+            }
+        }
+        return winner;
+    }
+
+    private static int dominantMaterialRange(int a, int b, int c, int d, int threshold) {
+        int lowerVotes = votesBelow(a, b, c, d, threshold);
+        boolean lower = lowerVotes >= 2;
+        int sum =
+                ((a < threshold) == lower ? a : 0)
+                        + ((b < threshold) == lower ? b : 0)
+                        + ((c < threshold) == lower ? c : 0)
+                        + ((d < threshold) == lower ? d : 0);
+        int count = lower ? lowerVotes : 4 - lowerVotes;
+        return (sum + count / 2) / count;
+    }
+
+    private static int votesBelow(int a, int b, int c, int d, int threshold) {
+        return (a < threshold ? 1 : 0)
+                + (b < threshold ? 1 : 0)
+                + (c < threshold ? 1 : 0)
+                + (d < threshold ? 1 : 0);
+    }
+
+    private static int averageChannel(int a, int b, int c, int d, int shift) {
+        return (((a >>> shift) & 255)
+                        + ((b >>> shift) & 255)
+                        + ((c >>> shift) & 255)
+                        + ((d >>> shift) & 255)
+                        + 2)
+                / 4;
     }
 
     public static NativeImage[] getMipmapLevelsImages(NativeImage[] originals, int mipmap) {

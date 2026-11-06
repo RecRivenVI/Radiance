@@ -2,6 +2,7 @@
 
 #include "core/all_extern.hpp"
 
+#include <span>
 #include <vector>
 
 namespace vk {
@@ -13,15 +14,23 @@ class RenderPass : public SharedObject<RenderPass> {
     friend RenderPassBuilder;
 
   public:
-    RenderPass(std::shared_ptr<Device> device, VkRenderPass renderpass);
+    struct Attachment {
+        VkFormat format;
+        VkImageUsageFlags usage;
+    };
+    RenderPass(std::shared_ptr<Device> device, VkRenderPass renderpass, std::vector<Attachment> attachments);
     ~RenderPass();
 
     VkRenderPass &vkRenderPass();
+    std::span<const Attachment> attachments() const {
+        return attachments_;
+    }
 
   private:
     std::shared_ptr<Device> device_;
 
     VkRenderPass renderPass_ = VK_NULL_HANDLE;
+    std::vector<Attachment> attachments_;
 };
 
 class RenderPassBuilder {

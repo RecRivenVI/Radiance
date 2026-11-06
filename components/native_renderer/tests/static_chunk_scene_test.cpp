@@ -1,6 +1,7 @@
 #include "core/render/static_chunk_scene.hpp"
 #include "core/render/scene_table.hpp"
 #include <algorithm>
+#include <bit>
 #include "core/render/frame_retention.hpp"
 #include <iostream>
 #include <map>
@@ -18,6 +19,7 @@ struct Published {
     std::vector<std::string> groups{"water", "block"};
     std::vector<uint32_t> flags{mcvr::faces::back, 0};
     std::shared_ptr<vk::BLAS> blas = std::make_shared<vk::BLAS>();
+    std::shared_ptr<const mcvr::medium::Mesh> medium;
     glm::ivec3 origin{30000000, -64, -30000000};
 };
 struct Fixture {
@@ -31,6 +33,7 @@ struct Fixture {
             // Owner of the arrays, like ChunkRenderData in production. No cycle.
             auto metadata = std::make_shared<mcvr::ChunkSceneMetadata>(p, 2, p->indices, p->positions, p->materials,
                                                                        p->groups, p->flags);
+            metadata->mediumMesh = p->medium;
             next->add(slot, p->origin, p->blas, metadata, VkDeviceAddress(uintptr_t(p->blas.get())));
         }
         return next;
@@ -58,7 +61,8 @@ void compare(const mcvr::StaticChunkScene &scene, const Fixture &fixture, uint32
     check(appearance.size() == refA.size());
     check(!std::memcmp(appearance.data(), refA.data(), appearance.size() * sizeof(appearance[0])));
     // Production upload layout: dynamic prefix + immutable primary chunks + external suffix.
-    auto compareUpload = [&]<class T>(const std::vector<T> &flat, std::vector<T> mcvr::StaticChunkPage::*member) {
+    auto compareUpload = [&]<class T>(const std::vector<T> &flat,
+                                      mcvr::StaticPageField<T> mcvr::StaticChunkPage::*member) {
         std::vector<T> changing(flat.begin(), flat.begin() + dynamicCount);
         auto expected = flat;
         if (!flat.empty()) {
@@ -127,22 +131,82 @@ void compare(const mcvr::StaticChunkScene &scene, const Fixture &fixture, uint32
         original[3] = glm::dvec4(glm::dvec3(ordered[i]->origin) - camera, 1);
         check(history[i] == glm::mat4(original));
     }
+    std::vector<glm::mat4> unusedHistory;
+    std::vector<VkAccelerationStructureInstanceKHR> deviceInput(dynamicCount);
+    std::vector<vk::BLAS *> deviceModels(dynamicCount);
+    std::vector<std::shared_ptr<const void>> deviceOwners;
+    scene.appendInstances(camera, dynamicCount, 17, unusedHistory, deviceInput, deviceModels, deviceOwners, true);
+    size_t slot = dynamicCount;
+    uint32_t groupBase = 17;
+    for (const auto &page : scene.pages) {
+        for (size_t i = 0; i < page->instances.size(); ++i, ++slot) {
+            auto words = std::bit_cast<std::array<uint32_t, 16>>(deviceInput.at(slot));
+            for (int axis = 0; axis < 3; ++axis) {
+                const auto word = 4 * axis + 3;
+                check(std::bit_cast<int32_t>(words[word]) == page->instances[i].origin[axis]);
+                words[word] =
+                    std::bit_cast<uint32_t>(float(double(std::bit_cast<int32_t>(words[word])) - camera[axis]));
+            }
+            constexpr uint32_t low24 = 0x00ffffffu;
+            words[12] = (words[12] & ~low24) | (uint32_t(slot) & low24);
+            words[13] = (words[13] & ~low24) | ((words[13] + groupBase) & low24);
+            check(words == std::bit_cast<std::array<uint32_t, 16>>(packed.at(slot)));
+        }
+        groupBase += uint32_t(page->groups.size());
+    }
 }
 } // namespace
 int main() {
+    {
+        mcvr::ChunkScenePublications spatial(65, 24);
+        auto slot = [](uint32_t x, uint32_t y, uint32_t z) { return (z * 24 + y) * 65 + x; };
+        spatial.changed(slot(0, 0, 0), false);
+        check(spatial.revision() == 0 && spatial.pages().empty());
+        std::map<uint32_t, size_t> sizes;
+        for (uint32_t z = 0; z < 65; ++z)
+            for (uint32_t y = 0; y < 24; ++y)
+                for (uint32_t x = 0; x < 65; ++x) {
+                    const auto id = spatial.pageOf(slot(x, y, z));
+                    ++sizes[id];
+                    check(id == spatial.pageOf(slot(x / 4 * 4, y / 4 * 4, z / 4 * 4)));
+                }
+        for (auto [id, count] : sizes) check(count <= 64);
+        std::set<uint32_t> xBoundary, zBoundary;
+        for (uint32_t i = 0; i < 65; ++i)
+            for (uint32_t y = 0; y < 24; ++y) {
+                xBoundary.insert(spatial.pageOf(slot(64, y, i)));
+                zBoundary.insert(spatial.pageOf(slot(i, y, 64)));
+            }
+        check(xBoundary.size() == 102 && xBoundary.size() == zBoundary.size());
+        spatial.changed(0, true);
+        spatial.changed(0, true); // An actual content replacement still invalidates.
+        check(spatial.revision() == 2);
+        spatial.changed(0, false);
+        const auto revision = spatial.revision();
+        spatial.changed(0, false);
+        check(spatial.revision() == revision && spatial.pages().begin()->second.active.empty());
+    }
     Fixture fixture;
     fixture.slots[100000] = std::make_shared<Published>(); // Capacity is not a traversal bound.
     fixture.slots[5] = std::make_shared<Published>();
     fixture.slots[5]->indices = {111, 112};
+    auto unknownMedium = std::make_shared<mcvr::medium::Mesh>();
+    unknownMedium->complete = false;
+    fixture.slots[5]->medium = unknownMedium;
+    fixture.slots[100000]->medium = std::make_shared<mcvr::medium::Mesh>();
     auto publications = std::make_shared<mcvr::ChunkScenePublications>();
     mcvr::StaticChunkSceneCache cache;
     auto get = [&] { return cache.get(publications, [&](const auto &active) { return fixture.build(active); }); };
     auto empty = get();
     check(empty->instanceCount == 0 && fixture.visits == 0);
+    publications->changed(5, false);
+    check(get() == empty && cache.builds() == 1);
     publications->changed(100000, true);
     publications->changed(5, true);
     auto frame = get();
     check(frame->instanceCount == 2 && frame->pages.front()->instances[0].slot == 5 && fixture.visits == 2);
+    check(frame->pages.front()->mediumInstances == std::vector<uint32_t>{0});
+    check(frame->pages.back()->mediumInstances.empty());
     for (uint32_t i = 0; i < 100; ++i) {
         check(get() == frame);
         compare(*frame, fixture, i % 9, {30000000.125 + i * 0.125, -8, -30000000.25});
@@ -157,7 +221,14 @@ int main() {
     publications->changed(5, true);
     auto updated = get();
     check(updated != frame && updated->pages.front()->materials[0] == 1001 && !old.expired());
+    check(updated->pages.front()->mediumInstances.empty() && frame->pages.front()->mediumInstances.size() == 1);
     check(updated->pages.back() == frame->pages.back() && fixture.visits == 3 && cache.pageBuilds() == 3);
+    check(updated->pages.front()->groups.share() == frame->pages.front()->groups.share());
+    check(updated->pages.front()->appearances.share() == frame->pages.front()->appearances.share());
+    check(updated->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::lastPositions).directory ==
+          frame->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::lastPositions).directory);
+    check(updated->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::materials).directory !=
+          frame->table<uint64_t>({}, 0, &mcvr::StaticChunkPage::materials).directory);
     compare(*updated, fixture, 11, {0, 1, 2});
     frame.reset();
     retention.beginFrame(2, 0, 3);

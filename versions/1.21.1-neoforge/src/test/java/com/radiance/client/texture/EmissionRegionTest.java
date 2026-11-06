@@ -7,7 +7,7 @@ import org.junit.jupiter.api.Test;
 
 final class EmissionRegionTest {
     @Test
-    void sourceRadianceDecodesAbgrChannelsToLinearBeforeAveraging() {
+    void sourceRadianceMatchesWorldSamplingOfUnormAbgrChannels() {
         int id = 3982;
         TextureTracker.GLID2Texture.put(
                 id, new TextureTracker.Texture(1, 1, NativeImage.InternalGlFormat.RGBA, 0));
@@ -18,9 +18,9 @@ final class EmissionRegionTest {
             var update = EmissionRecorder.buildTileUpdate(id, albedo, specular, 0, 0, 0, 0, 1, 1);
             assertEquals(1, update.cells.size());
             var cell = update.cells.getFirst();
-            assertEquals(0.2158605f, cell.avgR, 1e-6f);
-            assertEquals(0.05126946f, cell.avgG, 1e-6f);
-            assertEquals(0.01444384f, cell.avgB, 1e-6f);
+            assertEquals(128f / 255f, cell.avgR, 1e-6f);
+            assertEquals(64f / 255f, cell.avgG, 1e-6f);
+            assertEquals(32f / 255f, cell.avgB, 1e-6f);
             assertEquals(1f, cell.avgEmission, 1e-6f);
         } finally {
             TextureTracker.GLID2Texture.remove(id);

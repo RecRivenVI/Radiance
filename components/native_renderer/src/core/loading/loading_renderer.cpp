@@ -475,7 +475,7 @@ class LoadingRenderer {
         if (!game) {
             checked(framework->submitCommand(), "submit early loading frame");
             needsAcquire = true;
-            auto presented = framework->present();
+            auto presented = framework->present(false);
             submitted = true;
             if (presented == VK_NOT_READY) return;
             checked(presented, "present early loading frame");

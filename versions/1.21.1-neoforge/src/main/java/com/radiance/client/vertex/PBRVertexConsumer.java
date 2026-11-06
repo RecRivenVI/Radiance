@@ -46,6 +46,7 @@ import org.joml.Vector3f;
 import org.lwjgl.system.MemoryUtil;
 
 public class PBRVertexConsumer implements VertexConsumer {
+    StorageVertexConsumerProvider allocatorOwner;
     StorageVertexConsumerProvider particleOwner;
     StorageVertexConsumerProvider rigidOwner;
     RenderType rigidLayer;
@@ -114,7 +115,7 @@ public class PBRVertexConsumer implements VertexConsumer {
         return VanillaMaterialAdapter.glintModeForRenderTypeName(name);
     }
 
-    private final ByteBufferBuilder allocator;
+    private ByteBufferBuilder allocator;
     private final VertexFormat format;
     private final VertexFormat.Mode drawMode;
 
@@ -327,6 +328,9 @@ public class PBRVertexConsumer implements VertexConsumer {
         endVertex();
 
         vertexCount++;
+        if (allocator == null) {
+            allocator = allocatorOwner.allocateBuffer();
+        }
         long ptr = allocator.reserve(vertexSizeByte);
         vertexPointer = ptr;
         MemoryUtil.memSet(ptr, 0, vertexSizeByte);
@@ -370,6 +374,9 @@ public class PBRVertexConsumer implements VertexConsumer {
         endVertex();
 
         vertexCount++;
+        if (allocator == null) {
+            allocator = allocatorOwner.allocateBuffer();
+        }
         long ptr = allocator.reserve(vertexSizeByte);
         vertexPointer = ptr;
         MemoryUtil.memSet(ptr, 0, vertexSizeByte);

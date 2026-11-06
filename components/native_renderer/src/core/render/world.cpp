@@ -14,6 +14,8 @@
 #include "core/render/renderer.hpp"
 #include "core/failure_state.hpp"
 #include "core/render/scene_release_policy.hpp"
+#include "core/render/scene_scope.hpp"
+#include "core/render/frame_execution.hpp"
 #include "core/logging.hpp"
 
 namespace {
@@ -49,7 +51,16 @@ World::World(std::shared_ptr<Framework> framework)
 
 void World::resetFrame() {}
 
+namespace {
+FrameworkContext *executingWorldInputs() {
+    if (SceneRecordingScope::active()) return nullptr;
+    auto *context = static_cast<FrameworkContext *>(mcvr::FrameExecution::workerRecordingSlot());
+    return context && context->sceneSpaces ? context : nullptr;
+}
+} // namespace
+
 bool &World::shouldRender() {
+    if (auto *context = executingWorldInputs()) return context->renderWorld;
     return shouldRenderWorld_;
 }
 
@@ -74,7 +85,13 @@ void World::setCameraPos(glm::dvec3 cameraPos) {
 }
 
 glm::dvec3 World::getCameraPos() {
+    if (auto *context = executingWorldInputs()) return context->cameraPosition;
     return cameraPos_;
+}
+
+mcvr::scene::Spaces &World::spaces() {
+    if (auto *context = executingWorldInputs()) return *context->sceneSpaces;
+    return spaces_;
 }
 
 void World::releaseScene() {
@@ -100,6 +117,7 @@ void World::releaseScene() {
     lodScene_->clear(true);
     chunks_->releaseScene();
     entities_->releaseScene();
+    framework->releaseWorldInputs();
     // Instance records reference spatial identities; end both lifetimes at the same idle boundary.
     instancing_->close();
     spaces_.clear();

@@ -32,8 +32,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ steps.tools.outputs.python }}
-      - name: Install inventory dependencies
-        run: python -m pip install -r components/render_diagnostics/inventory/requirements.txt
+      - name: Install render diagnostics dependencies
+        run: python -m pip install -r components/render_diagnostics/benchmark/requirements.txt
       - name: Install Vulkan SDK
         shell: pwsh
         env:

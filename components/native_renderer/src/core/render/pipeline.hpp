@@ -41,6 +41,9 @@ class WorldPipelineBlueprint : public SharedObject<WorldPipelineBlueprint> {
 
   public:
     WorldPipelineBlueprint(WorldPipelineBuildParams *params);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    std::string replayDescription() const;
+#endif
 
   private:
     std::vector<std::string> moduleNames_;

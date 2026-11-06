@@ -1,0 +1,185 @@
+#version 460
+#extension GL_GOOGLE_include_directive : require
+#define NRD_NORMAL_ENCODING 2
+#define NRD_ROUGHNESS_ENCODING 1
+#include "util/reconstruction_material.glsl"
+#include "util/reconstruction_guides.glsl"
+#include "world/nrd/nrd_glsl_compat.glsl"
+layout(constant_id = 0) const uint PASS = 0u;
+layout(local_size_x = 1) in;
+layout(set = 0, binding = 0, std430) buffer Results { vec4 rows[]; } result;
+layout(set = 0, binding = 1, rgba16f) uniform image2DArray materialState;
+
+void reconstructionRoundtripCase(uint i, out float metallic, out float roughness, out float transmission, out vec3 f0,
+                                 out vec3 expectedNormal, out bool expectedMayStore, out int expectedDeltaMode) {
+    float angle = float(i) * 0.61 + 0.35;
+    expectedNormal = normalize(vec3(sin(angle), cos(angle) * 0.8 + 0.25, cos(angle * 1.7)));
+    if (i == 0u) {
+        metallic = 0.0; roughness = 0.04; transmission = 0.990234375; f0 = vec3(0.04);
+        expectedMayStore = true; expectedDeltaMode = 1;
+    } else if (i == 1u) {
+        metallic = 1.0; roughness = 0.04; transmission = 0.0; f0 = vec3(0.04);
+        expectedMayStore = true; expectedDeltaMode = 1;
+    } else if (i == 2u) {
+        metallic = 0.0; roughness = 0.04; transmission = 0.0; f0 = vec3(0.9501953125);
+        expectedMayStore = true; expectedDeltaMode = 1;
+    } else if (i == 3u) {
+        metallic = 1.0; roughness = 0.0799560546875; transmission = 0.0; f0 = vec3(0.04);
+        expectedMayStore = true; expectedDeltaMode = 1;
+    } else if (i == 4u) {
+        metallic = 0.000001013278961181640625; roughness = 0.0799560546875; transmission = 0.0; f0 = vec3(0.04);
+        expectedMayStore = true; expectedDeltaMode = 1;
+    } else if (i == 5u) {
+        // Under RTZ imageStore, 0.989995 quantizes to 0.98974609375 (< 0.99); RNE quantizes to 0.990234375 (>= 0.99).
+        metallic = 0.0; roughness = 0.04; transmission = 0.989995; f0 = vec3(0.04);
+        expectedMayStore = true; expectedDeltaMode = -1;
+    } else if (i == 6u) {
+        // Under RTZ imageStore, 0.94999 and 0.000001 truncate below strict delta cutoffs; RNE preserves delta.
+        metallic = 0.000001; roughness = 0.0799560546875; transmission = 0.0; f0 = vec3(0.94999, 0.04, 0.04);
+        expectedMayStore = true; expectedDeltaMode = -1;
+    } else if (i == 7u) {
+        metallic = 0.0; roughness = 0.04; transmission = 0.0; f0 = vec3(0.04);
+        expectedMayStore = false; expectedDeltaMode = 0;
+    } else if (i == 8u) {
+        metallic = 1.0; roughness = 0.08001708984375; transmission = 0.0; f0 = vec3(0.04);
+        expectedMayStore = false; expectedDeltaMode = 0;
+    } else {
+        metallic = 0.00000095367431640625; roughness = 0.04; transmission = 0.98974609375; f0 = vec3(0.94970703125);
+        expectedMayStore = false; expectedDeltaMode = 0;
+    }
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    float caseMetallic;
+    float caseRoughness;
+    float caseTransmission;
+    vec3 caseF0;
+    vec3 expectedNormal;
+    bool expectedMayStore;
+    int expectedDeltaMode;
+    reconstructionRoundtripCase(i, caseMetallic, caseRoughness, caseTransmission, caseF0, expectedNormal, expectedMayStore,
+                                expectedDeltaMode);
+    if (PASS == 0u) {
+        bool mayStore = reconstructionMayStoreDeltaSurface(caseMetallic, caseRoughness, caseTransmission, caseF0);
+        uint hitHistory = 1u | (mayStore ? reconstructionPreviousNormalBit : 0u);
+        vec3 storedNormal = mayStore ? expectedNormal : vec3(-7.0, 3.0, -5.0);
+        imageStore(materialState, ivec3(int(i), 0, 0), vec4(expectedNormal, float(i)));
+        imageStore(materialState, ivec3(int(i), 0, 1), vec4(caseF0, caseRoughness));
+        imageStore(materialState, ivec3(int(i), 0, 2), vec4(caseMetallic, caseTransmission, 1.5, 0.0));
+        imageStore(materialState, ivec3(int(i), 0, 3), vec4(storedNormal, 0.0));
+        result.rows[i * 8u + 1u] = vec4(uintBitsToFloat(hitHistory), mayStore ? 1.0 : 0.0, 0.0, 0.0);
+        return;
+    }
+    float roughness = float(i) / 9.0;
+    vec3 f = reconstructionSpecularReflectance(vec3(0.04), roughness, 1.0);
+    vec3 grazing = reconstructionSpecularReflectance(vec3(0.04), 0.0, 0.05);
+    vec3 zero = reconstructionSpecularReflectance(vec3(0.0), roughness, 0.5);
+    vec3 diff, spec;
+    reconstructionMaterialFactors(vec4(vec3(0.2, 0.5, 0.8) * (1.0 - float(i % 2u)), float(i % 2u)), f, roughness, false, diff, spec);
+    vec3 light = vec3(0.125, 2.0, 9.0);
+    vec3 error = abs((light / diff) * diff - light) + abs((light / spec) * spec - light);
+    bool passed = all(lessThanEqual(error, vec3(1e-5))) && all(greaterThanEqual(diff, vec3(0.02)))
+        && all(greaterThanEqual(spec, vec3(0.02))) && all(equal(zero, vec3(0.0)))
+        && grazing.r > 0.7 && all(lessThanEqual(f, vec3(1.0))) && all(greaterThanEqual(f, vec3(0.0)))
+        && (i != 0u || abs(f.r - 0.04) < 0.01);
+    if (i % 2u != 0u) passed = passed && all(equal(diff, vec3(0.02)));
+    vec3 transmissionDiffuse, transmissionSpecular;
+    reconstructionMaterialFactors(vec4(1.0), vec3(0.04), roughness, true, transmissionDiffuse, transmissionSpecular);
+    passed = passed && all(equal(transmissionSpecular, vec3(1.0)));
+    float absent = REBLUR_FrontEnd_GetNormHitDist(0.0, 10.0, vec3(3.0, 0.1, 20.0), roughness);
+    passed = passed && absent == 0.0 && NRD_FrontEnd_TrimHitDistance(0.0002, 0.001) == 0.0
+        && REBLUR_FrontEnd_GetNormHitDist(65504.0, 10.0, vec3(3.0, 0.1, 20.0), roughness) == 1.0;
+    vec3 n = normalize(vec3(float(i) - 4.5, 2.0, -3.0));
+    vec3 from = normalize(vec3(1, float(i) + 0.5, -2));
+    vec3 to = normalize(vec3(-2, 1, float(i) - 3.5));
+    passed = passed && length(reconstructionRotation(from, to) * from - to) < 1e-4;
+    passed = passed && length(reconstructionRotation(from, -from) * from + from) < 1e-4;
+    mat3 unfolded = mat3(1);
+    vec3 translation = vec3(0);
+    vec3 pivot = vec3(-32.0 + float(i), 3.0, 7.0);
+    vec3 point = vec3(2, -1, 5);
+    reconstructionUnfold(unfolded, translation, reconstructionReflection(n), pivot);
+    vec3 expected = reflect(point - pivot, n) + pivot;
+    passed = passed && length(unfolded * point + translation - expected) < 1e-4;
+    vec3 delta = vec3(0.125, -0.25, 0.5);
+    mat3 previousUnfolded = mat3(1);
+    vec3 previousTranslation = vec3(0);
+    reconstructionUnfold(previousUnfolded, previousTranslation, reconstructionReflection(n), pivot + delta);
+    vec3 previousPoint = previousUnfolded * point + previousTranslation;
+    passed = passed && length(previousPoint - expected - 2.0 * n * dot(n, delta)) < 1e-4;
+    mat4 previousCamera = mat4(1);
+    previousCamera[3].xyz = delta;
+    vec3 previousHit = delta + vec3(0, 0, -2);
+    passed = passed && length(reconstructionCameraIncident(previousHit, previousCamera, false) - vec3(0, 0, -1)) < 1e-6
+        && length(reconstructionCameraIncident(previousHit + vec3(1, 2, 0), previousCamera, true) - vec3(0, 0, -1)) < 1e-6;
+    vec4 sky = reconstructionSkyDirection(previousUnfolded, from);
+    passed = passed && sky.w == 0.0 && length(sky.xyz - reflect(from, n)) < 1e-5
+        && length(previousCamera * sky - sky) < 1e-6;
+    vec3 edge = vec3(0.00390625, 0, 0);
+    vec3 side = vec3(0, 0.00390625, 0);
+    passed = passed && length(reconstructionPreviousNormal(vec3(0, 0, 1), edge, side,
+        vec3(0, edge.x, 0), vec3(0, 0, side.y)) - vec3(1, 0, 0)) < 1e-6
+        && length(reconstructionPreviousNormal(n, edge, side, vec3(0), vec3(0)) - n) < 1e-6;
+    passed = passed && reconstructionDominantTransmission(0.1, true, true)
+        && !reconstructionDominantTransmission(0.9, true, true)
+        && reconstructionDominantTransmission(0.9, false, true)
+        && !reconstructionDominantTransmission(0.1, true, false)
+        && !reconstructionDominantTransmission(0.9, false, false);
+    passed = passed && all(equal(reconstructionLobeWeights(1.0, false, true), vec2(0, 1)))
+        && all(equal(reconstructionLobeWeights(0.0, true, false), vec2(1, 0)))
+        && all(equal(reconstructionLobeWeights(0.25, true, true), vec2(0.25, 0.75)));
+    passed = passed && reconstructionDeltaSurface(0.0, 0.04, 1.0, vec3(0.04))
+        && reconstructionDeltaSurface(1.0, 0.04, 0.0, vec3(0.04))
+        && reconstructionDeltaSurface(0.0, 0.04, 0.0, vec3(0.96))
+        && !reconstructionDeltaSurface(0.0, 0.04, 0.0, vec3(0.04))
+        && !reconstructionDeltaSurface(1.0, 0.09, 0.0, vec3(0.04));
+    passed = passed && !reconstructionDeltaSurface(0.0, 0.04, 0.989995, vec3(0.04))
+        && reconstructionDeltaSurface(0.0, 0.04, 0.990234375, vec3(0.04))
+        && reconstructionMayStoreDeltaSurface(0.0, 0.04, 0.989995, vec3(0.04))
+        && reconstructionMayStoreDeltaSurface(0.0, 0.04, 0.0, vec3(0.94999, 0.04, 0.04))
+        && reconstructionMayStoreDeltaSurface(0.000001, 0.08, 0.0, vec3(0.04))
+        && !reconstructionMayStoreDeltaSurface(1.0, 0.08001708984375, 0.0, vec3(0.04))
+        && !reconstructionMayStoreDeltaSurface(0.00000095367431640625, 0.04, 0.98974609375, vec3(0.94970703125))
+        && !reconstructionHasPreviousNormal(0u) && !reconstructionHasPreviousNormal(1u)
+        && reconstructionHasPreviousNormal(1u | reconstructionPreviousNormalBit);
+    passed = passed && reconstructionReusableSurface(vec3(0, 1, 0), 0.0, 0.0)
+        && reconstructionReusableSurface(vec3(0, 1, 0), 1.0, 0.2)
+        && !reconstructionReusableSurface(vec3(0, 1, 0), 1.0, 0.0)
+        && !reconstructionReusableSurface(vec3(0), 0.0, 0.5);
+    vec3 factor = reconstructionLayerFactor(vec3(float(i) / 9.0, 0.0, 1.5), vec3(0.04));
+    vec4 stored = vec4(round(factor * 255.0) / 255.0, 1.0);
+    vec3 restored = reconstructionStoredFactor(stored);
+    passed = passed && all(greaterThanEqual(restored, vec3(0.02)))
+        && all(lessThanEqual(restored, vec3(1)))
+        && all(lessThan(abs((light / restored) * restored - light), vec3(1e-5)))
+        && all(equal(reconstructionStoredFactor(vec4(0)), vec3(1)));
+    vec4 layer1 = imageLoad(materialState, ivec3(int(i), 0, 1));
+    vec4 layer2 = imageLoad(materialState, ivec3(int(i), 0, 2));
+    vec4 layer3 = imageLoad(materialState, ivec3(int(i), 0, 3));
+    uint hitHistory = floatBitsToUint(result.rows[i * 8u + 1u].x);
+    bool pass0MayStore = result.rows[i * 8u + 1u].y > 0.5;
+    bool hasPrevNormal = reconstructionHasPreviousNormal(hitHistory);
+    bool isDeltaReadback = reconstructionDeltaSurface(layer2.x, layer1.w, layer2.y, layer1.rgb);
+    float normalError = distance(layer3.xyz, expectedNormal);
+    float poisonError = distance(layer3.xyz, vec3(-7.0, 3.0, -5.0));
+    bool imageQuantMatch = all(lessThanEqual(abs(layer1.rgb - caseF0), vec3(0.002)))
+        && abs(layer1.w - caseRoughness) <= 0.002
+        && abs(layer2.x - caseMetallic) <= 0.002
+        && abs(layer2.y - caseTransmission) <= 0.002;
+    bool deltaModeMatch = expectedDeltaMode < 0 ? true : (isDeltaReadback == (expectedDeltaMode > 0));
+    bool roundtripPassed = imageQuantMatch
+        && (pass0MayStore == expectedMayStore)
+        && (hasPrevNormal == expectedMayStore)
+        && deltaModeMatch
+        && (!isDeltaReadback || (hasPrevNormal && normalError < 0.005))
+        && (expectedMayStore ? (normalError < 0.005) : (poisonError < 0.01));
+    passed = passed && roundtripPassed;
+    result.rows[i * 8u] = vec4(passed ? 1.0 : 0.0, f.r, grazing.r, roundtripPassed ? 1.0 : 0.0);
+    result.rows[i * 8u + 3u] = vec4(isDeltaReadback ? 1.0 : 0.0, hasPrevNormal ? 1.0 : 0.0, normalError, layer1.w);
+    result.rows[i * 8u + 4u] = layer1;
+    result.rows[i * 8u + 5u] = layer2;
+    result.rows[i * 8u + 6u] = vec4(
+        imageQuantMatch ? 1.0 : 0.0, pass0MayStore == expectedMayStore ? 1.0 : 0.0,
+        hasPrevNormal == expectedMayStore ? 1.0 : 0.0, deltaModeMatch ? 1.0 : 0.0);
+}

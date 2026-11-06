@@ -5,7 +5,7 @@ import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import com.mojang.blaze3d.vertex.VertexFormat;
 import com.radiance.api.render.SourceHooks;
-import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectSortedMaps;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import net.minecraft.client.renderer.MultiBufferSource;
@@ -53,6 +53,7 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
     final java.util.List<RigidModelCapture.Draw> rigidDraws = new java.util.ArrayList<>();
     long rigidInstance;
     public Object sourceOwner;
+    public Object blockEntityStableInputs;
     private boolean declaredLocalModels;
 
     enum Domain {
@@ -243,9 +244,15 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
 
     public StorageVertexConsumerProvider(int size, float defaultAlbedoEmission) {
         // getBuffer owns the captured batches; the inherited fixed-buffer table stays empty.
-        super(new ByteBufferBuilder(0), new Object2ObjectLinkedOpenHashMap<>(0));
+        super(null, Object2ObjectSortedMaps.emptyMap());
         this.size = size;
         this.defaultAlbedoEmission = defaultAlbedoEmission;
+    }
+
+    ByteBufferBuilder allocateBuffer() {
+        ByteBufferBuilder bufferAllocator = new ByteBufferBuilder(size);
+        allocated.add(bufferAllocator);
+        return bufferAllocator;
     }
 
     @Override
@@ -264,15 +271,19 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
             vertexConsumer = null;
         }
         if (vertexConsumer == null) {
-            ByteBufferBuilder bufferAllocator = new ByteBufferBuilder(size);
-            allocated.add(bufferAllocator);
-
             VertexFormat.Mode drawMode = renderLayer.mode();
             VertexFormat vertexFormat = renderLayer.format();
 
             if (drawMode == VertexFormat.Mode.QUADS) {
+                ByteBufferBuilder bufferAllocator =
+                        this.getClass() == StorageVertexConsumerProvider.class
+                                        && !SourceHooks.prioritySurface(renderLayer)
+                                        && !SourceHooks.supportsColourState(renderLayer)
+                                ? null
+                                : allocateBuffer();
                 vertexConsumer = createQuadConsumer(bufferAllocator, renderLayer);
                 if (vertexConsumer instanceof PBRVertexConsumer pbrVertexConsumer) {
+                    pbrVertexConsumer.allocatorOwner = this;
                     pbrVertexConsumer.rigidLayer = renderLayer;
                     if (particleModels) {
                         pbrVertexConsumer.particleOwner = this;
@@ -286,13 +297,14 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
                     }
                 }
             } else if (CapturedLineVertexConsumer.supports(drawMode, vertexFormat)) {
-                var lines = new CapturedLineVertexConsumer(bufferAllocator, drawMode, vertexFormat);
+                var lines =
+                        new CapturedLineVertexConsumer(allocateBuffer(), drawMode, vertexFormat);
                 lines.source = com.radiance.client.render.LineSources.current(lineSource);
                 lines.widthPolicy = lineWidthPolicy;
                 lines.emission = defaultAlbedoEmission;
                 vertexConsumer = lines;
             } else {
-                vertexConsumer = new BufferBuilder(bufferAllocator, drawMode, vertexFormat);
+                vertexConsumer = new BufferBuilder(allocateBuffer(), drawMode, vertexFormat);
             }
             this.pending.put(renderLayer, vertexConsumer);
         }
@@ -398,6 +410,6 @@ public class StorageVertexConsumerProvider extends MultiBufferSource.BufferSourc
         allocated.clear();
         if (drawStates != null) drawStates.clear();
         lastLayer = null;
-        this.sharedBuffer.close();
+        if (this.sharedBuffer != null) this.sharedBuffer.close();
     }
 }

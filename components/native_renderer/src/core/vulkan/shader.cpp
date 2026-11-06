@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -39,6 +40,8 @@ void captureShader(
     try {
         const auto name = "MCVR:" + source;
         device.nameObject(VK_OBJECT_TYPE_SHADER_MODULE, reinterpret_cast<uint64_t>(module), name.c_str());
+        const char *exportFlag = std::getenv("MCVR_GPU_SHADER_EXPORT");
+        if (exportFlag && std::string_view(exportFlag) == "0") return;
         static std::mutex lock;
         static size_t count = 0, totalBytes = 0;
         std::lock_guard guard(lock);
@@ -436,6 +439,12 @@ vk::Shader::CompileResult vk::Shader::compileGlslToSpv(std::string sourcePath,
                                                        std::vector<std::string> includeDirectories,
                                                        std::string injectedSource,
                                                        const std::filesystem::path &cacheDir) {
+    const char *diagnostic = std::getenv("MCVR_SHADER_SOURCE_DEBUG");
+    const bool sourceDebug =
+        diagnostic && std::string_view(diagnostic) == "1" && mcvr::diagnostics::device_loss::enabled();
+    // The actual compiled module is exported by captureShader under its Aftermath hash.
+    // A diagnostic cache entry must never replace the stripped performance module.
+    if (sourceDebug) definitions.emplace("RADIANCE_SHADER_SOURCE_DEBUG", "1");
     std::optional<uint64_t> dependencyHash =
         vk::ShaderSpirvCache::computeDependencyHash(sourcePath, includeDirectories);
 #ifdef DEBUG
@@ -489,6 +498,7 @@ vk::Shader::CompileResult vk::Shader::compileGlslToSpv(std::string sourcePath,
     options.SetTargetEnvironment(shaderc_target_env_vulkan, shaderc_env_version_vulkan_1_4);
     options.SetSourceLanguage(shaderc_source_language_glsl);
     options.SetOptimizationLevel(shaderc_optimization_level_performance);
+    if (sourceDebug) options.SetGenerateDebugInfo();
     options.SetIncluder(std::make_unique<ShaderIncluder>(includePaths));
 
     shaderc::SpvCompilationResult result =

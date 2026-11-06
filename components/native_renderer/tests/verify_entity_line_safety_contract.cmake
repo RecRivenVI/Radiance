@@ -14,6 +14,8 @@ endforeach()
 
 file(READ "${ENTITIES_SOURCE}" ENTITIES_TEXT)
 file(READ "${ENTITY_JNI_SOURCE}" ENTITY_JNI_TEXT)
+string(REGEX REPLACE "jni::invokeVoid\\([ \t\r\n]*env,[ \t\r\n]*" "jni::invokeVoid(env, "
+       ENTITY_JNI_TEXT "${ENTITY_JNI_TEXT}")
 
 string(FIND "${ENTITIES_TEXT}" "edge length d must be > 0" THROW_INDEX)
 if(NOT THROW_INDEX EQUAL -1)

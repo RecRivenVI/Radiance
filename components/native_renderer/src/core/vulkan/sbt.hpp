@@ -25,7 +25,10 @@ class SBT : public SharedObject<SBT> {
 
     void uploadStaticSBT(std::shared_ptr<CommandBuffer> commandBuffer);
     void setupHitSBT(const std::shared_ptr<const std::vector<uint32_t>> &hitGroupIndices,
-                     std::shared_ptr<CommandBuffer> commandBuffer);
+                     std::shared_ptr<CommandBuffer> commandBuffer,
+                     const std::string &auditName = "hit",
+                     std::span<const mcvr::HitRange> stable = {},
+                     std::span<const uint32_t> palette = {});
 
     VkStridedDeviceAddressRegionKHR &raygenRegion();
     VkStridedDeviceAddressRegionKHR &missRegion();
@@ -54,5 +57,6 @@ class SBT : public SharedObject<SBT> {
     std::shared_ptr<DeviceLocalBuffer> rgenSBT_;
     std::shared_ptr<DeviceLocalBuffer> rmissSBT_;
     mcvr::HitTableCache<DeviceLocalBuffer> hitTable_;
+    mcvr::PackedHitBlocks packedHitBlocks_;
 };
 }; // namespace vk

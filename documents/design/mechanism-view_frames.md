@@ -8,12 +8,20 @@
 
 ## 适配差异
 
-- Streamline：负 jitter、倒输入尺寸 motion 尺度；RR 的独立 viewport 与同帧去重保留。FG 继续使用自身的原点平移、64 距离阈值与重置标志。
-- NRD：正 jitter、倒输入尺寸 motion 尺度、当前/上一帧 effected-view 与专用投影 Y 适配；首帧和重载 CLEAR_AND_RESTART。
+- Streamline：负 jitter、倒输入尺寸 motion 尺度；RR 的独立 viewport 与同帧去重保留。RR、SR 与 FG 的矩阵均使用实际 effected-view；先以 double 减去稳定局部原点，再生成 float 矩阵。原点超出 1024 方块时重置历史；FG 另保留 64 方块的传送判断。首帧的前后矩阵一致。
+- NRD：正 jitter、倒输入尺寸 motion 尺度、同一局部原点下的当前/上一帧 effected-view 与专用投影 Y 适配；运动图不重复加入 jitter。首帧、重载和原点切换使用 CLEAR_AND_RESTART。
 - XeSS/FSR：负 jitter；FSR 的输入 motion 已为像素，scale 保持 1。原 near/far、曝光、锐化与时间步参数留在适配器。
 - TemporalAccumulation：当前 view 的 pending reset 决定首帧 alpha=1，后续继续配置值；与 NRD/SDK 不共用数值阈值。
 
 相同事实不等于相同 SDK 参数。封存 Ponder PT 的设置不因整理而恢复。非有限矩阵与尺寸的诊断不能变成未经批准的画面回退。
+
+## 重建信号
+
+首表面 diffuse albedo 排除金属和物理透射分量；specular albedo 为随视角与粗糙度变化的方向反射率，不直接使用 F0。数据保持线性，曝光在后续成像阶段处理。NRD 准备与合成使用同一组有下限的材质因子；包含透射背景的信号不按反射 F0 去调制。
+
+`first_hit_diffuse_indirect_light.a` 保存漫反射路径到下一次命中的距离；`first_hit_specular.a` 保存已采样透射路径的该段距离。零表示相应分支未采样，未命中使用远值；`first_hit_refraction.a` 另保留透射分支有效性和物理材质身份。反射专用命中距离仍由 `specular_hit_depth` 提供给 RR；NRD 对反射和透射共同处理时使用有效的最近路径距离，归一化参数来自正在执行的 REBLUR 设置。
+
+首表面发光保存实际发光增益与附加层结果，合成只加一次。NRD 当前执行 REBLUR_DIFFUSE_SPECULAR，仅为该算法建立资源。反射与透射仍共用首表面的法线、深度和运动引导；这不能等同于拥有独立的透射重建器，低采样下的噪声、模糊和历史误配仍需画面对照。
 
 ## 成本与验证
 
@@ -26,3 +34,9 @@ FSR 的有界平滑时钟属于 view，不属于交换链 slot；使用单调时
 FSR 与 XeSS 的实际 dispatch 返回是否接受本次计算；只有成功分支可以消费 SDK 输出。失败分支执行已有的合法输入缩放与深度、motion、法线辅助输出，并使该 view 的下一帧历史以 SDK_FAILURE 重置。初始化尚未完成同样不能消费未写入的输出。共同分流助手不捕获异常；已有 fatal 在 SDK 前后检查，原始错误向上传播，不再追加回退命令。
 
 FSR 诊断分别记录 SDK 接受与 GPU 完成，失败捕获只读回退结果，不伪造 NGX 成功值。CPU 注入接缝验证成功、拒绝与异常的回调次数，未在客户端注入 GPU 故障。实际 SDK 接受日志与最终动态画面仍是不同证据。
+
+## 分支采样时钟
+
+均衡透明分支使用 Native 实际渲染帧的序号，独立于游戏时间、交换链 slot 和相机 jitter；暂停与离屏视图也从相同的真实帧时钟取值。`WorldUBO` 的 `cameraPos` 保留 XYZ，将其原有八字节填充明确为 `samplingFrameIndex` 与 `samplingSeed` 两个 uint，布局仍为 704 字节，Java 传输布局不变。稳定随机种子独立生成，再混入当前 UI 所有者，不改动其他 PT 随机数。
+
+每个对齐 2×2 块包含四个概率区间，任意滑动 3×3 邻域因此都能找到反射与透射样本；各块独立置换，避免全屏重复四像素模板。每组连续四帧中，每个像素遍历四个区间，区间内采用数字扰乱的二进制序列。概率夹限与亮度补偿保持原合同；这是一种有约束的时空分层，不声称具有蓝噪声频谱。既有反射／透射共享引导的限制不由此消除。

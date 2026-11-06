@@ -9,6 +9,7 @@
 class Textures;
 class Framebuffers;
 class Framework;
+class FrameworkContext;
 class Buffers;
 class World;
 
@@ -51,10 +52,15 @@ class Renderer : public Singleton<Renderer> {
     ~Renderer();
 
     std::shared_ptr<Framework> framework();
-    std::shared_ptr<Textures> textures();
-    std::shared_ptr<Framebuffers> framebuffers();
-    std::shared_ptr<Buffers> buffers();
-    std::shared_ptr<World> world();
+    bool tessellationSupported() const noexcept;
+    std::shared_ptr<Textures> textures(const FrameworkContext *overlay = nullptr);
+    std::shared_ptr<Framebuffers> framebuffers(const FrameworkContext *overlay = nullptr);
+    bool defaultDrawFramebufferBound() const;
+    uint64_t producerFramebufferBindings() const;
+    bool producerFramebufferTexture(uint32_t id) const;
+    std::shared_ptr<Buffers> buffers(const FrameworkContext *overlay = nullptr);
+    std::shared_ptr<World> world(const FrameworkContext *input = nullptr);
+    std::shared_ptr<World> inputWorld();
 
     void close();
 
@@ -66,4 +72,5 @@ class Renderer : public Singleton<Renderer> {
     std::shared_ptr<Framebuffers> framebuffers_;
     std::shared_ptr<Buffers> buffers_;
     std::shared_ptr<World> world_;
+    std::atomic_bool tessellationSupported_{false};
 };

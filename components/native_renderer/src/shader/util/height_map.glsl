@@ -5,7 +5,12 @@
 #include "sampling_helpers.glsl"
 
 const float heightMapMinWorldDepth = 1e-5;
-const float heightMapDepthScaleInTexture = 0.25;
+// Maximum parallax depth as a fraction of the texture's world size: 0.2 block for a full-block
+// tile, the common LabPBR resource-pack convention. Packs or settings may override it.
+#ifndef RADIANCE_PARALLAX_DEPTH
+#define RADIANCE_PARALLAX_DEPTH 0.2
+#endif
+const float heightMapDepthScaleInTexture = RADIANCE_PARALLAX_DEPTH;
 const float heightMapTraceBias = 2e-4;
 const float heightMapNearestSecondaryBilinearFallbackDepthRate = 0.02;
 const int heightMapNearestMaxSteps = 1024;

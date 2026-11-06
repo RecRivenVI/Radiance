@@ -22,9 +22,9 @@ public final class PaintingModelCapture {
     public static final int NOT_HANDLED = 0, CAPTURED = 1, FALLBACK_RENDERED = 2;
     private static final int CAPACITY = 512;
     private static final long BYTE_CAPACITY = 16L * 1024 * 1024;
-    private static final List<Entry> CACHE = new ArrayList<>();
+    private static final LinkedHashMap<Key, Entry> CACHE = new LinkedHashMap<>(16, 0.75F, true);
     private static final ThreadLocal<Replay> REPLAY = new ThreadLocal<>();
-    private static long frame;
+    private static long frame, residentBytes;
 
     private PaintingModelCapture() {}
 
@@ -35,17 +35,19 @@ public final class PaintingModelCapture {
 
     static void beginFrame(long currentFrame) {
         frame = currentFrame;
-        CACHE.removeIf(
-                e -> {
-                    if (frame - e.used <= 120) return false;
-                    e.close();
-                    return true;
-                });
+        while (!CACHE.isEmpty() && frame - CACHE.firstEntry().getValue().used > 120) retireOldest();
     }
 
     static void invalidate() {
-        CACHE.forEach(Entry::close);
+        CACHE.values().forEach(Entry::close);
         CACHE.clear();
+        residentBytes = 0;
+    }
+
+    private static void retireOldest() {
+        Entry entry = CACHE.pollFirstEntry().getValue();
+        residentBytes -= entry.bytes;
+        entry.close();
     }
 
     public static int capture(
@@ -87,13 +89,8 @@ public final class PaintingModelCapture {
                         Float.floatToIntBits(back.getU1()),
                         Float.floatToIntBits(back.getV0()),
                         Float.floatToIntBits(back.getV1()));
-        Entry found = null;
-        for (Entry e : CACHE) {
-            if (e.shape.equals(shape) && e.layer == pbr.rigidLayer && e.texture.equals(texture)) {
-                found = e;
-                break;
-            }
-        }
+        var key = new Key(shape, pbr.rigidLayer, texture);
+        Entry found = CACHE.get(key);
         if (found == null) {
             // Only verify the helper's tile query topology while building a definition.
             var lights =
@@ -105,20 +102,12 @@ public final class PaintingModelCapture {
                             painting.getY(),
                             painting.getZ());
             long required = (long) width * height * 24 * 128;
-            long bytes = CACHE.stream().mapToLong(e -> e.bytes).sum();
-            while (CACHE.size() >= CAPACITY || bytes + required > BYTE_CAPACITY) {
-                Entry oldest =
-                        CACHE.stream()
-                                .filter(e -> e.used != frame)
-                                .min(Comparator.comparingLong(e -> e.used))
-                                .orElse(null);
-                if (oldest == null) {
+            while (CACHE.size() >= CAPACITY || residentBytes + required > BYTE_CAPACITY) {
+                if (CACHE.isEmpty() || CACHE.firstEntry().getValue().used == frame) {
                     renderLit(pose, consumer, lights, painting.level(), renderer);
                     return FALLBACK_RENDERED;
                 }
-                CACHE.remove(oldest);
-                bytes -= oldest.bytes;
-                oldest.close();
+                retireOldest();
             }
             try {
                 found =
@@ -128,7 +117,8 @@ public final class PaintingModelCapture {
                 // An altered helper must retain its complete original rendering path.
                 return NOT_HANDLED;
             }
-            CACHE.add(found);
+            CACHE.put(key, found);
+            residentBytes += found.bytes;
         }
         found.used = frame;
         var owner = pbr.rigidOwner;
@@ -201,6 +191,8 @@ public final class PaintingModelCapture {
             int bu1,
             int bv0,
             int bv1) {}
+
+    private record Key(Shape shape, RenderType layer, TextureTasks.Owner texture) {}
 
     @FunctionalInterface
     interface LightReader {

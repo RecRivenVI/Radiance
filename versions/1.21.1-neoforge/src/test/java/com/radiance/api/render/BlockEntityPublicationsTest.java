@@ -47,6 +47,35 @@ class BlockEntityPublicationsTest {
     }
 
     @Test
+    void visibleUnseenRemovedAndHeldOwnersKeepIndependentLifetimes() {
+        var first = owner();
+        var unseen = owner();
+        var removed = owner();
+        try (var storage = new Storage()) {
+            BlockEntityPublications.beginFrame();
+            for (var entity : List.of(first, unseen, removed))
+                BlockEntityPublications.capture(entity, storage, List.of(), data(), data());
+            BlockEntityPublications.endFrame();
+            BlockEntityPublications.beginFrame();
+            BlockEntityPublications.capture(first, storage, List.of(), data(), data());
+            BlockEntityPublications.capture(first, storage, List.of(), data(), data());
+            BlockEntityPublications.removed(removed);
+            BlockEntityPublications.reconcileRemovals();
+            BlockEntityPublications.endFrame();
+            assertEquals(1, BlockEntityPublications.counters()[0]);
+            assertFalse(BlockEntityPublications.removed(unseen));
+            assertFalse(BlockEntityPublications.removed(removed));
+            var hold = BlockEntityPublications.retainSource(null, null, () -> true);
+            BlockEntityPublications.removed(first);
+            BlockEntityPublications.endFrame();
+            assertEquals(1, BlockEntityPublications.counters()[0]);
+            hold.cancel();
+            BlockEntityPublications.endFrame();
+            assertEquals(0, BlockEntityPublications.counters()[0]);
+        }
+    }
+
+    @Test
     void onlyExplicitHoldsKeepRemovedEmptyPublicationsAlive() {
         var entity = owner();
         try (var storage = new Storage()) {

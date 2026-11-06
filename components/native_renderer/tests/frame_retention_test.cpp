@@ -35,6 +35,18 @@ int main() {
         require(retention.groups() == 3 && retention.oldestResources() == 1, "frames 3 (holding 30), 4 and 5 remain");
     }
 
+    {
+        FrameRetention<int> retention;
+        retention.beginFrame(1, 0, inFlight);
+        retention.beginFrame(2, 0, inFlight);
+        retention.retain(10, 1);
+        retention.retain(20);
+        auto first = retention.beginFrame(4, 1, inFlight);
+        require(first.size() == 1 && first.front().resources == std::vector<int>{10},
+                "worker retirement uses the executing frame after the producer opens the next one");
+        require(retention.resources() == 1, "the producer frame still retains its resources");
+    }
+
     // Incomplete GPU work is never released, however many frames begin.
     {
         FrameRetention<int> retention;

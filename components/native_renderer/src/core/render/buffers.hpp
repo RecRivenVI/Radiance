@@ -13,18 +13,21 @@
 #include <vector>
 
 class Framework;
+class World;
 
 class Buffers : public SharedObject<Buffers> {
   public:
     Buffers(std::shared_ptr<Framework> framework);
 
-    void resetFrame();
-    uint32_t allocateBuffer();
+    void resetFrame(bool overlayAlreadyOpen);
+    void beginOverlayFrame(uint32_t frameIndex);
+    uint32_t allocateBuffer(uint32_t frameIndex);
     uint32_t allocatePersistentBuffer();
     void releasePersistentBuffer(uint32_t id);
-    void initializeBuffer(uint32_t id, uint32_t size, VkBufferUsageFlags usageFlags);
-    void buildIndexBuffer(uint32_t dstId, int type, int drawMode, int vertexCount, int expectedIndexCount);
-    void queueOverlayUpload(uint8_t *srcPointer, uint32_t dstId);
+    void initializeBuffer(uint32_t id, uint32_t size, VkBufferUsageFlags usageFlags, uint32_t frameIndex);
+    void buildIndexBuffer(
+        uint32_t dstId, int type, int drawMode, int vertexCount, int expectedIndexCount, uint32_t frameIndex);
+    void queueOverlayUpload(uint8_t *srcPointer, uint32_t dstId, uint32_t frameIndex);
     void queuePersistentUploadRange(uint8_t *srcPointer, uint32_t size, uint32_t dstId, uint32_t dstOffset);
     void queueImportantWorldUpload(std::shared_ptr<vk::DeviceLocalBuffer> buffer);
     void queueImportantWorldUpload(std::shared_ptr<vk::DeviceLocalBuffer> vertexBuffer,
@@ -37,7 +40,9 @@ class Buffers : public SharedObject<Buffers> {
     vk::Data::OverlayPostUBO recordedOverlayPostUniform(uint32_t offset);
     void buildAndUploadOverlayUniformBuffer();
 
-    void setAndUploadWorldUniformBuffer(vk::Data::WorldUBO &ubo);
+    static glm::mat4 vulkanWorldProjection(const glm::mat4 &projection);
+    void setAndUploadWorldUniformBuffer(vk::Data::WorldUBO &ubo, bool coordinatesPrepared = false);
+    static void prepareWorldCoordinates(vk::Data::WorldUBO &ubo, World &world);
     void invalidateWorldHistory() {
         worldHistoryValid_.store(false, std::memory_order_release);
     }
@@ -77,7 +82,7 @@ class Buffers : public SharedObject<Buffers> {
     std::vector<std::map<uint32_t, std::shared_ptr<vk::DeviceLocalBuffer>>> overlayIndexVertexBuffer_;
     std::vector<std::shared_ptr<vk::HostVisibleBuffer>> overlayDrawUniformBuffer_;
     std::vector<std::shared_ptr<vk::HostVisibleBuffer>> overlayPostUniformBuffer_;
-    uint32_t overlayNextID_;
+    std::vector<uint32_t> overlayNextIds_;
     std::vector<std::vector<uint8_t>> overlayDrawUniformData_;
     std::vector<uint32_t> overlayDrawUniformWriteOffset_;
     uint32_t overlayDrawUniformAlignment_ = 1;

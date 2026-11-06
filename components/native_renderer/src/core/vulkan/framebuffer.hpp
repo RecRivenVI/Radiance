@@ -1,6 +1,7 @@
 #pragma once
 
 #include "core/all_extern.hpp"
+#include "core/vulkan/image.hpp"
 
 #include <vector>
 
@@ -31,9 +32,7 @@ class FramebufferBuilder {
   public:
     struct FramebufferAttachmentsBuilder {
         FramebufferBuilder &parent;
-        std::vector<VkImageView> attachments;
-        uint32_t width = -1;
-        uint32_t height = -1;
+        std::vector<ImageViewDescription> attachments;
 
         FramebufferAttachmentsBuilder(FramebufferBuilder &parent);
 

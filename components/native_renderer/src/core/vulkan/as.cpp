@@ -2,6 +2,7 @@
 #include "core/failure_state.hpp"
 #include "core/diagnostics/as_lifetime_trace.hpp"
 #include "core/vulkan/as.hpp"
+#include "core/diagnostics/scene_replay.hpp"
 
 #include "core/vulkan/command.hpp"
 #include "core/vulkan/device.hpp"
@@ -42,6 +43,72 @@ VkAccelerationStructureKHR &vk::BLAS::blas() {
 
 VkDeviceAddress &vk::BLAS::blasDeviceAddress() {
     return blasDeviceAddress_;
+}
+
+std::shared_ptr<vk::BLAS> vk::BLAS::recordCompaction(const std::shared_ptr<VMA> &vma,
+                                                     const std::shared_ptr<CommandBuffer> &commands,
+                                                     VkDeviceSize bytes) {
+    auto storage = DeviceLocalBuffer::create(vma, device_, false, bytes,
+                                             VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
+                                                 VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+                                             0, VMA_MEMORY_USAGE_GPU_ONLY, 256);
+    VkAccelerationStructureCreateInfoKHR create{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+    create.buffer = storage->vkBuffer();
+    create.size = bytes;
+    create.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+    VkAccelerationStructureKHR handle = VK_NULL_HANDLE;
+    if (auto result = vkCreateAccelerationStructureKHR(device_->vkDevice(), &create, nullptr, &handle);
+        result != VK_SUCCESS)
+        mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateAccelerationStructureKHR(compacted BLAS)");
+    auto compacted = BLAS::create(device_, handle, storage);
+    VkCopyAccelerationStructureInfoKHR copy{VK_STRUCTURE_TYPE_COPY_ACCELERATION_STRUCTURE_INFO_KHR};
+    copy.src = blas_;
+    copy.dst = handle;
+    copy.mode = VK_COPY_ACCELERATION_STRUCTURE_MODE_COMPACT_KHR;
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        compacted->captureGeometries = captureGeometries;
+        compacted->capturePrimitiveCounts = capturePrimitiveCounts;
+        mcvr::replay::registerBlasFlags(compacted.get(), VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_BUILD_BIT_KHR |
+                                                             VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR);
+    }
+#endif
+    vkCmdCopyAccelerationStructureKHR(commands->vkCommandBuffer(), &copy);
+    return compacted;
+}
+
+vk::BLASCompactionQueries::BLASCompactionQueries(std::shared_ptr<Device> device, uint32_t capacity)
+    : device_(std::move(device)) {
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR;
+    info.queryCount = capacity;
+    if (auto result = vkCreateQueryPool(device_->vkDevice(), &info, nullptr, &pool_); result != VK_SUCCESS)
+        mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateQueryPool(BLAS compaction)");
+}
+
+vk::BLASCompactionQueries::~BLASCompactionQueries() {
+    vkDestroyQueryPool(device_->vkDevice(), pool_, nullptr);
+}
+
+void vk::BLASCompactionQueries::record(const std::shared_ptr<CommandBuffer> &commands,
+                                       std::span<const VkAccelerationStructureKHR> handles) {
+    commands->barriersMemory({{.srcStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                               .srcAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR,
+                               .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
+                               .dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR}});
+    const auto count = static_cast<uint32_t>(handles.size());
+    vkCmdResetQueryPool(commands->vkCommandBuffer(), pool_, 0, count);
+    vkCmdWriteAccelerationStructuresPropertiesKHR(commands->vkCommandBuffer(), count, handles.data(),
+                                                  VK_QUERY_TYPE_ACCELERATION_STRUCTURE_COMPACTED_SIZE_KHR, pool_, 0);
+}
+
+std::vector<VkDeviceSize> vk::BLASCompactionQueries::read(uint32_t count) const {
+    std::vector<VkDeviceSize> sizes(count);
+    const auto result = vkGetQueryPoolResults(device_->vkDevice(), pool_, 0, count, sizes.size() * sizeof(VkDeviceSize),
+                                              sizes.data(), sizeof(VkDeviceSize), VK_QUERY_RESULT_64_BIT);
+    if (result != VK_SUCCESS)
+        mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkGetQueryPoolResults(BLAS compaction)");
+    return sizes;
 }
 
 vk::TLAS::TLAS(std::shared_ptr<Device> device,
@@ -195,7 +262,15 @@ std::shared_ptr<vk::BLAS> vk::BLASBuilder::buildAndSubmit(std::shared_ptr<Device
     const VkAccelerationStructureBuildRangeInfoKHR *pBuildRanges = buildRanges.data();
     vkCmdBuildAccelerationStructuresKHR(commandBuffer->vkCommandBuffer(), 1, &buildInfo, &pBuildRanges);
 
-    return BLAS::create(device, dstBLAS_, blasBuffer_);
+    auto result = BLAS::create(device, dstBLAS_, blasBuffer_);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        result->captureGeometries = geometryBuilder_.geometries;
+        result->capturePrimitiveCounts = geometryBuilder_.primitiveCounts;
+        mcvr::replay::registerBlasFlags(result.get(), flags_);
+    }
+#endif
+    return result;
 }
 
 std::shared_ptr<vk::BLAS> vk::BLASBuilder::build(std::shared_ptr<Device> device) {
@@ -211,7 +286,15 @@ std::shared_ptr<vk::BLAS> vk::BLASBuilder::build(std::shared_ptr<Device> device)
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateAccelerationStructureKHR(BLAS AABBs)");
     }
 
-    return BLAS::create(device, dstBLAS_, blasBuffer_);
+    auto result = BLAS::create(device, dstBLAS_, blasBuffer_);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        result->captureGeometries = geometryBuilder_.geometries;
+        result->capturePrimitiveCounts = geometryBuilder_.primitiveCounts;
+        mcvr::replay::registerBlasFlags(result.get(), flags_);
+    }
+#endif
+    return result;
 }
 
 std::shared_ptr<vk::BLAS> vk::BLASBuilder::buildExternal(std::shared_ptr<Device> device,
@@ -230,7 +313,15 @@ std::shared_ptr<vk::BLAS> vk::BLASBuilder::buildExternal(std::shared_ptr<Device>
         mcvr::failure::raise(mcvr::failure::Kind::runtime, result, "vkCreateAccelerationStructureKHR(BLAS update)");
     }
 
-    return BLAS::create(device, dstBLAS_, buffer);
+    auto result = BLAS::create(device, dstBLAS_, buffer);
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    if (mcvr::replay::captureEnabled()) {
+        result->captureGeometries = geometryBuilder_.geometries;
+        result->capturePrimitiveCounts = geometryBuilder_.primitiveCounts;
+        mcvr::replay::registerBlasFlags(result.get(), flags_);
+    }
+#endif
+    return result;
 }
 
 void vk::BLASBuilder::submit(std::shared_ptr<vk::CommandBuffer> commandBuffer) {
@@ -458,16 +549,17 @@ vk::TLASBuilder::TLASInstanceBuilder::defineInstance(VkTransformMatrixKHR transf
     return *this;
 }
 
-std::shared_ptr<vk::TLASBuilder>
-vk::TLASBuilder::TLASInstanceBuilder::endInstanceBuilder(std::shared_ptr<Device> device, std::shared_ptr<VMA> vma) {
+std::shared_ptr<vk::TLASBuilder> vk::TLASBuilder::TLASInstanceBuilder::endInstanceBuilder(
+    std::shared_ptr<Device> device, std::shared_ptr<VMA> vma, VkBufferUsageFlags usage) {
     instanceBuffer =
         DeviceLocalBuffer::create(vma, device, false, sizeof(VkAccelerationStructureInstanceKHR) * instances.size(),
                                   VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT |
-                                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR,
+                                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | usage,
                                   0, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 16);
     instanceBuffer->uploadToStagingBuffer(instances.data());
     if (mcvr::diagnostics::as_lifetime::membershipEnabled()) {
         for (size_t i = 0; i < instances.size(); ++i) {
+            if (instances[i].accelerationStructureReference == 0) continue;
             mcvr::diagnostics::as_lifetime::note(
                 mcvr::diagnostics::as_lifetime::Kind::instance, (uint64_t)instanceModels[i]->blas(),
                 instances[i].accelerationStructureReference, instanceBuffer->bufferAddress(), i);
@@ -540,11 +632,13 @@ std::shared_ptr<vk::TLASBuilder> vk::TLASBuilder::allocateBuffers(std::shared_pt
 }
 
 std::shared_ptr<vk::TLAS> vk::TLASBuilder::buildAndSubmit(std::shared_ptr<Device> device,
-                                                          std::shared_ptr<CommandBuffer> commandBuffer) {
+                                                          std::shared_ptr<CommandBuffer> commandBuffer,
+                                                          bool assembledInstances) {
     device->checkpoint(commandBuffer->vkCommandBuffer(), "world.TLAS.build");
-    tlasInstanceBuilder_.instanceBuffer->uploadToBuffer(commandBuffer);
+    if (!assembledInstances) tlasInstanceBuilder_.instanceBuffer->uploadToBuffer(commandBuffer);
     std::vector<vk::CommandBuffer::BufferMemoryBarrier> bufferBarriers{{
-        .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+        .srcStageMask = assembledInstances ? VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT :
+                                             VK_PIPELINE_STAGE_2_TRANSFER_BIT,
         .srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT,
         .dstStageMask = VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
         .dstAccessMask = VK_ACCESS_2_MEMORY_READ_BIT,

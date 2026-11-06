@@ -6,10 +6,12 @@
 #include <sl_dlss_g.h>
 #include <sl_reflex.h>
 #include <filesystem>
+#include <mutex>
 #include "optional_feature_state.hpp"
 
 namespace mcvr {
-// One owner per Vulkan device. All feature calls are made by the render thread.
+// One owner per Vulkan device. Only a staged token's pacing and simulation marker
+// may run on the producer while the worker uses the active frame.
 class StreamlineRuntime {
   public:
     static StreamlineRuntime &get();
@@ -26,10 +28,18 @@ class StreamlineRuntime {
     bool supported(sl::Feature feature) const;
     sl::FrameToken *frame();
     void beginFrame(int reflexMode, uint32_t fpsLimit = 0);
+    bool activatePreparedFrame();
+    bool prepareNextFrame(int reflexMode, uint32_t fpsLimit);
+    void beginSimulation(bool prepared = false);
+    void beginRenderSubmission();
+    void invalidateFramePacing() {
+        reflexMode_ = -1;
+    }
     bool pacesFrames() const {
         return pacing_;
     }
     void marker(sl::PCLMarker marker);
+    void reportLatency();
     uint32_t allocateViewport();
     bool check(sl::Result result, const char *operation);
     OptionalFeatureLoadResult setFGLoaded(bool loaded);
@@ -53,10 +63,13 @@ class StreamlineRuntime {
     MCVR_SL_API(slDLSSGSetOptions)
     MCVR_SL_API(slDLSSGGetState)
     MCVR_SL_API(slReflexSetOptions)
+    MCVR_SL_API(slReflexGetState)
     MCVR_SL_API(slReflexSleep)
     MCVR_SL_API(slPCLSetMarker)
 #undef MCVR_SL_API
   private:
+    sl::FrameToken *newFrameToken();
+    void mark(sl::PCLMarker marker, sl::FrameToken *token);
     bool initialized_ = false;
     void *library_{};
     VkPhysicalDevice physical_{};
@@ -64,9 +77,18 @@ class StreamlineRuntime {
     PFN_vkGetDeviceProcAddr deviceProc_{};
     PFun_slShutdown *shutdown_{};
     sl::FrameToken *token_{};
+    enum class FramePhase { Unstarted, Simulating, Rendering };
+    FramePhase phase_ = FramePhase::Unstarted;
+    std::mutex tokenCreation_;
+    uint32_t nextFrameIndex_ = 0;
+    sl::FrameToken *nextToken_{};
+    FramePhase nextPhase_ = FramePhase::Unstarted;
+    bool nextPacing_ = false;
     uint32_t nextViewport_ = 1;
     int reflexMode_ = -1;
+    uint32_t reflexFrameLimitUs_ = 0;
     bool pacing_ = false;
+    uint64_t lastLatencyReport_ = 0;
     bool fgLoaded_ = true;
 };
 sl::float4x4 slMatrix(const glm::mat4 &matrix);

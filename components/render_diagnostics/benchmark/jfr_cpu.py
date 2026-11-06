@@ -4,11 +4,13 @@ from collections import Counter, defaultdict
 import json
 import re
 import subprocess
+import datetime
 
 
 EVENTS = ','.join(('jdk.ExecutionSample', 'jdk.NativeMethodSample', 'jdk.ObjectAllocationSample',
                    'jdk.JavaMonitorEnter', 'jdk.ThreadPark', 'jdk.GCPhasePause', 'jdk.ThreadCPULoad',
-                   'jdk.GarbageCollection'))
+                   'jdk.GarbageCollection', 'radiance.RenderFrame', 'jdk.ClassLoad', 'jdk.ClassDefine',
+                   'jdk.Compilation', 'jdk.SafepointBegin', 'jdk.SafepointStateSynchronization', 'jdk.ExecuteVMOperation'))
 
 
 def duration_seconds(value):
@@ -24,6 +26,60 @@ def duration_seconds(value):
 def method_name(frame):
     method = frame.get('method') or {}
     return str((method.get('type') or {}).get('name', '?')).replace('/', '.') + '.' + method.get('name', '?')
+
+
+def attribute_frames(events, threshold_ms=40):
+    """Join JFR's own clock and frame identities; overlapping event durations stay separate."""
+    def start(value):
+        return datetime.datetime.fromisoformat(value['startTime'].replace('Z', '+00:00')).timestamp()
+
+    def identity(thread):
+        return thread.get('javaThreadId'), thread.get('osThreadId')
+
+    result = []
+    for event in events:
+        value = event['values']
+        if event['type'] != 'radiance.RenderFrame':
+            continue
+        measured = value.get('measuredWallNs', 0)
+        wall_ms = duration_seconds(measured) * 1000 if isinstance(measured, str) else measured / 1e6
+        if wall_ms < threshold_ms:
+            continue
+        begin = start(value)
+        end = begin + duration_seconds(value.get('duration', 0))
+        owner = identity(value.get('eventThread') or {})
+        samples, related, compilations = Counter(), [], []
+        for item in events:
+            kind, data = item['type'], item['values']
+            if kind == 'radiance.RenderFrame' or 'startTime' not in data:
+                continue
+            at = start(data)
+            if kind in ('jdk.ExecutionSample', 'jdk.NativeMethodSample'):
+                if begin <= at < end and identity(data.get('sampledThread') or {}) == owner:
+                    frames = (data.get('stackTrace') or {}).get('frames', [])
+                    stack = tuple(method_name(f) for f in frames[:12])
+                    samples[stack] += 1
+                continue
+            duration = duration_seconds(data.get('duration', 0))
+            overlap = max(0, min(end, at + duration) - max(begin, at))
+            if not overlap:
+                continue
+            same_thread = identity(data.get('eventThread') or {}) == owner
+            if not same_thread and kind not in ('jdk.GCPhasePause', 'jdk.Compilation', 'jdk.SafepointBegin',
+                                                'jdk.SafepointStateSynchronization', 'jdk.ExecuteVMOperation'):
+                continue
+            cls = data.get('loadedClass') or data.get('definedClass') or {}
+            method = data.get('method') or {}
+            target = compilations if kind == 'jdk.Compilation' else related
+            target.append(dict(event=kind, durationMs=duration * 1000, overlapMs=overlap * 1000,
+                               renderThread=same_thread, className=cls.get('name'),
+                               method=method.get('name'), operation=data.get('operation')))
+        result.append(dict(frame=value['frameToken'], startTime=value['startTime'], wallMs=wall_ms,
+                           renderSamples=sum(samples.values()),
+                           topSampleStacks=[dict(samples=count, stack=list(stack)) for stack, count in samples.most_common(8)],
+                           overlappingEvents=sorted(related, key=lambda e: -e['overlapMs'])[:24],
+                           overlappingCompilations=sorted(compilations, key=lambda e: -e['overlapMs'])[:8]))
+    return sorted(result, key=lambda row: -row['wallMs'])
 
 
 def summarize(events, render_thread='Render thread'):
@@ -97,6 +153,7 @@ def summarize(events, render_thread='Render thread'):
         elif kind == 'jdk.GCPhasePause':
             pauses.append(duration_seconds(value.get('duration', 0)) * 1000)
     return dict(eventCounts=dict(counts),
+                longFrameAttribution=attribute_frames(events),
                 renderSampleGroups=dict(render_groups), entityRenderLeaves=entity_leaves.most_common(30),
                 sampledThreads={name: dict(samples=sum(rows.values()), topLeaves=rows.most_common(25),
                                           truncatedStacks=truncated[name], maximumExportedDepth=depth[name],
@@ -123,6 +180,9 @@ if __name__ == '__main__':
     parser.add_argument('output')
     parser.add_argument('--jfr-tool', default='jfr')
     parser.add_argument('--skip-allocation', action='store_true', help='CPU/GC/wait diagnosis without unused allocation exports')
+    parser.add_argument('--render-exporter', help='Compiled RenderJfrExport class directory; filter before expanding metadata')
+    parser.add_argument('--java-tool', default='java')
+    parser.add_argument('--thread-pattern', default='', help='Additional worker thread names in compact export')
     args = parser.parse_args()
     # Deep allocation stacks make this CLI export enormous. Only execution attribution
     # needs caller chains; allocation/wait ranking uses its documented leaf method.
@@ -130,12 +190,19 @@ if __name__ == '__main__':
     events = []
     others = tuple(e for e in EVENTS.split(',') if e not in samples
                    and not (args.skip_allocation and e == 'jdk.ObjectAllocationSample'))
-    for names, depth in ((samples, '128'), (others, '5')):
-        output = subprocess.check_output([args.jfr_tool, 'print', '--json', '--stack-depth', depth,
-                                          '--events', ','.join(names), args.recording], timeout=60)
-        events.extend(json.loads(output)['recording']['events'])
+    if args.render_exporter:
+        output = subprocess.check_output([args.java_tool, '-cp', args.render_exporter,
+                                          'com.radiance.audit.tools.RenderJfrExport', args.recording,
+                                          args.thread_pattern or '(?!)'], timeout=60)
+        events = json.loads(output)['recording']['events']
+    else:
+        for names, depth in ((samples, '128'), (others, '5')):
+            output = subprocess.check_output([args.jfr_tool, 'print', '--json', '--stack-depth', depth,
+                                              '--events', ','.join(names), args.recording], timeout=60)
+            events.extend(json.loads(output)['recording']['events'])
     result = summarize(events)
     result['excludedEvents'] = ['jdk.ObjectAllocationSample'] if args.skip_allocation else []
+    result['exportScope'] = ('Render-thread, selected worker stacks and related global events; worker pattern=' + args.thread_pattern) if args.render_exporter else 'Configured event types from all threads'
     with open(args.output, 'w', encoding='utf-8') as file:
         json.dump(result, file, indent=2)
         file.write('\n')

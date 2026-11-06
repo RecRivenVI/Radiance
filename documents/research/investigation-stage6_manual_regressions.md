@@ -9,7 +9,7 @@
 1. 放置方块等触发区块编译时，告示牌等实体渲染闪烁。
 2. 站立时约 30 FPS，短暂下蹲后由偏暖变为正常色调，帧率约翻倍，稍后再次下降。
 
-结论对应[当前候选清单](../../components/render_diagnostics/build/takeover-stage6/manifest.json)，不合并此前候选的通过记录。
+结论对应当前候选清单（`components/render_diagnostics/build/takeover-stage6/manifest.json`），不合并此前候选的通过记录。
 
 ## 方法
 

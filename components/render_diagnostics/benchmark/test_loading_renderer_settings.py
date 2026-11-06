@@ -37,6 +37,20 @@ class EffectiveSettingsTest(unittest.TestCase):
             self.assertNotIn('obsolete',ray)
             config.write_text(header+'  - name: '+prefix+'num_ray_bounces\n    value: \'6\'\n')
             self.assertEqual('6',expectations(p/'core.jar',p)['modules']['render_pipeline.module.ray_tracing.name'][prefix+'num_ray_bounces'])
+            nrd = header.replace('preset.rt_dlss', 'preset.rt_nrd_dlss') + (
+                '- entryName: render_pipeline.module.nrd.name\n'
+                '  attributes:\n'
+                '  - name: render_pipeline.module.nrd.attribute.checkerboard_mode\n'
+                '    value: white\n'
+                '- entryName: render_pipeline.module.dlss_sr.name\n'
+            )
+            config.write_text(nrd)
+            nrd_modules = expectations(p/'core.jar',p)['modules']
+            self.assertEqual('white',nrd_modules['render_pipeline.module.nrd.name']['render_pipeline.module.nrd.attribute.checkerboard_mode'])
+            self.assertIn('render_pipeline.module.dlss_sr.name',nrd_modules)
+            config.write_text(nrd.replace('module.dlss_sr.name','module.dlss.name'))
+            with self.assertRaisesRegex(ValueError,'NRD and DLSS SR'):
+                expectations(p/'core.jar',p)
 
 
 if __name__ == '__main__':

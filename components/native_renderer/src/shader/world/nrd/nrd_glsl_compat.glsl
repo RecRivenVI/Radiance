@@ -1,4 +1,4 @@
-// GLSL adapter for the subset of NVIDIA NRD 4.17.3's public shader contract
+// GLSL adapter for the subset of NVIDIA NRD 4.18's public shader contract
 // used by MCVR. The upstream HLSL-compatible header contains scalar broadcast
 // expressions that glslang rejects even when NRD_GLSL is enabled, so keep the
 // exact used formulas here instead of compiling the unrelated full header.
@@ -77,7 +77,7 @@ float REBLUR_FrontEnd_GetNormHitDist(
     float normalization =
         (hitDistanceParameters.x + abs(viewZ) * hitDistanceParameters.y) *
         mix(hitDistanceParameters.z, 1.0, specMagicCurve);
-    return max(clamp(hitDistance / normalization, 0.0, 1.0), NRD_EPS);
+    return clamp(hitDistance / normalization, 0.0, 1.0);
 }
 
 vec4 REBLUR_FrontEnd_PackRadianceAndNormHitDist(

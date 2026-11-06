@@ -23,15 +23,23 @@ vec3 CalculateF0(vec3 n, vec3 k) {
     return r;
 }
 
+float labPbrEmission(float specularAlpha) {
+    int emission = int(round(specularAlpha * 255.0));
+    return emission == 255 ? 0.0 : emission / 254.0;
+}
+
 LabPBRMat convertLabPBRMaterial(vec4 texAlbedo,
                                 vec4 texSpecular,
                                 vec4 texNormal,
                                 bool allowAlphaTransmission) {
     LabPBRMat mat;
 
-    mat.roughness = pow(1.0 - texSpecular.r, 2.0);
-    // LabPBR: A value of 255 (100%) results in a very smooth material (e.g. polished granite)
-    mat.roughness = mix(0.01, 1.0, mat.roughness);
+    // LabPBR red is perceptual smoothness; its linear roughness (1 - s)^2 is already the GGX alpha.
+    // MaterialInfo.roughness is perceptual: every BSDF squares it into alpha (disney.glsl,
+    // dielectric.glsl). Storing (1 - s)^2 here squared it twice, alpha = (1 - s)^4, which turned
+    // moderately rough metals into near mirrors. 255 (100%) is a very smooth material; the floor
+    // keeps the previous minimum alpha of 1e-4.
+    mat.roughness = max(0.01, 1.0 - texSpecular.r);
 
     float sssOffset = 65.0 / 255.0;
     mat.subSurface = texSpecular.b < sssOffset ? 0.0 : (texSpecular.b - sssOffset) / (1.0 - sssOffset);
@@ -43,12 +51,7 @@ LabPBRMat convertLabPBRMaterial(vec4 texAlbedo,
     mat.ior = 1.5;
     mat.f0 = vec3(0.04);
 
-    int intEmission = int(round(texSpecular.a * 255.0));
-    if (intEmission == 255) {
-        mat.emission = 0;
-    } else {
-        mat.emission = intEmission / 254.0;
-    }
+    mat.emission = labPbrEmission(texSpecular.a);
 
     if (metalIdx < 230) {
         mat.metallic = 0.0;
@@ -104,7 +107,7 @@ LabPBRMat convertLabPBRMaterial(vec4 texAlbedo,
     mat.normal.xy = texNormal.xy * 2.0 - 1.0;
     mat.normal.z = sqrt(max(0.0, 1.0 - dot(mat.normal.xy, mat.normal.xy)));
 
-    mat.ao = texNormal.x;
+    mat.ao = texNormal.z;
     mat.height = texNormal.w;
 
     return mat;

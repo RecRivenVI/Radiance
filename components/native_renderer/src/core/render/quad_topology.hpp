@@ -1,4 +1,5 @@
 #pragma once
+#include "common/primitive_policy.hpp"
 
 #include <algorithm>
 #include <array>

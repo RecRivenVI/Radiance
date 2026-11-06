@@ -12,15 +12,23 @@ import net.minecraft.world.level.Level;
 /** Bounded packaged startup/dimension checks; no desktop input and no product-only dependencies. */
 public final class WorldMaterialsProbe {
     private static final String MODE = System.getProperty("radiance.audit.worldMaterials134", "");
+    private static final boolean CAPTURE_PBR_TURN =
+            Boolean.getBoolean("radiance.audit.capturePbrTurn");
     private static final Map<String, Object> RESULT = new LinkedHashMap<>();
     private static long previous, maximumGap, ready, transition;
     private static int frames, step;
     private static int menuFrames;
     private static boolean done;
+    private static boolean snapshotPending;
+    private static long quiesceStarted;
     private static boolean effectiveSettingsChecked;
     private static java.util.concurrent.CompletableFuture<Void> setup;
+    private static int lightToggleStep;
+    private static boolean lightToggleCaptured;
+    private static boolean lightToggleReturning;
     private static int scene;
     private static long inkSpawn;
+    private static float pbrTurnYaw;
     private static final Map<String, String> savedTone = new LinkedHashMap<>();
     private static final String[][] SURFACES = {
         {"continuous-media", "time set noon", "tp @a 0 66 7 facing 0 66 0"},
@@ -52,6 +60,48 @@ public final class WorldMaterialsProbe {
         {"metal-grazing-left", "tp @a 10 65.14 -2 facing 20 65 -2"},
         {"continuous-media", "tp @a 0 66 7 facing 0 66 0"}
     };
+    private static final String[][] DISTANT_PBR = {
+        {"iron-near", "time set noon", "tp @a -14 68 21 facing 0 69 21"},
+        {"iron-far", "tp @a -150 70 21 facing 0 69 21"},
+        {"iron-far-turn", "tp @a -150 70 21 facing 0 69 30"},
+        {"bars-near", "tp @a -14 68 38 facing 0 69 38"},
+        {"bars-far", "tp @a -150 70 38 facing 0 69 38"},
+        {"bars-far-turn", "tp @a -150 70 38 facing 0 69 44"}
+    };
+    private static final String[][] LIGHTS = {
+        {
+            "light-origin",
+            "time set midnight",
+            "fill -4 63 -7 4 70 -7 white_concrete",
+            "setblock 5 66 -4 air",
+            "setblock 0 67 -6 sea_lantern",
+            "tp @a 0 67 0 facing 0.5 67.5 -5.5"
+        },
+        {"light-moved", "setblock 0 67 -6 air", "setblock 2 67 -6 sea_lantern"}
+    };
+
+    private static final String[][] MEDIA = {
+        {"water-entry", "time set noon", "tp @a 0 71 2 facing 0 64 0"},
+        {"water-exit-normal", "tp @a 0 65.2 0 0 -90"},
+        {"water-exit-tir", "tp @a 0 65.2 0 0 -25"},
+        {"water-camera-bottom", "tp @a 0 65.2 0 0 85"},
+        {"water-camera-entity", "tp @a -3 65.2 -3 facing 0 66 0"},
+        {"water-glass", "tp @a 5 65.2 0 facing 12 67 0"},
+        {"water-glass-grazing", "tp @a 5 65.2 -4 facing 7 66.82 5"},
+        {"glass-camera-opaque", "tp @a 13.5 65 11.5 facing 13.5 66.62 13"},
+        {"pane-camera-air", "tp @a 20.1375 65.0625 0.3 facing 24 66.6825 0.3"},
+        {"pane-camera-inside", "tp @a 20.5 65.0625 0.5 facing 24 66.6825 0.5"},
+        {"red-blue-contact", "tp @a 10 65 -2 facing 18 66.62 -2"},
+        {"blue-red-contact", "tp @a 15.5 65 -2 facing 9 66.62 -2"},
+        {"grazing-glass", "tp @a 8.2 65 -5 facing 7 66.62 4"},
+        {"dynamic-isolated", "tp @a 25 66 10.5 facing 29 67.62 10.5"},
+        {"dynamic-internal-contact", "tp @a 25 64 10.5 facing 30 65.62 10.5"},
+        {"dynamic-approach", "tp @a 27 64 10.5 facing 33 65.62 10.5"},
+        {"dynamic-separate", "tp @a 27 64 10.5 facing 33 65.62 10.5"},
+        {"dynamic-real-gap", "tp @a 27 64 10.5 facing 33 65.62 10.5"},
+        {"cross-section-contact", "tp @a 28 65.1 18 facing 35 66.72 18"},
+        {"partial-pane-water", "tp @a 37 64.9 18.5 facing 42 66.52 18.5"}
+    };
 
     private WorldMaterialsProbe() {}
 
@@ -61,6 +111,18 @@ public final class WorldMaterialsProbe {
         if (previous != 0) maximumGap = Math.max(maximumGap, now - previous);
         previous = now;
         try {
+            if (lightToggleReturning && mc.level == null) {
+                if (mc.screen instanceof TitleScreen && mc.getOverlay() == null && step == 3) {
+                    step = 4;
+                    mc.createWorldOpenFlows()
+                            .openWorld("Audit Benchmark", () -> mc.setScreen(new TitleScreen()));
+                }
+                return;
+            }
+            if (snapshotPending) {
+                finish(mc);
+                return;
+            }
             if (MODE.equals("startup")) {
                 if (!(mc.screen instanceof TitleScreen) || mc.getOverlay() != null) return;
                 if (!CityFrameComparisonProbe.viewportReady(mc, now)) return;
@@ -92,8 +154,30 @@ public final class WorldMaterialsProbe {
                 }
                 return;
             }
+            if (MODE.equals("frame-execution")) {
+                if (FrameExecutionProbe.poll(mc, now, RESULT)) finish(mc);
+                return;
+            }
             if (mc.level == null || mc.player == null || mc.getOverlay() != null) return;
             if (!CityFrameComparisonProbe.viewportReady(mc, now)) return;
+            if (MODE.equals("optical-motion")) {
+                if (OpticalMotionProbe.poll(mc, RESULT)) finish(mc);
+                return;
+            }
+            if (MODE.equals("scene-store") || MODE.equals("scene-store-auxiliary")) {
+                if (SceneStoreProbe.poll(mc, RESULT)) finish(mc);
+                return;
+            }
+            if (MODE.equals("loopback")) {
+                if (mc.getSingleplayerServer() != null)
+                    throw new IllegalStateException("Loopback check entered an integrated server");
+                if (++frames >= 30) finish(mc);
+                return;
+            }
+            if (MODE.startsWith("deep-")) {
+                depthFixture(mc, now);
+                return;
+            }
             if (MODE.equals("levitite-stress") && !effectiveSettingsChecked) {
                 EffectiveRenderSettings.checkpoint(mc, "levitite-stress");
                 effectiveSettingsChecked = true;
@@ -102,7 +186,12 @@ public final class WorldMaterialsProbe {
                     || MODE.equals("levitite")
                     || MODE.equals("levitite-ponder")
                     || MODE.equals("levitite-stress")) return;
-            if (MODE.equals("surfaces") || MODE.equals("normals")) {
+            if (MODE.equals("surfaces")
+                    || MODE.equals("normals")
+                    || MODE.equals("pbr-distance")
+                    || MODE.equals("media")
+                    || MODE.equals("lights")
+                    || MODE.equals("light-toggle")) {
                 surfaces(mc, now);
                 return;
             }
@@ -273,8 +362,48 @@ public final class WorldMaterialsProbe {
     }
 
     private static void surfaces(Minecraft mc, long now) throws Exception {
-        String[][] scenes = MODE.equals("normals") ? NORMALS : SURFACES;
+        String[][] scenes =
+                switch (MODE) {
+                    case "media" -> MEDIA;
+                    case "normals" -> NORMALS;
+                    case "pbr-distance" -> DISTANT_PBR;
+                    case "lights", "light-toggle" -> LIGHTS;
+                    default -> SURFACES;
+                };
         if (setup == null) {
+            if (MODE.equals("pbr-distance")) {
+                for (String material : java.util.List.of("iron_block", "iron_bars")) {
+                    var location =
+                            net.minecraft.resources.ResourceLocation.withDefaultNamespace(
+                                    "textures/block/" + material + "_s.png");
+                    var resource = mc.getResourceManager().getResourceOrThrow(location);
+                    if (!resource.sourcePackId().contains("SPBR"))
+                        throw new AssertionError(
+                                "SPBR material not active: " + resource.sourcePackId());
+                    RESULT.put(material + "SpecularResource", resource.sourcePackId());
+                }
+                var server = java.util.Objects.requireNonNull(mc.getSingleplayerServer());
+                setup =
+                        java.util.concurrent.CompletableFuture.runAsync(
+                                () -> {
+                                    var source =
+                                            server.createCommandSourceStack()
+                                                    .withSuppressedOutput()
+                                                    .withPermission(4);
+                                    for (String c :
+                                            java.util.List.of(
+                                                    "gamerule doDaylightCycle false",
+                                                    "gamerule doMobSpawning false",
+                                                    "gamemode spectator @a",
+                                                    "weather clear",
+                                                    "fill 0 65 15 0 76 28 iron_block",
+                                                    "fill 0 65 32 0 76 45 iron_bars[north=true,south=true]",
+                                                    "fill -152 63 15 0 63 45 white_concrete"))
+                                        server.getCommands().performPrefixedCommand(source, c);
+                                },
+                                server);
+                return;
+            }
             if (MODE.equals("normals")) {
                 for (String material : java.util.List.of("yellow", "orange")) {
                     var location =
@@ -321,6 +450,35 @@ public final class WorldMaterialsProbe {
                                                             .withSuppressedOutput()
                                                             .withPermission(4),
                                                     c);
+                                if (MODE.equals("media"))
+                                    for (String c :
+                                            java.util.List.of(
+                                                    "kill @e[type=!minecraft:player]",
+                                                    "fill -7 63 -7 18 72 14 air",
+                                                    "fill -6 63 -6 6 63 6 white_concrete",
+                                                    "fill -6 64 -6 6 68 6 water",
+                                                    "fill 7 64 -6 7 69 6 cyan_stained_glass",
+                                                    "fill 8 63 -6 18 63 14 white_concrete",
+                                                    "fill 12 64 10 14 68 12 red_stained_glass",
+                                                    "setblock 13 66 12 white_concrete",
+                                                    "setblock 20 66 0 lime_stained_glass_pane[east=true,north=true,south=true,west=false]",
+                                                    "fill 12 64 -5 12 69 5 red_stained_glass",
+                                                    "fill 13 64 -5 13 69 5 blue_stained_glass",
+                                                    "fill 16 64 -5 16 69 5 yellow_concrete",
+                                                    "setblock 11 68 0 sea_lantern",
+                                                    "fill 25 64 8 42 64 20 white_concrete",
+                                                    "fill 32 65 10 32 65 10 blue_stained_glass",
+                                                    "fill 30 65 17 31 68 19 glass",
+                                                    "fill 32 65 17 33 68 19 blue_stained_glass",
+                                                    "setblock 39 66 18 glass_pane[east=true,west=true,north=false,south=false]",
+                                                    "fill 40 65 18 41 66 18 water",
+                                                    "summon spider 0 65.5 0 {NoAI:1b,NoGravity:1b,PersistenceRequired:1b}"))
+                                        server.getCommands()
+                                                .performPrefixedCommand(
+                                                        server.createCommandSourceStack()
+                                                                .withSuppressedOutput()
+                                                                .withPermission(4),
+                                                        c);
                                 if (MODE.equals("normals"))
                                     for (String c :
                                             java.util.List.of(
@@ -339,6 +497,61 @@ public final class WorldMaterialsProbe {
         }
         if (!setup.isDone()) return;
         setup.join();
+        if (MODE.equals("pbr-distance") && step == 2) {
+            // Keep the readback separate from the presentation screenshot and let
+            // the GPU finish the short burst before moving to the next fixture.
+            if (CAPTURE_PBR_TURN) {
+                mc.player.setYRot(pbrTurnYaw + frames * 0.25F);
+                mc.player.yRotO = mc.player.getYRot();
+                if (frames == 2) {
+                    Files.writeString(
+                            mc.gameDirectory.toPath().resolve("radiance-world-capture.request"),
+                            scenes[scene][0] + "-motion");
+                }
+            }
+            if (++frames < 24) return;
+            if (++scene == scenes.length) finish(mc);
+            else step = 0;
+            return;
+        }
+        if (MODE.equals("light-toggle") && lightToggleStep <= 4) {
+            lightToggle(mc, now);
+            return;
+        }
+        if (MODE.equals("media")) MediumContactFixture.select(scenes[scene][0]);
+        if (MODE.equals("media") && !RESULT.containsKey("productionFluid")) {
+            if (!mc.level.getFluidState(new net.minecraft.core.BlockPos(2, 68, 2)).isSource())
+                return;
+            var plain = mc.level.getBlockState(new net.minecraft.core.BlockPos(31, 66, 18));
+            var coloured = mc.level.getBlockState(new net.minecraft.core.BlockPos(32, 66, 18));
+            if (!plain.is(net.minecraft.world.level.block.Blocks.GLASS)
+                    || !coloured.is(net.minecraft.world.level.block.Blocks.BLUE_STAINED_GLASS))
+                return;
+            RESULT.put(
+                    "productionFluid",
+                    FluidBoundaryProbe.capture(mc, new net.minecraft.core.BlockPos(2, 68, 2)));
+            RESULT.put(
+                    "productionFluidContact",
+                    FluidBoundaryProbe.captureContact(
+                            mc, new net.minecraft.core.BlockPos(6, 67, 0)));
+            var plainLayer =
+                    net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(plain);
+            var colouredLayer =
+                    net.minecraft.client.renderer.ItemBlockRenderTypes.getChunkRenderType(coloured);
+            if (plainLayer == colouredLayer)
+                throw new AssertionError("Contact fixture must cross actual source render layers");
+            RESULT.put(
+                    "productionCrossLayer",
+                    Map.of(
+                            "plain",
+                            plain.toString(),
+                            "coloured",
+                            coloured.toString(),
+                            "plainLayer",
+                            plainLayer.toString(),
+                            "colouredLayer",
+                            colouredLayer.toString()));
+        }
         if (step == 0) {
             String name = scenes[scene][0];
             if (name.startsWith("fixed-")) tone(name.equals("fixed-aces") ? "aces" : "pbr_neutral");
@@ -368,12 +581,202 @@ public final class WorldMaterialsProbe {
                         0);
         }
         if (now - transition < 4_000_000_000L || ++frames < 45) return;
+        if (MODE.equals("media")) {
+            var camera = mc.gameRenderer.getMainCamera();
+            var position = camera.getPosition();
+            var cameraState =
+                    mc.level.getBlockState(net.minecraft.core.BlockPos.containing(position));
+            String name = scenes[scene][0];
+            if ((name.startsWith("water-exit")
+                            || name.startsWith("water-camera")
+                            || name.startsWith("water-glass"))
+                    && camera.getFluidInCamera()
+                            != net.minecraft.world.level.material.FogType.WATER)
+                throw new AssertionError("Medium camera not actually submerged: " + name);
+            if (name.equals("glass-camera-opaque")
+                    && !cameraState.is(net.minecraft.world.level.block.Blocks.RED_STAINED_GLASS))
+                throw new AssertionError("Medium camera not actually inside coloured glass");
+            boolean hint = com.radiance.adapter.vanilla.CameraMediumHint.needed(mc, position);
+            if ((name.equals("pane-camera-air") && hint)
+                    || ((name.equals("pane-camera-inside") || name.equals("glass-camera-opaque"))
+                            && !hint))
+                throw new AssertionError(
+                        "Camera medium admission disagrees with baked geometry: " + name);
+            RESULT.put(
+                    name + "-camera",
+                    Map.of(
+                            "position",
+                            java.util.List.of(position.x, position.y, position.z),
+                            "block",
+                            net.minecraft.core.registries.BuiltInRegistries.BLOCK
+                                    .getKey(cameraState.getBlock())
+                                    .toString(),
+                            "fluid",
+                            camera.getFluidInCamera().name(),
+                            "mediumProbe",
+                            hint));
+        }
         EntityTakeoverProbe.screenshot(mc, scenes[scene][0] + ".png");
         RESULT.put(
                 scenes[scene][0],
                 Map.of("frames", frames, "dimension", mc.level.dimension().location().toString()));
+        if (MODE.equals("pbr-distance")
+                && (scenes[scene][0].equals("iron-far") || scenes[scene][0].equals("bars-far"))) {
+            pbrTurnYaw = mc.player.getYRot();
+            if (!CAPTURE_PBR_TURN) {
+                Files.writeString(
+                        mc.gameDirectory.toPath().resolve("radiance-world-capture.request"),
+                        scenes[scene][0]);
+            }
+            step = 2;
+            frames = 0;
+            return;
+        }
         if (++scene == scenes.length) finish(mc);
         else step = 0;
+    }
+
+    private static void lightToggle(Minecraft mc, long now) throws Exception {
+        if (lightToggleReturning) {
+            if (step == 2 && mc.getOverlay() == null) {
+                if (++frames < 45) return;
+                step = 3;
+                frames = 0;
+                mc.level.disconnect();
+                mc.disconnect(
+                        new net.minecraft.client.gui.screens.GenericMessageScreen(
+                                net.minecraft.network.chat.Component.translatable(
+                                        "menu.savingLevel")));
+                mc.setScreen(new TitleScreen());
+                return;
+            }
+            if (step != 4 || mc.player == null || mc.getOverlay() != null) return;
+            if (++frames < 45) return;
+            String stats = com.radiance.client.proxy.world.ChunkProxy.performanceSnapshotNative();
+            var lights = java.util.regex.Pattern.compile("sampleable_lights=(\\d+)").matcher(stats);
+            if (!lights.find() || Long.parseLong(lights.group(1)) == 0) {
+                if (frames < 400) return;
+                throw new AssertionError(
+                        "Chunk lights did not republish after reopening the world");
+            }
+            RESULT.put("light-toggle-reentered", Long.parseLong(lights.group(1)));
+            EntityTakeoverProbe.screenshot(mc, "light-toggle-reentered.png");
+            com.radiance.client.option.Options.setCollectChunkEmission(false, true);
+            lightToggleReturning = false;
+            step = 0;
+            transition = now;
+            frames = 0;
+            lightToggleStep = 5;
+            return;
+        }
+        if (ready == 0) {
+            ready = now;
+            transition = now;
+            for (int i = 1; i < LIGHTS[0].length; i++) command(mc, LIGHTS[0][i]);
+        }
+        if (lightToggleCaptured) {
+            lightToggleCaptured = false;
+            boolean enabled = (lightToggleStep++ & 1) == 0;
+            if (lightToggleStep == 5) {
+                RESULT.put("lightToggleCycles", 2);
+                lightToggleStep = 4;
+                lightToggleReturning = true;
+                frames = 0;
+                com.radiance.client.option.Options.setCollectChunkEmission(true, true);
+                step = 2;
+                return;
+            }
+            transition = now;
+            frames = 0;
+            com.radiance.client.option.Options.setCollectChunkEmission(enabled, true);
+            if (lightToggleStep == 3) {
+                for (int i = 1; i < LIGHTS[1].length; i++) command(mc, LIGHTS[1][i]);
+                command(mc, "tp @a 1 67 0 facing 2.5 67.5 -5.5");
+            }
+            return;
+        }
+        if (++frames < 45) return;
+        if (now - transition < 4_000_000_000L) return;
+        boolean currentlyEnabled = (lightToggleStep & 1) != 0;
+        String stats = com.radiance.client.proxy.world.ChunkProxy.performanceSnapshotNative();
+        var lights = java.util.regex.Pattern.compile("sampleable_lights=(\\d+)").matcher(stats);
+        if (!lights.find()) throw new AssertionError("Chunk light counters unavailable");
+        long sampleableLights = Long.parseLong(lights.group(1));
+        if (currentlyEnabled != (sampleableLights > 0)) {
+            if (now - transition < 20_000_000_000L) return;
+            throw new AssertionError("Unexpected sampleable light count: " + sampleableLights);
+        }
+        var advanced =
+                com.radiance.client.pipeline.Pipeline.getAvailableShaderPacks().stream()
+                        .filter(pack -> pack.relativePath().endsWith("/advanced.zip"))
+                        .findFirst()
+                        .orElseThrow();
+        if (!com.radiance.client.pipeline.Pipeline.isShaderPackActive(advanced))
+            throw new AssertionError("Light toggle lost the Advanced algorithm selection");
+        transition = now;
+        RESULT.put(
+                "light-toggle-" + lightToggleStep,
+                Map.of("enabled", currentlyEnabled, "lights", sampleableLights));
+        EntityTakeoverProbe.screenshot(mc, "light-toggle-" + lightToggleStep + ".png");
+        lightToggleCaptured = true;
+    }
+
+    private static void depthFixture(Minecraft mc, long now) throws Exception {
+        boolean refract = MODE.equals("deep-refraction");
+        if (setup == null) {
+            var server = java.util.Objects.requireNonNull(mc.getSingleplayerServer());
+            setup =
+                    java.util.concurrent.CompletableFuture.runAsync(
+                            () -> {
+                                var source =
+                                        server.createCommandSourceStack()
+                                                .withSuppressedOutput()
+                                                .withPermission(4);
+                                var commands = server.getCommands();
+                                commands.performPrefixedCommand(source, "gamemode spectator @a");
+                                commands.performPrefixedCommand(
+                                        source, "gamerule doDaylightCycle false");
+                                commands.performPrefixedCommand(source, "time set noon");
+                                commands.performPrefixedCommand(source, "weather clear");
+                                commands.performPrefixedCommand(source, "fill 0 -63 0 8 205 8 air");
+                                if (refract) {
+                                    for (int y = -60; y < 196; y++) {
+                                        String block =
+                                                (y & 1) == 0
+                                                        ? "yellow_stained_glass"
+                                                        : "lime_stained_glass";
+                                        commands.performPrefixedCommand(
+                                                source,
+                                                "fill 2 " + y + " 2 5 " + y + " 5 " + block);
+                                    }
+                                    commands.performPrefixedCommand(
+                                            source, "fill 2 196 2 5 196 5 sea_lantern");
+                                    commands.performPrefixedCommand(
+                                            source, "tp @a 4 -62.5 4 0 -90");
+                                } else {
+                                    commands.performPrefixedCommand(
+                                            source, "fill 2 -60 2 2 160 5 iron_block");
+                                    commands.performPrefixedCommand(
+                                            source, "fill 4 -60 2 4 160 5 iron_block");
+                                    commands.performPrefixedCommand(
+                                            source, "fill 3 161 2 3 161 5 sea_lantern");
+                                    commands.performPrefixedCommand(
+                                            source, "tp @a 3.5 -61 4 -90 -45");
+                                }
+                            },
+                            server);
+            transition = now;
+            return;
+        }
+        if (!setup.isDone()) return;
+        setup.join();
+        var terminal = new net.minecraft.core.BlockPos(refract ? 4 : 3, refract ? 196 : 161, 4);
+        if (!mc.level.getBlockState(terminal).is(net.minecraft.world.level.block.Blocks.SEA_LANTERN)
+                || now - transition < 6_000_000_000L
+                || ++frames < 120) return;
+        RESULT.put("terminal", terminal.toString());
+        EntityTakeoverProbe.screenshot(mc, MODE + ".png");
+        finish(mc);
     }
 
     private static void tone(String method) {
@@ -414,7 +817,73 @@ public final class WorldMaterialsProbe {
                                         command));
     }
 
+    private static boolean serverQuiescent(Minecraft mc) {
+        var server = mc.getSingleplayerServer();
+        if (server == null) return true;
+        long now = System.nanoTime();
+        if (quiesceStarted == 0L) quiesceStarted = now;
+        if (now - quiesceStarted > 10_000_000_000L) return true;
+        return server.submit(
+                        () -> {
+                            boolean busy = false;
+                            for (var level : server.getAllLevels()) {
+                                var chunkSource = level.getChunkSource();
+                                chunkSource.removeTicketsOnClosing();
+                                var chunkMap = chunkSource.chunkMap;
+                                chunkMap.getDistanceManager().runAllUpdates(chunkMap);
+                                chunkMap.runGenerationTasks();
+                                if (chunkSource.getPendingTasksCount() > 0) busy = true;
+                                try {
+                                    var taskField =
+                                            net.minecraft.server.level.GenerationChunkHolder.class
+                                                    .getDeclaredField("task");
+                                    taskField.setAccessible(true);
+                                    for (String fieldName :
+                                            new String[] {"updatingChunkMap", "pendingUnloads"}) {
+                                        var mapField =
+                                                net.minecraft.server.level.ChunkMap.class
+                                                        .getDeclaredField(fieldName);
+                                        mapField.setAccessible(true);
+                                        var map = (java.util.Map<?, ?>) mapField.get(chunkMap);
+                                        for (Object value : map.values()) {
+                                            if (value
+                                                    instanceof
+                                                    net.minecraft.server.level.GenerationChunkHolder
+                                                            holder) {
+                                                var taskRef =
+                                                        (java.util.concurrent.atomic
+                                                                                .AtomicReference<
+                                                                        ?>)
+                                                                taskField.get(holder);
+                                                if (taskRef != null
+                                                        && taskRef.get()
+                                                                instanceof
+                                                                net.minecraft.server.level
+                                                                                .ChunkGenerationTask
+                                                                        genTask) {
+                                                    genTask.markForCancellation();
+                                                }
+                                                if (holder.getGenerationRefCount() > 0) {
+                                                    busy = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    chunkMap.runGenerationTasks();
+                                } catch (ReflectiveOperationException ignored) {
+                                }
+                            }
+                            return !busy;
+                        })
+                .join();
+    }
+
     private static void finish(Minecraft mc) {
+        if (!NativeSceneReplayProbe.ready() || !serverQuiescent(mc)) {
+            snapshotPending = true;
+            return;
+        }
+        if (MODE.equals("media")) MediumContactFixture.close();
         done = true;
         RESULT.put("mode", MODE);
         RESULT.put(
@@ -429,6 +898,25 @@ public final class WorldMaterialsProbe {
             Files.writeString(
                     destination,
                     new GsonBuilder().setPrettyPrinting().create().toJson(RESULT) + "\n");
+            // Also written at exit; a client that never finishes stopping still leaves this one.
+            Files.writeString(
+                    destination.resolveSibling("block-entity-rest.json"),
+                    new GsonBuilder()
+                                    .create()
+                                    .toJson(
+                                            java.util.Map.of(
+                                                    "layout",
+                                                    "sections,restingMembers,restingInstances,skippedMembersLastFrame,pollsPassed,pollsFailed,eventWakes,membersRested,sectionReleases",
+                                                    "counters",
+                                                    com.radiance.api.render.BlockEntityPublications
+                                                            .restCounters(),
+                                                    "blockers",
+                                                    com.radiance.api.render.BlockEntityPublications
+                                                            .restBlockers(),
+                                                    "pollCaught",
+                                                    com.radiance.api.render.BlockEntityPublications
+                                                            .restMisses()))
+                            + "\n");
         } catch (java.io.IOException failure) {
             throw new java.io.UncheckedIOException(failure);
         }

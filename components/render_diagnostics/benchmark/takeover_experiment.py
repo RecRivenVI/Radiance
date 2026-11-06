@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import time
 import tomllib
@@ -15,6 +16,8 @@ import zipfile
 
 ROOT = Path(__file__).resolve().parents[3]
 EXTRA_ROOT = ROOT.parent / 'Radiance-Extra'
+ARTIFACT_ROOT = Path('D:/Workspaces/Artifacts/Radiance')
+SCRATCH_ROOT = Path('D:/Workspaces/Scratches')
 FUNCTIONAL = ROOT / 'validations/conformance-takeover'
 PERFORMANCE = ROOT / 'validations/performance-takeover'
 TARGET = '1.21.1-neoforge'
@@ -32,7 +35,8 @@ def write(path, value):
     path.write_text(json.dumps(value, indent=2)+'\n', encoding='utf8')
 
 
-def storage_preflight(validation_limit_gib=8, workspace_limit_gib=WORKSPACE_SOFT_LIMIT_GIB, external_limit_gib=8):
+def storage_preflight(validation_limit_gib=8, workspace_limit_gib=WORKSPACE_SOFT_LIMIT_GIB, external_limit_gib=8,
+                      temporary_waiver=False):
     # None is an explicit, per-run user suspension; default and other caps stay intact.
     if workspace_limit_gib is not None and not (1 <= workspace_limit_gib <= WORKSPACE_HARD_LIMIT_GIB):
         raise ValueError('Workspace allowance must not exceed the 25 GiB hard limit')
@@ -41,18 +45,27 @@ def storage_preflight(validation_limit_gib=8, workspace_limit_gib=WORKSPACE_SOFT
     def size(directory, excluded=()):
         total=0
         if not directory.exists(): return 0
-        for current,dirs,files in os.walk(directory,followlinks=False):
-            dirs[:]=[d for d in dirs if not (Path(current)/d).is_junction()
-                     and not (Path(current)/d).is_symlink()
-                     and (Path(current)/d).relative_to(directory).as_posix() not in excluded]
-            total+=sum((Path(current)/f).stat().st_size for f in files if not (Path(current)/f).is_symlink())
+        pending=[directory]
+        while pending:
+            with os.scandir(pending.pop()) as entries:
+                for entry in entries:
+                    if entry.is_symlink(): continue
+                    if entry.is_dir(follow_symlinks=False):
+                        relative=os.path.relpath(entry.path,directory).replace('\\','/')
+                        if relative not in excluded and not (entry.stat(follow_symlinks=False).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                            pending.append(entry.path)
+                    else:
+                        # FindFirstFile already supplies file sizes on Windows;
+                        # Path.stat() would reopen every SDK/cache file.
+                        total+=entry.stat(follow_symlinks=False).st_size
         return total
-    external=[Path('D:/Workspaces/Artifacts/Radiance'),*(p for p in Path('D:/Workspaces/Scratches').glob('Radiance*')
+    external=[ARTIFACT_ROOT,*(p for p in SCRATCH_ROOT.glob('Radiance*')
                                                    if p.is_dir() and not p.is_junction())]
     values=dict(workspace=size(ROOT,('.git','components/native_renderer/third_party'))+size(EXTRA_ROOT,('.git',)),
                 validations=sum(size(p) for p in (ROOT/'validations').glob('*/*') if p.name in ('instance','result')),
                 external=sum(size(p) for p in external))
-    if (workspace_limit_gib is not None and values['workspace']>workspace_limit_gib*1024**3) or values['validations']>validation_limit_gib*1024**3 or values['external']>external_limit_gib*1024**3:
+    if not temporary_waiver and ((workspace_limit_gib is not None and values['workspace']>workspace_limit_gib*1024**3)
+            or values['validations']>validation_limit_gib*1024**3 or values['external']>external_limit_gib*1024**3):
         raise RuntimeError('Storage gate; retain evidence and recycle completed clients first: '+repr(values))
     return values
 

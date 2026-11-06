@@ -81,6 +81,9 @@ void DLSSModule::init(std::shared_ptr<Framework> framework,
     linearDepthImages_.resize(size);
     specularHitDepthImages_.resize(size);
     firstHitDepthImages_.resize(size);
+    transparencyImages_.resize(size);
+    colorBeforeTransparencyImages_.resize(size);
+    transparencyTables_.resize(size);
     processedImages_.resize(size);
     upscaledFirstHitDepthImages_.resize(size);
     upscaledMotionVectorImages_.resize(size);
@@ -94,7 +97,7 @@ bool DLSSModule::setOrCreateInputImages(std::vector<std::shared_ptr<vk::DeviceLo
     auto framework = framework_.lock();
     if (ngxContext_ == nullptr) return false;
 
-    if (images.size() != inputImageNum) return false;
+    if (images.size() != (rayReconstruction_ ? inputImageNum : srInputImageNum)) return false;
 
     NgxContext::QuerySizeInfo querySizeInfo{};
     querySizeInfo.outputSize.width = outputWidth_;
@@ -188,6 +191,14 @@ bool DLSSModule::setOrCreateInputImages(std::vector<std::shared_ptr<vk::DeviceLo
     linearDepthImages_[frameIndex] = images[5];
     specularHitDepthImages_[frameIndex] = images[6];
     firstHitDepthImages_[frameIndex] = images[7];
+    if (rayReconstruction_) {
+        if (!images[8])
+            images[8] =
+                vk::DeviceLocalImage::create(framework->device(), framework->vma(), false, inputWidth_, inputHeight_, 1,
+                                             formats[8], VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        if (images[8]->width() != inputWidth_ || images[8]->height() != inputHeight_) return false;
+        transparencyImages_[frameIndex] = images[8];
+    }
     return true;
 }
 
@@ -305,6 +316,43 @@ void DLSSModule::build() {
                                .defineShader(shader)
                                .definePipelineLayout(srDepthTables_[0])
                                .build(framework->device());
+    }
+
+    if (rayReconstruction_) {
+        for (uint32_t i = 0; i < size; ++i) {
+            colorBeforeTransparencyImages_[i] = vk::DeviceLocalImage::create(
+                framework->device(), framework->vma(), false, inputWidth_, inputHeight_, 1,
+                VK_FORMAT_R16G16B16A16_SFLOAT, VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+            transparencyTables_[i] =
+                vk::DescriptorTableBuilder{}
+                    .beginDescriptorLayoutSet()
+                    .beginDescriptorLayoutSetBinding()
+                    .defineDescriptorLayoutSetBinding({.binding = 0,
+                                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                       .descriptorCount = 1,
+                                                       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT})
+                    .defineDescriptorLayoutSetBinding({.binding = 1,
+                                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                       .descriptorCount = 1,
+                                                       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT})
+                    .defineDescriptorLayoutSetBinding({.binding = 2,
+                                                       .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                                                       .descriptorCount = 1,
+                                                       .stageFlags = VK_SHADER_STAGE_COMPUTE_BIT})
+                    .endDescriptorLayoutSetBinding()
+                    .endDescriptorLayoutSet()
+                    .build(framework->device());
+            transparencyTables_[i]->bindImage(hdrImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 0);
+            transparencyTables_[i]->bindImage(transparencyImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 1);
+            transparencyTables_[i]->bindImage(colorBeforeTransparencyImages_[i], VK_IMAGE_LAYOUT_GENERAL, 0, 2);
+        }
+        auto shader =
+            vk::Shader::create(framework->device(),
+                               (Renderer::folderPath / "shaders/world/upscaler/transparency_guide_comp.spv").string());
+        transparencyPipeline_ = vk::ComputePipelineBuilder{}
+                                    .defineShader(shader)
+                                    .definePipelineLayout(transparencyTables_[0])
+                                    .build(framework->device());
     }
 
     auto firstHitDepthShader =
@@ -665,6 +713,33 @@ void DLSSModuleContext::render() {
 
     {
         auto rrDepth = linearDepthImage;
+        std::shared_ptr<vk::DeviceLocalImage> colorBeforeTransparency;
+        if (module->rayReconstruction_) {
+            const auto slot = frameworkContext.lock()->frameIndex;
+            colorBeforeTransparency = module->colorBeforeTransparencyImages_[slot];
+            auto storageBarrier = [](const std::shared_ptr<vk::DeviceLocalImage> &image) {
+                return vk::CommandBuffer::ImageMemoryBarrier{
+                    .srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
+                    .srcAccessMask = VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT,
+                    .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                    .dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT,
+                    .oldLayout = image->imageLayout(),
+                    .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+                    .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+                    .image = image,
+                    .subresourceRange = vk::wholeColorSubresourceRange};
+            };
+            auto transparency = module->transparencyImages_[slot];
+            worldCommandBuffer->barriersBufferImage(
+                {}, {storageBarrier(hdrImage), storageBarrier(transparency), storageBarrier(colorBeforeTransparency)});
+            hdrImage->imageLayout() = transparency->imageLayout() = colorBeforeTransparency->imageLayout() =
+                VK_IMAGE_LAYOUT_GENERAL;
+            worldCommandBuffer->bindDescriptorTable(module->transparencyTables_[slot], VK_PIPELINE_BIND_POINT_COMPUTE)
+                ->bindComputePipeline(module->transparencyPipeline_);
+            vkCmdDispatch(worldCommandBuffer->vkCommandBuffer(), (module->inputWidth_ + 15) / 16,
+                          (module->inputHeight_ + 15) / 16, 1);
+        }
         if (!module->rayReconstruction_) {
             const auto slot = frameworkContext.lock()->frameIndex;
             rrDepth = module->srDepthImages_[slot];
@@ -738,6 +813,11 @@ void DLSSModuleContext::render() {
         rrDepth->imageLayout() = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         specularHitDepthImage->imageLayout() = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         processedImage->imageLayout() = VK_IMAGE_LAYOUT_GENERAL;
+        if (colorBeforeTransparency) {
+            worldCommandBuffer->barriersBufferImage({}, {sampledInputBarrier(colorBeforeTransparency)});
+            colorBeforeTransparency->imageLayout() = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            dlss->setResource(DlssRR::RESOURCE_COLOR_BEFORE_TRANSPARENCY, colorBeforeTransparency);
+        }
 
         dlss->setResource(DlssRR::RESOURCE_COLOR_IN, hdrImage);
         dlss->setResource(DlssRR::RESOURCE_COLOR_OUT, processedImage);
@@ -770,10 +850,13 @@ void DLSSModuleContext::render() {
                 capture->copy(framework, worldCommandBuffer, "depth", rrDepth);
                 capture->copy(framework, worldCommandBuffer, "specular-distance", specularHitDepthImage);
                 capture->copy(framework, worldCommandBuffer, "first-hit-depth", firstHitDepthImage);
+                if (colorBeforeTransparency)
+                    capture->copy(framework, worldCommandBuffer, "color-before-transparency", colorBeforeTransparency);
             }
             evaluateState.begin();
-            auto result = dlss->denoise(worldCommandBuffer, viewFrame.inputSize, jitter,
-                                        viewFrame.current.cameraViewMat, viewFrame.current.cameraProjMat);
+            auto result =
+                dlss->denoise(worldCommandBuffer, viewFrame.inputSize, jitter, viewFrame.current.cameraEffectedViewMat,
+                              viewFrame.current.cameraProjMat, glm::dvec3(viewFrame.current.cameraPos));
             evaluateState.complete(NVSDK_NGX_SUCCEED(result));
             if (capture) {
                 if (evaluateState.outputValid()) {

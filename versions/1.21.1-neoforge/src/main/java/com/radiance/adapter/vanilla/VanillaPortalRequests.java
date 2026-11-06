@@ -12,6 +12,13 @@ public final class VanillaPortalRequests {
 
     private record Shape(int mask, float down, float up) {}
 
+    public static int faceMask(TheEndPortalBlockEntity source) {
+        int mask = 0;
+        for (var face : Direction.values())
+            if (source.shouldRenderFace(face)) mask |= 1 << face.ordinal();
+        return mask;
+    }
+
     public static void collect(
             TheEndPortalBlockEntity source,
             float down,
@@ -19,9 +26,7 @@ public final class VanillaPortalRequests {
             RenderType type,
             PoseStack pose,
             MultiBufferSource buffers) {
-        int mask = 0;
-        for (var face : Direction.values())
-            if (source.shouldRenderFace(face)) mask |= 1 << face.ordinal();
+        int mask = faceMask(source);
         if (mask == 0) return;
         var shape = new Shape(mask, down, up);
         LocalMeshTakeover.request(

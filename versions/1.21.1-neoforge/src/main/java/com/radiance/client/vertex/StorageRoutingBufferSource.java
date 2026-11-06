@@ -1,8 +1,7 @@
 package com.radiance.client.vertex;
 
-import com.mojang.blaze3d.vertex.ByteBufferBuilder;
 import com.mojang.blaze3d.vertex.VertexConsumer;
-import it.unimi.dsi.fastutil.objects.Object2ObjectLinkedOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectSortedMaps;
 import java.util.function.Function;
 import net.minecraft.client.renderer.MultiBufferSource;
 import net.minecraft.client.renderer.RenderType;
@@ -19,7 +18,7 @@ public final class StorageRoutingBufferSource extends MultiBufferSource.BufferSo
 
     private StorageRoutingBufferSource(
             Function<RenderType, VertexConsumer> route, boolean directRoute) {
-        super(new ByteBufferBuilder(0), new Object2ObjectLinkedOpenHashMap<>());
+        super(null, Object2ObjectSortedMaps.emptyMap());
         this.route = route;
     }
 
@@ -44,6 +43,6 @@ public final class StorageRoutingBufferSource extends MultiBufferSource.BufferSo
 
     @Override
     public void close() {
-        this.sharedBuffer.close();
+        if (this.sharedBuffer != null) this.sharedBuffer.close();
     }
 }

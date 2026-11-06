@@ -100,6 +100,8 @@ val cmakeSource =
 val cmakeBuild = "$cmakeSource/build/v"
 val repositoryDirectory = file("../..").absolutePath
 val installDirectory = layout.buildDirectory.dir("runtime")
+val sceneReplay =
+    providers.gradleProperty("native.sceneReplay").map(String::toBoolean).orElse(false)
 val javaHome =
     javaToolchains
         .launcherFor { languageVersion.set(JavaLanguageVersion.of(21)) }
@@ -146,6 +148,7 @@ val configureCmake =
             "CMakeLists.txt",
         )
         inputs.property("vulkanSdk", providers.environmentVariable("VULKAN_SDK").orElse(""))
+        inputs.property("sceneReplay", sceneReplay)
         outputs.file(cmakeDirectory.map { it.file("CMakeCache.txt") })
         environment("JAVA_HOME", javaHome)
         shortCmake(
@@ -167,6 +170,7 @@ val configureCmake =
                 "-DCMAKE_BUILD_TYPE=$configuration",
                 "-DMCVR_ENABLE_NRD=ON",
                 "-DUSE_AMD=ON",
+                "-DMCVR_BUILD_SCENE_REPLAY=${if (sceneReplay.get()) "ON" else "OFF"}",
                 "-DFETCHCONTENT_UPDATES_DISCONNECTED=ON",
             ) + if (generator != null) listOf("-G", generator, "-A", "x64") else emptyList(),
         )
@@ -176,6 +180,26 @@ val buildNative =
         dependsOn(configureCmake)
         environment("JAVA_HOME", javaHome)
         shortCmake(listOf("--build", cmakeBuild, "--config", configuration, "--parallel", "4"))
+    }
+val buildSceneReplay =
+    tasks.register<Exec>("buildSceneReplay") {
+        group = "verification"
+        dependsOn(buildNative)
+        doFirst {
+            require(sceneReplay.get()) {
+                "Use -Pnative.sceneReplay=true for the development-only replay build"
+            }
+        }
+        shortCmake(
+            listOf(
+                "--build",
+                cmakeBuild,
+                "--config",
+                configuration,
+                "--target",
+                "mcvr_scene_replay_runtime",
+            ),
+        )
     }
 val installNative =
     tasks.register<Exec>("installNative") {
@@ -230,6 +254,7 @@ val formatFiles =
                 "src/**/*.h",
                 "tests/**/*.cpp",
                 "tests/**/*.hpp",
+                "tools/**/*.cpp",
             )
             exclude("jni/**", "third_party/**", "build/**")
         }
@@ -270,6 +295,7 @@ tasks.named<Jar>("jar") {
             "libcore.so",
             "shaders/**",
             "dlss/**",
+            "fsr/**",
             "libxess*.dll",
             "XESS_LICENCE.txt",
         )

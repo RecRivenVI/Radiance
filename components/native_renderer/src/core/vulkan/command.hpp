@@ -87,6 +87,9 @@ class CommandBuffer : public SharedObject<CommandBuffer> {
     CommandBuffer(std::shared_ptr<Device> device, std::shared_ptr<CommandPool> commandPool_);
 
     VkCommandBuffer &vkCommandBuffer();
+    bool isRecording() const {
+        return recording_;
+    }
 
     std::shared_ptr<CommandBuffer> begin(VkCommandBufferUsageFlags flags = 0);
     std::shared_ptr<CommandBuffer> copyToDeviceLocalBuffer(std::shared_ptr<DeviceLocalBuffer> deviceLocalBuffer);
@@ -125,5 +128,6 @@ class CommandBuffer : public SharedObject<CommandBuffer> {
     std::shared_ptr<CommandPool> commandPool_;
 
     VkCommandBuffer commandBuffer_ = VK_NULL_HANDLE;
+    bool recording_ = false;
 };
 }; // namespace vk

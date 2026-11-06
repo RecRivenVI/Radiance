@@ -18,4 +18,7 @@ components {
     tool("render_diagnostics")
 }
 
-compliance { sourceSets("bootstrap", "bootstrapTest", "probeTest", "packagedLaunch") }
+compliance {
+    sourceSets("bootstrap", "bootstrapTest", "probeTest", "packagedLaunch")
+    vocabulary("documents/research", "ledger")
+}

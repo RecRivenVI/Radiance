@@ -42,7 +42,8 @@ public final class BoundPartCapture {
 
     private record Key(List<RigidModelCapture.Binding> bindings) {}
 
-    private static final Map<Key, Resource> RESOURCES = new HashMap<>();
+    // Oldest successful use first. A failed binding match must not refresh its resource.
+    private static final LinkedHashMap<Key, Resource> RESOURCES = new LinkedHashMap<>();
     private static final long BYTE_CAPACITY = 16L * 1024 * 1024;
     private static long frame, bytes;
 
@@ -54,14 +55,12 @@ public final class BoundPartCapture {
 
     static void beginFrame(long value) {
         frame = value;
-        RESOURCES
-                .values()
-                .removeIf(
-                        resource -> {
-                            if (frame - resource.used <= 120) return false;
-                            bytes -= resource.bytes;
-                            return true;
-                        });
+        while (!RESOURCES.isEmpty()) {
+            var oldest = RESOURCES.firstEntry().getValue();
+            if (frame - oldest.used <= 120) break;
+            RESOURCES.pollFirstEntry();
+            bytes -= oldest.bytes;
+        }
     }
 
     private static final class Resource implements RigidModelCapture.Geometry {
@@ -69,7 +68,7 @@ public final class BoundPartCapture {
         final Key key;
         final RigidModelCapture.Geometry base;
         final long bytes;
-        long used;
+        long used = -1;
 
         Resource(Key key) {
             this.key = key;
@@ -100,6 +99,13 @@ public final class BoundPartCapture {
 
     private final StorageVertexConsumerProvider owner;
     private final LinkedHashMap<PartPose, List<Input>> groups = new LinkedHashMap<>();
+    private RenderType lastSampleLayer;
+    private VertexConsumer lastSampleLeaf;
+    private RenderType lastSampleGlint;
+    private com.radiance.client.texture.TextureTasks.Owner lastSampleGlintTexture;
+    private PBRMaterialContext.State lastSampleContext;
+    private DrawStateSnapshot lastSampleState;
+    private LayerInput lastSampleBinding;
 
     public BoundPartCapture(StorageVertexConsumerProvider owner) {
         this.owner = owner;
@@ -115,6 +121,7 @@ public final class BoundPartCapture {
             VertexConsumer consumer,
             int light,
             int overlay) {
+        if (parts.isEmpty()) return;
         light = VanillaMaterialAdapter.lightmap(light);
         if (consumer
                 instanceof
@@ -124,7 +131,14 @@ public final class BoundPartCapture {
             consumer = outline.delegate();
         }
         var context = PBRMaterialContext.snapshot();
-        var state = owner.captureDrawState(layer);
+        DrawStateSnapshot state;
+        if (layer == lastSampleLayer
+                && lastSampleState != null
+                && context.equals(lastSampleContext)) {
+            state = lastSampleState;
+        } else {
+            state = owner.captureDrawState(layer);
+        }
         var binding = sample(layer, consumer, context, state);
         for (var part : parts)
             groups.computeIfAbsent(
@@ -189,6 +203,28 @@ public final class BoundPartCapture {
         }
         if (glint != null && glintTexture == null || leaf.getClass() != PBRVertexConsumer.class)
             return null;
+        if (layer == lastSampleLayer
+                && leaf == lastSampleLeaf
+                && glint == lastSampleGlint
+                && glintTexture == lastSampleGlintTexture
+                && lastSampleBinding != null
+                && context.equals(lastSampleContext)) {
+            if (sprite == lastSampleBinding.sprite) return lastSampleBinding;
+            var reused =
+                    new LayerInput(
+                            lastSampleBinding.layer,
+                            lastSampleBinding.texture,
+                            sprite,
+                            lastSampleBinding.policy,
+                            glint,
+                            glintTexture,
+                            context,
+                            lastSampleBinding.type,
+                            lastSampleBinding.ordinary,
+                            lastSampleBinding.uniform);
+            lastSampleBinding = reused;
+            return reused;
+        }
         var pbr = (PBRVertexConsumer) leaf;
         var texture = TextureProxy.TASKS.owner(pbr.rigidTexture());
         if (texture == null || !state.uvTransform().finite()) return null;
@@ -205,17 +241,26 @@ public final class BoundPartCapture {
         if (owner.surfaceRole() == SourceEmission.Role.SURFACE_LAYER_OWNER
                 && VanillaMaterialAdapter.supportsSurfaceLayers(layer))
             type |= RenderAbi.SOURCE_SURFACE_LAYER_BIT;
-        return new LayerInput(
-                VanillaMaterialAdapter.localGeometryLayer(layer),
-                texture,
-                sprite,
-                pbr.rigidPolicy(),
-                glint,
-                glintTexture,
-                context,
-                type,
-                VanillaMaterialAdapter.sourceColour(layer, state),
-                VanillaMaterialAdapter.sourceColour(layer, state.withoutUvTransform()));
+        var created =
+                new LayerInput(
+                        VanillaMaterialAdapter.localGeometryLayer(layer),
+                        texture,
+                        sprite,
+                        pbr.rigidPolicy(),
+                        glint,
+                        glintTexture,
+                        context,
+                        type,
+                        VanillaMaterialAdapter.sourceColour(layer, state),
+                        VanillaMaterialAdapter.sourceColour(layer, state.withoutUvTransform()));
+        lastSampleLayer = layer;
+        lastSampleLeaf = leaf;
+        lastSampleGlint = glint;
+        lastSampleGlintTexture = glintTexture;
+        lastSampleContext = context;
+        lastSampleState = state;
+        lastSampleBinding = created;
+        return created;
     }
 
     private Descriptor describe(Input input, boolean uniform, PartModelCapture.Snapshot snapshot) {
@@ -289,28 +334,35 @@ public final class BoundPartCapture {
             long history =
                     PartModelCapture.historyIdentity(owner.rigidInstance, identity.id, occurrence)
                             | owner.partHistoryDomain;
-            boolean uniform =
-                    group.stream()
-                            .allMatch(
-                                    input ->
-                                            input.light == first.light
-                                                    && input.overlay == first.overlay
-                                                    && input.part.color() == first.part.color()
-                                                    && input.state
-                                                            .uvTransform()
-                                                            .equals(first.state.uvTransform()));
+            boolean uniform = true;
+            for (int i = 1; i < group.size(); i++) {
+                var input = group.get(i);
+                if (input.light != first.light
+                        || input.overlay != first.overlay
+                        || input.part.color() != first.part.color()
+                        || !input.state.uvTransform().equals(first.state.uvTransform())) {
+                    uniform = false;
+                    break;
+                }
+            }
             SourceBindings.Slot slot =
                     owner.sourceOwner instanceof SourceBindings.Owner sourceOwner
                             ? sourceOwner.radiance$bindings().slot(history, frame)
                             : null;
-            Resource resource =
-                    slot != null
-                                    && slot.recipe instanceof Resource cached
-                                    && RESOURCES.get(cached.key) == cached
-                                    && cached.key.bindings.stream()
-                                            .allMatch(b -> PartModelCapture.resident(b.geometry()))
-                            ? cached
-                            : null;
+            Resource resource = null;
+            if (slot != null
+                    && slot.recipe instanceof Resource cached
+                    && RESOURCES.get(cached.key) == cached) {
+                boolean allResident = true;
+                var cachedBindings = cached.key.bindings;
+                for (int i = 0; i < cachedBindings.size(); i++) {
+                    if (!PartModelCapture.resident(cachedBindings.get(i).geometry())) {
+                        allResident = false;
+                        break;
+                    }
+                }
+                if (allResident) resource = cached;
+            }
             if (resource != null) {
                 if (!(slot.signature instanceof List<?> previous)
                         || previous.size() != group.size()) resource = null;
@@ -346,20 +398,15 @@ public final class BoundPartCapture {
                 if (resource == null) {
                     long required = key.bindings.size() * 128L;
                     while (bytes + required > BYTE_CAPACITY) {
-                        var oldest =
-                                RESOURCES.entrySet().stream()
-                                        .filter(e -> e.getValue().used != frame)
-                                        .min(Comparator.comparingLong(e -> e.getValue().used))
-                                        .orElse(null);
-                        if (oldest == null) {
+                        var oldest = RESOURCES.firstEntry();
+                        if (oldest == null || oldest.getValue().used == frame) {
                             group.forEach(BoundPartCapture::emit);
                             continue groups;
                         }
-                        RESOURCES.remove(oldest.getKey());
+                        RESOURCES.pollFirstEntry();
                         bytes -= oldest.getValue().bytes;
                     }
                     resource = new Resource(key);
-                    RESOURCES.put(key, resource);
                     bytes += resource.bytes;
                 }
                 if (slot != null) {
@@ -370,7 +417,10 @@ public final class BoundPartCapture {
                         "SOURCE", "BINDING_PREPARED", 1, "");
             } else
                 com.radiance.api.audit.RenderAuditBridge.counter("SOURCE", "BINDING_REUSED", 1, "");
-            resource.used = frame;
+            if (resource.used != frame) {
+                RESOURCES.putLast(resource.key, resource);
+                resource.used = frame;
+            }
             for (var binding : resource.key.bindings) PartModelCapture.touch(binding.geometry());
             var draw =
                     new RigidModelCapture.Draw(

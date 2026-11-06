@@ -13,7 +13,7 @@ struct Timing { double sum = 0, maximum = 0; uint64_t count = 0; };
 // Allocated on first use inside a protected callback; process-lived for late destruction.
 struct CollectorState {
     std::mutex mutex;
-    std::array<Timing, 13> timings{};
+    std::array<Timing, 16> timings{};
     std::string pending;
     uint64_t droppedReports = 0;
     std::chrono::steady_clock::time_point previous = std::chrono::steady_clock::now();

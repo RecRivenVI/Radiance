@@ -1,4 +1,5 @@
 #include "core/vulkan/command.hpp"
+#include <cstdlib>
 #include "core/diagnostics/frame_profile.hpp"
 #include "core/diagnostics/device_loss_trace.hpp"
 
@@ -102,6 +103,7 @@ std::shared_ptr<vk::CommandBuffer> vk::CommandBuffer::begin(VkCommandBufferUsage
     checkedCommandOperation(
         "vkBeginCommandBuffer", [&] { return vkBeginCommandBuffer(commandBuffer_, &bufferBeginInfo); },
         [&](VkResult result, const char *name) { device_->recordFailure(result, name); });
+    recording_ = true;
     device_->nameObject(VK_OBJECT_TYPE_COMMAND_BUFFER, reinterpret_cast<uint64_t>(commandBuffer_),
                         "MCVR command buffer");
     device_->checkpoint(commandBuffer_, "command.begin");
@@ -268,6 +270,11 @@ std::shared_ptr<vk::CommandBuffer> vk::CommandBuffer::drawIndexed(
 
 std::shared_ptr<vk::CommandBuffer>
 vk::CommandBuffer::raytracing(std::shared_ptr<SBT> sbt, uint32_t width, uint32_t height, uint32_t depth) {
+    static const uint32_t stackBytes = [] {
+        const char *stack = std::getenv("RADIANCE_RT_STACK_BYTES");
+        return stack != nullptr && std::atoi(stack) > 0 ? static_cast<uint32_t>(std::atoi(stack)) : 0u;
+    }();
+    if (stackBytes != 0) vkCmdSetRayTracingPipelineStackSizeKHR(commandBuffer_, stackBytes);
     vkCmdTraceRaysKHR(commandBuffer_, &sbt->raygenRegion(), &sbt->missRegion(), &sbt->hitRegion(),
                       &sbt->callableRegion(), width, height, depth);
     return shared_from_this();
@@ -277,6 +284,7 @@ std::shared_ptr<vk::CommandBuffer> vk::CommandBuffer::end() {
     checkedCommandOperation(
         "vkEndCommandBuffer", [&] { return vkEndCommandBuffer(commandBuffer_); },
         [&](VkResult result, const char *name) { device_->recordFailure(result, name); });
+    recording_ = false;
     return shared_from_this();
 }
 
@@ -284,6 +292,7 @@ std::shared_ptr<vk::CommandBuffer> vk::CommandBuffer::reset(VkCommandBufferReset
     checkedCommandOperation(
         "vkResetCommandBuffer", [&] { return vkResetCommandBuffer(commandBuffer_, flags); },
         [&](VkResult result, const char *name) { device_->recordFailure(result, name); });
+    recording_ = false;
     return shared_from_this();
 }
 

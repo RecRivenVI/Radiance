@@ -1,12 +1,43 @@
 file(GLOB_RECURSE SOURCE_FILES CONFIGURE_DEPENDS "*.cpp")
 
+if(NOT MCVR_BUILD_SCENE_REPLAY)
+    list(REMOVE_ITEM SOURCE_FILES "${CMAKE_CURRENT_SOURCE_DIR}/diagnostics/scene_replay.cpp")
+endif()
 add_library(core SHARED ${SOURCE_FILES})
+if(MCVR_BUILD_SCENE_REPLAY)
+    if(NOT WIN32)
+        message(FATAL_ERROR "The standalone scene replay launcher currently requires Windows")
+    endif()
+    target_compile_definitions(core PUBLIC MCVR_BUILD_SCENE_REPLAY)
+    add_executable(mcvr_scene_replay EXCLUDE_FROM_ALL "${PROJECT_SOURCE_DIR}/tools/scene_replay/main.cpp")
+    target_compile_features(mcvr_scene_replay PRIVATE cxx_std_23)
+    add_custom_target(mcvr_scene_replay_runtime
+        COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_INSTALL_PREFIX}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_FILE:core>" "${CMAKE_INSTALL_PREFIX}/scene_replay_core.dll"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "$<TARGET_PDB_FILE:core>" "${CMAKE_INSTALL_PREFIX}/scene_replay_core.pdb"
+        DEPENDS core mcvr_scene_replay)
+endif()
 
-set(MCVR_SPIRV_REFLECT_DIR "${PROJECT_SOURCE_DIR}/third_party/FidelityFX-SDK/sdk/tools/ffx_shader_compiler/libs/SPIRV-Reflect")
+include(FetchContent)
+FetchContent_Declare(spirv_reflect
+    GIT_REPOSITORY https://github.com/KhronosGroup/SPIRV-Reflect.git
+    GIT_TAG f3e261fda74ca81b44d1941931c6b7b5fe236d0e)
+FetchContent_GetProperties(spirv_reflect)
+if(NOT spirv_reflect_POPULATED)
+    FetchContent_Populate(spirv_reflect)
+endif()
+set(MCVR_SPIRV_REFLECT_DIR "${spirv_reflect_SOURCE_DIR}")
 add_library(mcvr_spirv_reflect STATIC "${MCVR_SPIRV_REFLECT_DIR}/spirv_reflect.c")
 set_target_properties(mcvr_spirv_reflect PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(mcvr_spirv_reflect PUBLIC "${MCVR_SPIRV_REFLECT_DIR}")
 target_link_libraries(core PRIVATE mcvr_spirv_reflect)
+
+# Immutable sampling data is independent of the selected upscaler runtime.
+file(DOWNLOAD
+    "https://raw.githubusercontent.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/v1.1.4/sdk/src/components/sssr/samplerBlueNoiseErrorDistribution_128x128_OptimizedFor_2d2d2d2d_1spp.cpp"
+    "${CMAKE_CURRENT_BINARY_DIR}/sampler_blue_noise.cpp"
+    EXPECTED_HASH SHA256=0fd62a8f00e6e59b8c9aa8c2b4236eb361fdd2deda6f3ddf4be74c5de59623bc)
+target_include_directories(core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(core PUBLIC ngx ${JNI_LIBRARIES} VulkanMemoryAllocator volk::volk glfw minizip tinyexpr
                                    nlohmann_json::nlohmann_json)
 
@@ -39,8 +70,7 @@ if(USE_AMD)
     target_compile_definitions(core PUBLIC USE_AMD)
 endif()
 if(MCVR_ENABLE_FFX_UPSCALER)
-    # amd_fidelityfx_vk provides the main FFX API (ffxCreateContext, ffxQuery, etc.)
-    target_link_libraries(core PUBLIC amd_fidelityfx_vk ffx_backend_vk_x64 ffx_fsr3upscaler_x64)
+    target_link_libraries(core PUBLIC mcvr_ffx)
     target_compile_definitions(core PUBLIC MCVR_ENABLE_FFX_UPSCALER)
 endif()
 if(MCVR_ENABLE_NRD)

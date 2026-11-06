@@ -5,6 +5,7 @@
 #include "core/vulkan/buffer.hpp"
 #include "core/vulkan/vertex.hpp"
 
+#include <span>
 #include <vector>
 
 namespace vk {
@@ -20,10 +21,17 @@ class BLAS : public SharedObject<BLAS> {
          VkAccelerationStructureKHR blas,
          std::shared_ptr<DeviceLocalBuffer> blasBuffer);
     ~BLAS();
+#ifdef MCVR_BUILD_SCENE_REPLAY
+    std::vector<VkAccelerationStructureGeometryKHR> captureGeometries;
+    std::vector<uint32_t> capturePrimitiveCounts;
+#endif
 
     std::shared_ptr<DeviceLocalBuffer> blasBuffer();
     VkAccelerationStructureKHR &blas();
     VkDeviceAddress &blasDeviceAddress();
+    std::shared_ptr<BLAS> recordCompaction(const std::shared_ptr<VMA> &vma,
+                                           const std::shared_ptr<CommandBuffer> &commands,
+                                           VkDeviceSize bytes);
 
   private:
     std::shared_ptr<Device> device_;
@@ -31,6 +39,21 @@ class BLAS : public SharedObject<BLAS> {
 
     VkAccelerationStructureKHR blas_;
     VkDeviceAddress blasDeviceAddress_;
+};
+
+class BLASCompactionQueries {
+  public:
+    BLASCompactionQueries(std::shared_ptr<Device> device, uint32_t capacity);
+    ~BLASCompactionQueries();
+    BLASCompactionQueries(const BLASCompactionQueries &) = delete;
+    BLASCompactionQueries &operator=(const BLASCompactionQueries &) = delete;
+
+    void record(const std::shared_ptr<CommandBuffer> &commands, std::span<const VkAccelerationStructureKHR> handles);
+    std::vector<VkDeviceSize> read(uint32_t count) const;
+
+  private:
+    std::shared_ptr<Device> device_;
+    VkQueryPool pool_ = VK_NULL_HANDLE;
 };
 
 class TLAS : public SharedObject<TLAS> {
@@ -173,7 +196,8 @@ class TLASBuilder : public SharedObject<TLASBuilder> {
                                             uint32_t offset,
                                             VkGeometryInstanceFlagsKHR flag,
                                             const std::shared_ptr<BLAS> &blas);
-        std::shared_ptr<TLASBuilder> endInstanceBuilder(std::shared_ptr<Device> device, std::shared_ptr<VMA> vma);
+        std::shared_ptr<TLASBuilder>
+        endInstanceBuilder(std::shared_ptr<Device> device, std::shared_ptr<VMA> vma, VkBufferUsageFlags usage = 0);
     };
 
   public:
@@ -187,7 +211,9 @@ class TLASBuilder : public SharedObject<TLASBuilder> {
     std::shared_ptr<TLASBuilder> allocateBuffers(std::shared_ptr<PhysicalDevice> physicalDevice,
                                                  std::shared_ptr<Device> device,
                                                  std::shared_ptr<VMA> vma);
-    std::shared_ptr<TLAS> buildAndSubmit(std::shared_ptr<Device> device, std::shared_ptr<CommandBuffer> commandBuffer);
+    std::shared_ptr<TLAS> buildAndSubmit(std::shared_ptr<Device> device,
+                                         std::shared_ptr<CommandBuffer> commandBuffer,
+                                         bool assembledInstances = false);
 
   private:
     TLASInstanceBuilder tlasInstanceBuilder_;

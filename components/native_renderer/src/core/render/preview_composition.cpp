@@ -10,13 +10,13 @@ void UIModuleContext::postDiagram() {
 
     if (!framework->isRunning() || overlayMode != DIAGRAM_DRAW) return;
 
-    context->overlayCommandBuffer->endRenderPass();
+    context->recordingOverlayCommands()->endRenderPass();
     diagramDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     diagramDrawDepthImage->imageLayout() = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     overlayMode = NONE;
 
     auto mainQueueIndex = context->physicalDevice->mainQueueIndex();
-    context->overlayCommandBuffer->barriersBufferImage(
+    context->recordingOverlayCommands()->barriersBufferImage(
         {}, {{
                  .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                  .srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -48,20 +48,20 @@ void UIModuleContext::postDiagram() {
     int postID = Renderer::instance().buffers()->getPostID();
     if (postID < 0) { throw std::runtime_error("Diagram post-process uniform was not uploaded"); }
 
-    vkCmdBindPipeline(context->overlayCommandBuffer->vkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
+    vkCmdBindPipeline(context->recordingOverlayCommands()->vkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
                       module->overlayPostPipelines_[DIAGRAM]->vkPipeline());
     uint32_t dynamicOffsets[] = {0, Renderer::instance().buffers()->overlayPostUniformOffset(postID)};
-    vkCmdBindDescriptorSets(context->overlayCommandBuffer->vkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
+    vkCmdBindDescriptorSets(context->recordingOverlayCommands()->vkCommandBuffer(), VK_PIPELINE_BIND_POINT_GRAPHICS,
                             overlayDescriptorTable->vkPipelineLayout(), 0,
                             overlayDescriptorTable->descriptorSet().size(),
                             overlayDescriptorTable->descriptorSet().data(), 2, dynamicOffsets);
-    context->overlayCommandBuffer->draw(3, 1);
+    context->recordingOverlayCommands()->draw(3, 1);
 
-    context->overlayCommandBuffer->endRenderPass();
+    context->recordingOverlayCommands()->endRenderPass();
     overlayPostColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     overlayMode = NONE;
 
-    context->overlayCommandBuffer->barriersBufferImage(
+    context->recordingOverlayCommands()->barriersBufferImage(
         {},
         {{
              .srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
@@ -105,34 +105,35 @@ void UIModuleContext::postDiagram() {
     imageBlit.dstOffsets[0] = {0, 0, 0};
     imageBlit.dstOffsets[1] = {static_cast<int>(overlayDrawColorImage->width()),
                                static_cast<int>(overlayDrawColorImage->height()), 1};
-    vkCmdBlitImage(context->overlayCommandBuffer->vkCommandBuffer(), overlayPostColorImage->vkImage(),
+    vkCmdBlitImage(context->recordingOverlayCommands()->vkCommandBuffer(), overlayPostColorImage->vkImage(),
                    overlayPostColorImage->imageLayout(), overlayDrawColorImage->vkImage(),
                    overlayDrawColorImage->imageLayout(), 1, &imageBlit, VK_FILTER_NEAREST);
 
-    context->overlayCommandBuffer->barriersBufferImage({}, {{
-                                                                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                                                                .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
-                                                                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                                                .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                                                                .oldLayout = overlayPostColorImage->imageLayout(),
-                                                                .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
-                                                                .srcQueueFamilyIndex = mainQueueIndex,
-                                                                .dstQueueFamilyIndex = mainQueueIndex,
-                                                                .image = overlayPostColorImage,
-                                                                .subresourceRange = vk::wholeColorSubresourceRange,
-                                                            },
-                                                            {
-                                                                .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
-                                                                .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
-                                                                .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
-                                                                .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
-                                                                .oldLayout = overlayDrawColorImage->imageLayout(),
-                                                                .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                                                                .srcQueueFamilyIndex = mainQueueIndex,
-                                                                .dstQueueFamilyIndex = mainQueueIndex,
-                                                                .image = overlayDrawColorImage,
-                                                                .subresourceRange = vk::wholeColorSubresourceRange,
-                                                            }});
+    context->recordingOverlayCommands()->barriersBufferImage(
+        {}, {{
+                 .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 .srcAccessMask = VK_ACCESS_2_TRANSFER_READ_BIT,
+                 .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                 .oldLayout = overlayPostColorImage->imageLayout(),
+                 .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                 .srcQueueFamilyIndex = mainQueueIndex,
+                 .dstQueueFamilyIndex = mainQueueIndex,
+                 .image = overlayPostColorImage,
+                 .subresourceRange = vk::wholeColorSubresourceRange,
+             },
+             {
+                 .srcStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT,
+                 .srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+                 .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+                 .dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+                 .oldLayout = overlayDrawColorImage->imageLayout(),
+                 .newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 .srcQueueFamilyIndex = mainQueueIndex,
+                 .dstQueueFamilyIndex = mainQueueIndex,
+                 .image = overlayDrawColorImage,
+                 .subresourceRange = vk::wholeColorSubresourceRange,
+             }});
     overlayPostColorImage->imageLayout() = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     overlayDrawColorImage->imageLayout() = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
@@ -146,5 +147,6 @@ void UIModuleContext::postDiagram() {
         overlayDepthWriteEnable = savedOverlayDepthWriteEnable;
         overlayDepthCompareOp = savedOverlayDepthCompareOp;
         diagramStateSaved = false;
+        publishQueryState();
     }
 }

@@ -6,9 +6,12 @@
 
 JNIEXPORT void JNICALL
 Java_com_radiance_client_proxy_world_PlayerProxy_setCameraPos(JNIEnv *env, jclass, jdouble x, jdouble y, jdouble z) {
-    jni::invokeVoid(env, "JNI com.radiance.client.proxy.world.PlayerProxy.setCameraPos", [&] {
-        auto world = Renderer::instance().world();
-        if (world == nullptr) return;
-        Renderer::instance().world()->setCameraPos(glm::dvec3{x, y, z});
-    });
+    jni::invokeVoid(
+        env, "JNI com.radiance.client.proxy.world.PlayerProxy.setCameraPos",
+        [&] {
+            auto world = Renderer::instance().inputWorld();
+            if (world == nullptr) return;
+            world->setCameraPos(glm::dvec3{x, y, z});
+        },
+        jni::BoundaryPolicy::producerWorld);
 }

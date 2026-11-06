@@ -200,7 +200,7 @@ extern "C" JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_UiPathTr
                 framework->frameResourceRetainer().retain(old.output);
                 framework->frameResourceRetainer().retain(old.descriptor);
             }
-            scene->compositeFrames.assign(framework->swapchain()->imageCount(), {});
+            scene->compositeFrames.assign(framework->mainFrameSlotCount(), {});
         }
         scene->width = width;
         scene->height = height;
@@ -277,6 +277,8 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
     auto &renderer = Renderer::instance();
     auto framework = renderer.framework();
     auto mainPipeline = framework->pipeline()->worldPipeline();
+    // The auxiliary view consumes this frame's inputs immediately.
+    framework->applyWorldUniforms(*mainFrame);
     auto mainBuffers = renderer.buffers();
     if (!mainPipeline || !mainBuffers->worldUniformBuffer() || !mainBuffers->skyUniformBuffer() ||
         !mainBuffers->textureMappingBuffer())
@@ -284,6 +286,10 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
     mainFrame->beginUiPtCommands(); // Uploads and cached-world execution below record here.
     auto sourceUbo = *static_cast<vk::Data::WorldUBO *>(mainBuffers->worldUniformBuffer()->mappedPtr());
     auto sky = *static_cast<vk::Data::SkyUBO *>(mainBuffers->skyUniformBuffer()->mappedPtr());
+    // Preview cameras belong to the isolated preview scene, not the player's fluid.
+    sky.cameraSubmersionType = 0;
+    sky.cameraMediumProbe = 0;
+    sky.cameraMediumSource = {0, 0, -1, 0};
     auto mapping = static_cast<vk::Data::TextureMapping *>(mainBuffers->textureMappingBuffer()->mappedPtr());
     uint32_t requestedWidth = 0, requestedHeight = 0;
     for (auto id : collected) {
@@ -311,7 +317,7 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
         return;
     }
     if (!pipeline) retireReconstructionViews(module, framework, mainFrame);
-    const uint32_t frames = framework->swapchain()->imageCount();
+    const uint32_t frames = framework->mainFrameSlotCount();
     if (state.contexts.empty()) {
         state.viewCount = 2;
         world = World::create(framework);
@@ -365,7 +371,7 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
         for (auto &[id, scene] : module->previewScenes) scene->buffers->invalidateWorldHistory();
     }
     // Start the geometry-upload batch before Entities::build queues its payloads.
-    state.buffers->resetFrame();
+    state.buffers->resetFrame(false);
     std::vector<std::shared_ptr<Entity>> combined;
     for (auto id : collected) {
         auto scene = module->previewScenes.at(id);
@@ -466,7 +472,7 @@ void PreviewSceneWorld::execute(const std::shared_ptr<UIModule> &module,
         ubo.cameraJitter = glm::vec2(0);
         ubo.chunkGridInfo = glm::ivec4(0);
         ubo.chunkStorageSectionPos = glm::ivec4(0);
-        buffers->resetFrame();
+        buffers->resetFrame(false);
         buffers->setAndUploadWorldUniformBuffer(ubo);
         buffers->setAndUploadSkyUniformBuffer(sky);
         buffers->setAndUploadTextureMappingBuffer(mapping->entries, false);

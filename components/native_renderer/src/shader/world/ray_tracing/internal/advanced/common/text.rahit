@@ -42,6 +42,12 @@ layout(location = 0) rayPayloadInEXT MainRay mainRay;
 hitAttributeEXT vec2 attribs;
 
 void main() {
+    if ((mainRay.boundaryFlags & 0x40000000u) != 0u) {
+        uint replayGeometry=blasOffsets.offsets[gl_InstanceCustomIndexEXT]+uint(gl_GeometryIndexEXT);
+        if (replayGeometry != ((mainRay.boundaryFlags >> 3u) & 0x07ffffffu) ||
+            gl_PrimitiveID != mainRay.hasPrevScenePos) ignoreIntersectionEXT;
+        return;
+    }
     if (!rayPriorityLayerAllowed(mainRay)) { ignoreIntersectionEXT; return; }
     uint instanceID = gl_InstanceCustomIndexEXT;
     uint geometryID = gl_GeometryIndexEXT;

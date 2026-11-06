@@ -10,7 +10,7 @@
 
 ## 方法
 
-沿用[当前冻结候选](../../components/render_diagnostics/build/takeover-stage6-closeout/manifest.json)，实际加载 core 已核对。只运行项目内实例一次，保留城市、实体、相机和画质；自动实例临时使用 1920×1080、静音，结束后恢复人工入口设置。存档点 `(-136.3000,75.0625,218.7000)`，yaw `130.5000`、pitch `-8.4000`，视距 8、模拟距离 32、Vanilla PT 四次反弹、SHARC、RR Balanced、FG 关闭，时间 6000、天气不变。
+沿用当前冻结候选（`components/render_diagnostics/build/takeover-stage6-closeout/manifest.json`），实际加载 core 已核对。只运行项目内实例一次，保留城市、实体、相机和画质；自动实例临时使用 1920×1080、静音，结束后恢复人工入口设置。存档点 `(-136.3000,75.0625,218.7000)`，yaw `130.5000`、pitch `-8.4000`，视距 8、模拟距离 32、Vanilla PT 四次反弹、SHARC、RR Balanced、FG 关闭，时间 6000、天气不变。
 
 加载后至少预热 60 秒、队列连续平静 10 秒，再按顺序采集 FRAME_ONLY 20 秒、TIMED 10 秒和 JFR_ONLY 20 秒。截图发生在计时外，另留 3 秒间隔；每种窗口的工具开销分别报告。TIMED 启用既有完成事件读取的 SHARC 稀疏计数，不加 GPU 等待；JFR 的采样栈不能当作精确耗时。
 

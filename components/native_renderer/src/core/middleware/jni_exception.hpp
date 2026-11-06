@@ -3,6 +3,7 @@
 #include "core/all_extern.hpp"
 #include "core/diagnostics/alloc_trace.hpp"
 #include "core/failure_state.hpp"
+#include "core/render/frame_execution.hpp"
 
 #include <jni.h>
 
@@ -11,7 +12,13 @@
 #include <utility>
 
 namespace jni {
-enum class BoundaryPolicy { normal, initialization, allowAfterFatal };
+enum class BoundaryPolicy { normal, initialization, allowAfterFatal, frameHandoff, producerOverlay, producerWorld };
+
+inline bool needsProducerGate(BoundaryPolicy policy) {
+    return policy != BoundaryPolicy::frameHandoff &&
+           !(policy == BoundaryPolicy::producerWorld && mcvr::FrameExecution::producerWorldActive()) &&
+           !(policy == BoundaryPolicy::producerOverlay && mcvr::FrameExecution::producerOverlayDeferred());
+}
 
 inline void throwRuntimeException(JNIEnv *env, const char *operation, const char *message) noexcept {
     if (env == nullptr || env->ExceptionCheck()) { return; }
@@ -37,7 +44,15 @@ inline void recordFailure(const std::exception &exception, BoundaryPolicy policy
 }
 
 inline void preflight(BoundaryPolicy policy) {
-    if (policy == BoundaryPolicy::normal) mcvr::failure::throwIfFatal();
+    if (policy == BoundaryPolicy::normal || policy == BoundaryPolicy::frameHandoff ||
+        policy == BoundaryPolicy::producerOverlay || policy == BoundaryPolicy::producerWorld)
+        mcvr::failure::throwIfFatal();
+}
+
+inline void prepareInputs(BoundaryPolicy policy) {
+    if (policy == BoundaryPolicy::normal ||
+        (policy == BoundaryPolicy::producerWorld && !mcvr::FrameExecution::producerWorldActive()))
+        mcvr::FrameExecution::prepareDeferredProducer();
 }
 
 inline void recordUnknownFailure(BoundaryPolicy policy, const char *operation) noexcept {
@@ -54,7 +69,9 @@ jint invokeForVkResult(JNIEnv *env,
                        BoundaryPolicy policy = BoundaryPolicy::normal) noexcept {
     try {
         mcvr::diag::AllocTraceTagScope tagScope(operation);
+        mcvr::FrameExecution::Producer producer(needsProducerGate(policy), operation);
         preflight(policy);
+        prepareInputs(policy);
         return static_cast<jint>(std::forward<Function>(function)());
     } catch (const std::exception &exception) {
         recordFailure(exception, policy);
@@ -73,7 +90,9 @@ void invokeVoid(JNIEnv *env,
                 BoundaryPolicy policy = BoundaryPolicy::normal) noexcept {
     try {
         mcvr::diag::AllocTraceTagScope tagScope(operation);
+        mcvr::FrameExecution::Producer producer(needsProducerGate(policy), operation);
         preflight(policy);
+        prepareInputs(policy);
         std::forward<Function>(function)();
     } catch (const std::exception &exception) {
         recordFailure(exception, policy);
@@ -92,7 +111,9 @@ Result invoke(JNIEnv *env,
               BoundaryPolicy policy = BoundaryPolicy::normal) noexcept {
     try {
         mcvr::diag::AllocTraceTagScope tagScope(operation);
+        mcvr::FrameExecution::Producer producer(needsProducerGate(policy), operation);
         preflight(policy);
+        prepareInputs(policy);
         return static_cast<Result>(std::forward<Function>(function)());
     } catch (const std::exception &exception) {
         recordFailure(exception, policy);

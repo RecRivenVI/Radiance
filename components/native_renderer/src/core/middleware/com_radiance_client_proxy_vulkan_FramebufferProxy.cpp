@@ -13,8 +13,8 @@
 #include <vector>
 
 namespace {
-std::shared_ptr<Framebuffers> resources() {
-    auto result = Renderer::instance().framebuffers();
+std::shared_ptr<Framebuffers> resources(const FrameworkContext *slot = nullptr) {
+    auto result = Renderer::instance().framebuffers(slot);
     if (!result) throw std::runtime_error("Vulkan framebuffer resources are not initialized");
     return result;
 }
@@ -32,6 +32,19 @@ std::shared_ptr<UIModuleContext> drawContext(bool required = true) {
 
 void endPass() {
     if (auto context = drawContext(false)) context->end();
+}
+
+uint32_t queryFramebufferBinding(uint32_t target, uint64_t bindings) {
+    return target == mcvr::framebuffer::READ_FRAMEBUFFER ? uint32_t(bindings) : uint32_t(bindings >> 32);
+}
+
+std::optional<VkExtent2D> producerDefaultFramebufferExtent(uint32_t target) {
+    auto &renderer = Renderer::instance();
+    const auto framework = renderer.framework();
+    if (!framework || !framework->canReadProducerQueries() ||
+        queryFramebufferBinding(target, renderer.producerFramebufferBindings()) != 0)
+        return std::nullopt;
+    return framework->pipeline()->uiModule()->defaultFramebufferExtent();
 }
 
 void bindFramebufferState(const std::shared_ptr<Framebuffers> &registry,
@@ -85,17 +98,41 @@ JNIEXPORT jintArray JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferPro
                                                                                               jclass,
                                                                                               jint target) {
     jintArray result = nullptr;
-    jni::invokeVoid(env, "Query framebuffer dimensions", [&] {
-        if (target != mcvr::framebuffer::FRAMEBUFFER && target != mcvr::framebuffer::READ_FRAMEBUFFER &&
-            target != mcvr::framebuffer::DRAW_FRAMEBUFFER)
-            throw std::invalid_argument("Invalid framebuffer dimension target");
-        const auto snapshot = drawContext()->framebufferSnapshot(target);
-        if (snapshot.status != mcvr::framebuffer::FRAMEBUFFER_COMPLETE)
-            throw std::runtime_error("Framebuffer dimensions require complete attachments");
-        jint values[]{static_cast<jint>(snapshot.extent.width), static_cast<jint>(snapshot.extent.height)};
-        result = env->NewIntArray(2);
-        if (result) env->SetIntArrayRegion(result, 0, 2, values);
-    });
+    jni::invokeVoid(
+        env, "Query framebuffer dimensions",
+        [&] {
+            if (target != mcvr::framebuffer::FRAMEBUFFER && target != mcvr::framebuffer::READ_FRAMEBUFFER &&
+                target != mcvr::framebuffer::DRAW_FRAMEBUFFER)
+                throw std::invalid_argument("Invalid framebuffer dimension target");
+            const auto serial = [&] {
+                mcvr::FrameExecution::Producer gate(true, "Resolve framebuffer dimensions");
+                mcvr::FrameExecution::prepareDeferredProducer();
+                const auto snapshot = drawContext()->framebufferSnapshot(target);
+                if (snapshot.status != mcvr::framebuffer::FRAMEBUFFER_COMPLETE)
+                    throw std::runtime_error("Framebuffer dimensions require complete attachments");
+                return std::array{jint(snapshot.extent.width), jint(snapshot.extent.height)};
+            };
+            std::array<jint, 2> values;
+            if (auto extent = producerDefaultFramebufferExtent(target)) {
+                values = {jint(extent->width), jint(extent->height)};
+                if (mcvr::state_audit::verifyQueryMirrors()) {
+                    mcvr::FrameExecution::Producer gate(true, "Verify default framebuffer dimensions");
+                    auto framework = Renderer::instance().framework();
+                    const auto frame = framework->acquireOverlayContext();
+                    const auto snapshot =
+                        framework->pipeline()->acquirePipelineContext(frame)->uiModuleContext->framebufferSnapshot(
+                            target);
+                    mcvr::state_audit::verifyQuery(
+                        "defaultFramebufferDimensions", values,
+                        std::array{jint(snapshot.extent.width), jint(snapshot.extent.height)});
+                }
+            } else {
+                values = serial();
+            }
+            result = env->NewIntArray(2);
+            if (result) env->SetIntArrayRegion(result, 0, 2, values.data());
+        },
+        jni::BoundaryPolicy::frameHandoff);
     return result;
 }
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_readPixels(
@@ -183,27 +220,55 @@ JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_bi
                                                                                               jclass,
                                                                                               jint target,
                                                                                               jint id) {
-    jni::invokeVoid(env, "Bind framebuffer", [&] {
-        auto registry = resources();
-        bindFramebufferState(registry, drawContext(false), target, id);
-    });
+    jni::invokeVoid(
+        env, "Bind framebuffer",
+        [&] {
+            const auto framework = Renderer::instance().framework();
+            const auto frame = framework ? framework->acquireOverlayContext() : nullptr;
+            auto registry = resources(frame.get());
+            auto context = frame ? framework->pipeline()->acquirePipelineContext(frame)->uiModuleContext : nullptr;
+            if (context) mcvr::state_audit::context();
+            bindFramebufferState(registry, context, target, id);
+        },
+        jni::BoundaryPolicy::producerOverlay);
 }
 JNIEXPORT jintArray JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_captureMaterialRouting(JNIEnv *env,
                                                                                                           jclass) {
     jintArray result = nullptr;
-    jni::invokeVoid(env, "Capture material routing", [&] {
-        auto registry = resources();
-        const jint read = registry->readFramebufferBinding();
-        jni::preflight(jni::BoundaryPolicy::normal);
-        const jint draw = registry->drawFramebufferBinding();
-        jni::preflight(jni::BoundaryPolicy::normal);
-        auto context = drawContext();
-        mcvr::state_audit::query();
-        const auto &viewport = context->overlayViewportGl;
-        jint values[]{read, draw, viewport[0], viewport[1], viewport[2], viewport[3]};
-        result = env->NewIntArray(6);
-        if (result) env->SetIntArrayRegion(result, 0, 6, values);
-    });
+    jni::invokeVoid(
+        env, "Capture material routing",
+        [&] {
+            auto &renderer = Renderer::instance();
+            auto framework = renderer.framework();
+            const auto reference = [&] {
+                mcvr::FrameExecution::Producer gate(true, "Verify material routing query");
+                auto registry = resources();
+                const auto &viewport = drawContext()->overlayViewportGl;
+                return std::array<jint, 6>{jint(registry->readFramebufferBinding()),
+                                           jint(registry->drawFramebufferBinding()),
+                                           viewport[0],
+                                           viewport[1],
+                                           viewport[2],
+                                           viewport[3]};
+            };
+            std::array<jint, 6> values;
+            if (framework && framework->canReadProducerQueries()) {
+                const auto bindings = renderer.producerFramebufferBindings();
+                const auto viewport = framework->pipeline()->uiModule()->producerViewport();
+                values = {
+                    jint(uint32_t(bindings)), jint(bindings >> 32), viewport[0], viewport[1], viewport[2], viewport[3]};
+                if (mcvr::state_audit::verifyQueryMirrors())
+                    mcvr::state_audit::verifyQuery("captureMaterialRouting", values, reference());
+            } else {
+                mcvr::FrameExecution::Producer gate(true, "Capture material routing");
+                mcvr::FrameExecution::prepareDeferredProducer();
+                values = reference();
+            }
+            mcvr::state_audit::query();
+            result = env->NewIntArray(values.size());
+            if (result) env->SetIntArrayRegion(result, 0, values.size(), values.data());
+        },
+        jni::BoundaryPolicy::frameHandoff);
     return result;
 }
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_bindFramebufferPair(JNIEnv *env,
@@ -222,32 +287,68 @@ JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_bo
                                                                                                jclass,
                                                                                                jint target) {
     jint id = 0;
-    jni::invokeVoid(env, "Query framebuffer binding", [&] {
-        mcvr::state_audit::query();
-        if (target != mcvr::framebuffer::READ_FRAMEBUFFER && target != mcvr::framebuffer::DRAW_FRAMEBUFFER &&
-            target != mcvr::framebuffer::FRAMEBUFFER)
-            throw std::invalid_argument("Invalid framebuffer target");
-        id = target == mcvr::framebuffer::READ_FRAMEBUFFER ? resources()->readFramebufferBinding() :
-                                                             resources()->drawFramebufferBinding();
-    });
+    jni::invokeVoid(
+        env, "Query framebuffer binding",
+        [&] {
+            mcvr::state_audit::query();
+            if (target != mcvr::framebuffer::READ_FRAMEBUFFER && target != mcvr::framebuffer::DRAW_FRAMEBUFFER &&
+                target != mcvr::framebuffer::FRAMEBUFFER)
+                throw std::invalid_argument("Invalid framebuffer target");
+            const bool read = target == mcvr::framebuffer::READ_FRAMEBUFFER;
+            auto &renderer = Renderer::instance();
+            const auto serial = [&] {
+                mcvr::FrameExecution::Producer gate(true, "Verify framebuffer binding query");
+                auto registry = resources();
+                return read ? registry->readFramebufferBinding() : registry->drawFramebufferBinding();
+            };
+            if (mcvr::FrameExecution::enabled()) {
+                const auto bindings = renderer.producerFramebufferBindings();
+                id = read ? uint32_t(bindings) : uint32_t(bindings >> 32);
+                if (mcvr::state_audit::verifyQueryMirrors())
+                    mcvr::state_audit::verifyQuery("boundFramebuffer", uint32_t(id), serial());
+            } else {
+                id = serial();
+            }
+        },
+        jni::BoundaryPolicy::frameHandoff);
     return id;
 }
 JNIEXPORT jint JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_checkStatus(JNIEnv *env,
                                                                                           jclass,
                                                                                           jint target) {
     jint status = mcvr::framebuffer::FRAMEBUFFER_UNDEFINED;
-    jni::invokeVoid(env, "Check framebuffer attachments", [&] {
-        if (target != mcvr::framebuffer::READ_FRAMEBUFFER && target != mcvr::framebuffer::DRAW_FRAMEBUFFER &&
-            target != mcvr::framebuffer::FRAMEBUFFER)
-            throw std::invalid_argument("Invalid framebuffer target");
-        auto registry = resources();
-        auto binding = target == mcvr::framebuffer::READ_FRAMEBUFFER ? registry->readFramebufferBinding() :
-                                                                       registry->drawFramebufferBinding();
-        if (binding != 0)
-            status = registry->checkStatus(target);
-        else if (auto context = drawContext(false))
-            status = context->framebufferSnapshot(target).status;
-    });
+    jni::invokeVoid(
+        env, "Check framebuffer attachments",
+        [&] {
+            if (target != mcvr::framebuffer::READ_FRAMEBUFFER && target != mcvr::framebuffer::DRAW_FRAMEBUFFER &&
+                target != mcvr::framebuffer::FRAMEBUFFER)
+                throw std::invalid_argument("Invalid framebuffer target");
+            const auto serial = [&]() -> jint {
+                mcvr::FrameExecution::Producer gate(true, "Resolve framebuffer attachments");
+                mcvr::FrameExecution::prepareDeferredProducer();
+                auto registry = resources();
+                auto binding = target == mcvr::framebuffer::READ_FRAMEBUFFER ? registry->readFramebufferBinding() :
+                                                                               registry->drawFramebufferBinding();
+                if (binding != 0) return registry->checkStatus(target);
+                if (auto context = drawContext(false)) return context->framebufferSnapshot(target).status;
+                return mcvr::framebuffer::FRAMEBUFFER_UNDEFINED;
+            };
+            if (producerDefaultFramebufferExtent(target)) {
+                status = mcvr::framebuffer::FRAMEBUFFER_COMPLETE;
+                if (mcvr::state_audit::verifyQueryMirrors()) {
+                    mcvr::FrameExecution::Producer gate(true, "Verify default framebuffer status");
+                    auto framework = Renderer::instance().framework();
+                    const auto frame = framework->acquireOverlayContext();
+                    const auto snapshot =
+                        framework->pipeline()->acquirePipelineContext(frame)->uiModuleContext->framebufferSnapshot(
+                            target);
+                    mcvr::state_audit::verifyQuery("defaultFramebufferStatus", status, jint(snapshot.status));
+                }
+            } else {
+                status = serial();
+            }
+        },
+        jni::BoundaryPolicy::frameHandoff);
     return status;
 }
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_attachTexture(
@@ -328,14 +429,27 @@ JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProx
 }
 JNIEXPORT jboolean JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_defaultStencilAvailable(JNIEnv *env,
                                                                                                           jclass) {
-    jboolean available = JNI_FALSE;
-    jni::invokeVoid(env, "Query main target stencil support", [&] {
-        auto framework = Renderer::instance().framework();
-        auto module = framework && framework->pipeline() ? framework->pipeline()->uiModule() : nullptr;
-        if (!module) throw std::runtime_error("Main target resources are not initialized");
-        available = module->defaultStencilAvailable() ? JNI_TRUE : JNI_FALSE;
-    });
-    return available;
+    return jni::invoke<jboolean>(
+        env, "Query main target stencil support", JNI_FALSE,
+        [&] {
+            auto framework = Renderer::instance().framework();
+            const auto read = [&] {
+                auto module = framework && framework->pipeline() ? framework->pipeline()->uiModule() : nullptr;
+                if (!module) throw std::runtime_error("Main target resources are not initialized");
+                return module->defaultStencilAvailable();
+            };
+            const auto serial = [&] {
+                mcvr::FrameExecution::Producer gate(true, "Verify main target stencil support");
+                mcvr::FrameExecution::prepareDeferredProducer();
+                return read();
+            };
+            if (!framework || !framework->canReadProducerQueries()) return serial();
+            const bool available = read();
+            if (mcvr::state_audit::verifyQueryMirrors())
+                mcvr::state_audit::verifyQuery("defaultStencilAvailable", available, serial());
+            return available;
+        },
+        jni::BoundaryPolicy::frameHandoff);
 }
 JNIEXPORT void JNICALL Java_com_radiance_client_proxy_vulkan_FramebufferProxy_drawBuffers(JNIEnv *env,
                                                                                           jclass,

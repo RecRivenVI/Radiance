@@ -66,6 +66,13 @@ static VkImageSubresourceLayers wholeStencilSubresourceLayers = {
     .layerCount = VK_REMAINING_ARRAY_LAYERS,
 };
 
+struct ImageViewDescription {
+    VkImageView handle;
+    VkFormat format;
+    VkExtent2D extent;
+    VkImageUsageFlags usage;
+};
+
 class Image {
   public:
     virtual uint32_t width() = 0;
@@ -75,6 +82,7 @@ class Image {
     virtual VkFormat &vkFormat() = 0;
     virtual VkImage &vkImage() = 0;
     virtual VkImageView &vkImageView(int index = 0) = 0;
+    virtual ImageViewDescription describeView(int index) const = 0;
 };
 
 class SwapchainImage : public Image, public SharedObject<SwapchainImage> {
@@ -89,6 +97,7 @@ class SwapchainImage : public Image, public SharedObject<SwapchainImage> {
     VkFormat &vkFormat() override;
     VkImage &vkImage() override;
     VkImageView &vkImageView(int index = 0) override;
+    ImageViewDescription describeView(int index) const override;
     VkImageLayout &imageLayout();
 
   private:
@@ -235,6 +244,7 @@ class DeviceLocalImage : public Image, public SharedObject<DeviceLocalImage> {
     VkBuffer &vkStagingBuffer();
     VkImage &vkImage() override;
     VkImageView &vkImageView(int index = 0) override;
+    ImageViewDescription describeView(int index) const override;
     VkImageLayout &imageLayout();
     void *mappedPtr();
     VkImageSubresourceRange fullSubresourceRange() const;
@@ -270,7 +280,7 @@ class DeviceLocalImage : public Image, public SharedObject<DeviceLocalImage> {
     VmaAllocationInfo allocationInfo_{};
     const char *allocTraceTag_ = nullptr;
 
-    std::vector<VkImageView> imageViews_{1};
+    std::vector<ImageViewDescription> imageViews_{1};
 };
 
 class Sampler : public SharedObject<Sampler> {

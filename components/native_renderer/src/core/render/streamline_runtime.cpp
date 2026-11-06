@@ -1,10 +1,15 @@
 #include "core/logging.hpp"
 #include "streamline_runtime.hpp"
 #include "renderer.hpp"
+#include "render_framework.hpp"
 #include "core/diagnostics/audit_sink.hpp"
+#include "core/diagnostics/frame_profile.hpp"
+#include "core/diagnostics/fg_timing.hpp"
+#include "core/render/frame_execution.hpp"
 #include <cstring>
 #include <cmath>
 #include <iostream>
+#include <utility>
 #ifdef _WIN32
 #    include <sl_security.h>
 #    include <sl_helpers.h>
@@ -69,7 +74,10 @@ bool StreamlineRuntime::initialize(const std::filesystem::path &directory) {
     preferences.numFeaturesToLoad = std::size(features);
     preferences.logMessageCallback = [](sl::LogType type, const char *message) {
         try {
-            mcvr::log::error("StreamlineRuntime")
+            const auto level = type == sl::LogType::eError ? mcvr::log::Level::Error :
+                               type == sl::LogType::eWarn  ? mcvr::log::Level::Warn :
+                                                             mcvr::log::Level::Info;
+            mcvr::log::stream(level, "StreamlineRuntime", level == mcvr::log::Level::Info ? std::cout : std::cerr)
                 << "[Streamline:" << int(type) << "] " << (message ? message : "") << std::endl;
         } catch (...) {
             // Never let a C++ exception cross the Streamline callback boundary.
@@ -78,7 +86,8 @@ bool StreamlineRuntime::initialize(const std::filesystem::path &directory) {
     if (!check(init(preferences, sl::kSDKVersion), "slInit")) return false;
     initialized_ = true;
     vkCreateInstance = reinterpret_cast<PFN_vkCreateInstance>(instanceProc_(nullptr, "vkCreateInstance"));
-    mcvr::log::info("StreamlineRuntime") << "Streamline 2.14.1 initialized; OTA disabled" << std::endl;
+    mcvr::log::info("StreamlineRuntime") << "Streamline " << SL_VERSION_MAJOR << '.' << SL_VERSION_MINOR << '.'
+                                         << SL_VERSION_PATCH << " initialized; OTA disabled" << std::endl;
     return true;
 #else
     return false;
@@ -124,6 +133,7 @@ void StreamlineRuntime::hookDevice(VkDevice device, VkPhysicalDevice physical) {
     FEATURE(sl::kFeatureDLSS_G, slDLSSGSetOptions)
     FEATURE(sl::kFeatureDLSS_G, slDLSSGGetState)
     FEATURE(sl::kFeatureReflex, slReflexSetOptions)
+    FEATURE(sl::kFeatureReflex, slReflexGetState)
     FEATURE(sl::kFeatureReflex, slReflexSleep)
     FEATURE(sl::kFeaturePCL, slPCLSetMarker)
 #undef FEATURE
@@ -154,33 +164,131 @@ void StreamlineRuntime::shutdown() {
     initialized_ = false;
     physical_ = nullptr;
     token_ = nullptr;
+    nextToken_ = nullptr;
+    phase_ = nextPhase_ = FramePhase::Unstarted;
+    nextFrameIndex_ = 0;
+    lastLatencyReport_ = 0;
+    reflexMode_ = -1;
     // Keep the interposer loaded while Vulkan objects and their proxy functions exist.
 }
+sl::FrameToken *StreamlineRuntime::newFrameToken() {
+    std::unique_lock lock(tokenCreation_, std::defer_lock);
+    {
+        profile::Scope wait("streamline.frame-token-lock");
+        lock.lock();
+    }
+    profile::Scope timing("streamline.frame-token");
+    sl::FrameToken *token = nullptr;
+    const uint32_t frameIndex = ++nextFrameIndex_;
+    return check(slGetNewFrameToken(token, &frameIndex), "slGetNewFrameToken") ? token : nullptr;
+}
 sl::FrameToken *StreamlineRuntime::frame() {
-    if (initialized_ && !token_) check(slGetNewFrameToken(token_, nullptr), "slGetNewFrameToken");
+    if (const auto *slot = static_cast<const FrameworkContext *>(FrameExecution::workerRecordingSlot()))
+        return slot->streamlineToken;
+    if (initialized_ && !token_) token_ = newFrameToken();
     return token_;
 }
-void StreamlineRuntime::beginFrame(int mode, uint32_t fpsLimit) {
+bool StreamlineRuntime::prepareNextFrame(int mode, uint32_t fpsLimit) {
+    const uint32_t limitUs = mode > 0 && fpsLimit > 0 ? 1000000u / fpsLimit : 0;
+    // Option changes are serialized with rendering. Sleep and PCL accept an explicit token.
+    if (!initialized_ || nextToken_ || mode != reflexMode_ || limitUs != reflexFrameLimitUs_ || !slReflexSleep)
+        return false;
+    nextToken_ = newFrameToken();
+    if (!nextToken_) return false;
+    nextPhase_ = FramePhase::Unstarted;
+    profile::Scope sleep("streamline.reflex-sleep-next");
+    const auto paceStart = profile::enabled() ? profile::now() : 0;
+    nextPacing_ = check(slReflexSleep(*nextToken_), "slReflexSleep") && mode > 0;
+    if (paceStart) FrameExecution::noteProducerPacing(paceStart, profile::now());
+    return true;
+}
+void StreamlineRuntime::beginSimulation(bool prepared) {
     if (!initialized_) return;
+    auto &token = prepared ? nextToken_ : token_;
+    auto &phase = prepared ? nextPhase_ : phase_;
+    // Loading and connection transitions can enter runTick again before a present.
+    if (!token || phase != FramePhase::Unstarted) token = newFrameToken();
+    phase = FramePhase::Simulating;
+    mark(sl::PCLMarker::eSimulationStart, token);
+}
+
+void StreamlineRuntime::beginRenderSubmission() {
+    if (!initialized_ || phase_ == FramePhase::Rendering) return;
+    // A nested tick can present and prepare a new frame before its caller resumes.
+    if (phase_ == FramePhase::Unstarted) beginSimulation();
+    mark(sl::PCLMarker::eSimulationEnd, token_);
+    mark(sl::PCLMarker::eRenderSubmitStart, token_);
+    phase_ = FramePhase::Rendering;
+}
+bool StreamlineRuntime::activatePreparedFrame() {
+    if (!nextToken_) return false;
+    token_ = std::exchange(nextToken_, nullptr);
+    phase_ = std::exchange(nextPhase_, FramePhase::Unstarted);
+    pacing_ = nextPacing_;
+    return true;
+}
+void StreamlineRuntime::beginFrame(int mode, uint32_t fpsLimit) {
+    profile::Scope timing("streamline.begin-frame");
+    if (!initialized_) return;
+    if (activatePreparedFrame()) return;
     pacing_ = false;
     token_ = nullptr;
+    phase_ = FramePhase::Unstarted;
     if (!frame()) return;
     if (slReflexSetOptions && supported(sl::kFeatureReflex)) {
         sl::ReflexOptions options{};
         options.mode = static_cast<sl::ReflexMode>(mode);
         options.frameLimitUs = mode > 0 && fpsLimit > 0 ? 1000000u / fpsLimit : 0;
         // Reapply after swapchain replacement, even when the selected mode is unchanged.
-        if (check(slReflexSetOptions(options), "slReflexSetOptions")) {
+        if (reflexMode_ != mode || reflexFrameLimitUs_ != options.frameLimitUs) {
+            profile::Scope configure("streamline.reflex-set-options");
+            if (!check(slReflexSetOptions(options), "slReflexSetOptions")) return;
             if (reflexMode_ != mode)
                 mcvr::log::info("StreamlineRuntime") << "Effective Reflex mode=" << mode << std::endl;
             reflexMode_ = mode;
-            if (slReflexSleep) pacing_ = check(slReflexSleep(*token_), "slReflexSleep") && mode > 0;
+            reflexFrameLimitUs_ = options.frameLimitUs;
+        }
+        if (slReflexSleep) {
+            profile::Scope sleep("streamline.reflex-sleep");
+            pacing_ = check(slReflexSleep(*token_), "slReflexSleep") && mode > 0;
         }
     }
 }
-void StreamlineRuntime::marker(sl::PCLMarker mark) {
-    if (slPCLSetMarker && frame()) check(slPCLSetMarker(mark, *token_), "slPCLSetMarker");
+void StreamlineRuntime::marker(sl::PCLMarker marker) {
+    profile::Scope timing("streamline.marker");
+    if (slPCLSetMarker) mark(marker, frame());
 }
+
+void StreamlineRuntime::mark(sl::PCLMarker marker, sl::FrameToken *token) {
+    if (!slPCLSetMarker || !token) return;
+    const bool accepted = check(slPCLSetMarker(marker, *token), "slPCLSetMarker");
+    static const bool trace = [] {
+        const auto *flag = std::getenv("RADIANCE_A_PCL_TRACE");
+        return flag && std::string_view(flag) == "1";
+    }();
+    if (trace) {
+        const auto *slot = static_cast<const FrameworkContext *>(FrameExecution::workerRecordingSlot());
+        mcvr::log::info("StreamlineRuntime")
+            << "A5_PCL frame=" << uint32_t(*token) << " marker=" << uint32_t(marker)
+            << " slot=" << (slot ? slot->frameSerial : 0) << " accepted=" << accepted << std::endl;
+    }
+}
+void StreamlineRuntime::reportLatency() {
+    if (!slReflexGetState || !audit::enabled(MCVR_AUDIT_TIMING)) return;
+    sl::ReflexState state{};
+    if (slReflexGetState(state) != sl::Result::eOk || !state.latencyReportAvailable) return;
+    auto last = lastLatencyReport_;
+    for (const auto &report : state.frameReport) {
+        if (report.frameID <= lastLatencyReport_ || !report.gpuRenderEndTime) continue;
+        if (report.inputSampleTime && report.gpuRenderEndTime >= report.inputSampleTime)
+            fgdiag::add(fgdiag::PcLatency, double(report.gpuRenderEndTime - report.inputSampleTime) / 1000.0);
+        if (report.simStartTime && report.gpuRenderEndTime >= report.simStartTime)
+            fgdiag::add(fgdiag::SimulationToGpu, double(report.gpuRenderEndTime - report.simStartTime) / 1000.0);
+        last = std::max(last, report.frameID);
+    }
+    lastLatencyReport_ = last;
+}
+
 uint32_t StreamlineRuntime::allocateViewport() {
     return nextViewport_++;
 }
@@ -196,6 +304,8 @@ OptionalFeatureLoadResult StreamlineRuntime::setFGLoaded(bool loaded) {
         return OptionalFeatureLoadResult::Failed;
     }
     fgLoaded_ = loaded;
+    slDLSSGSetOptions = nullptr;
+    slDLSSGGetState = nullptr;
     if (loaded && slGetFeatureFunction) {
         void *setOptions{};
         void *getState{};
@@ -214,13 +324,13 @@ void StreamlineRuntime::disableFG(bool retainResources) {
         sl::DLSSGOptions options{};
         if (retainResources) options.flags = sl::DLSSGFlags::eRetainResourcesWhenOff;
         check(slDLSSGSetOptions(sl::ViewportHandle(0), options), "FG off");
-        if (token_) {
+        if (auto *token = frame()) {
             const sl::ResourceTag tags[]{
                 {nullptr, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent},
                 {nullptr, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent},
                 {nullptr, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent},
                 {nullptr, sl::kBufferTypeUIAlpha, sl::ResourceLifecycle::eValidUntilPresent}};
-            check(slSetTagForFrame(*token_, sl::ViewportHandle(0), tags, 4, nullptr), "clear FG tags");
+            check(slSetTagForFrame(*token, sl::ViewportHandle(0), tags, 4, nullptr), "clear FG tags");
         }
     }
 }
@@ -230,7 +340,7 @@ uint32_t StreamlineRuntime::presentedFrames() {
     if (!check(slDLSSGGetState(sl::ViewportHandle(0), state, nullptr), "FG state")) return 0;
     if (mcvr::audit::enabled(MCVR_AUDIT_CAPTURE))
         mcvr::log::info("StreamlineRuntime")
-            << "FG_EVIDENCE token=" << (token_ ? uint32_t(*token_) : 0) << " status=" << uint32_t(state.status)
+            << "FG_EVIDENCE token=" << (frame() ? uint32_t(*frame()) : 0) << " status=" << uint32_t(state.status)
             << " presented=" << state.numFramesActuallyPresented << std::endl;
     return state.numFramesActuallyPresented;
 }

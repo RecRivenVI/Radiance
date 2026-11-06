@@ -240,9 +240,16 @@ void vk::Swapchain::reconstruct() {
 #endif
 }
 
-vk::Swapchain::~Swapchain() {
+void vk::Swapchain::release() {
     swapchainImages_.clear();
-    vkDestroySwapchainKHR(device_->vkDevice(), swapchain_, nullptr);
+    if (swapchain_ != VK_NULL_HANDLE) {
+        vkDestroySwapchainKHR(device_->vkDevice(), swapchain_, nullptr);
+        swapchain_ = VK_NULL_HANDLE;
+    }
+}
+
+vk::Swapchain::~Swapchain() {
+    release();
 
 #ifdef DEBUG
     swapchainCout() << "swapchain deconstructed" << std::endl;

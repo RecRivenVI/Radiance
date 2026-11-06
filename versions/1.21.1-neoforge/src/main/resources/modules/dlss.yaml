@@ -16,6 +16,8 @@ inputImageConfigs:
     format: "R16_SFLOAT"
   - name: "first_hit_depth"
     format: "R16_SFLOAT"
+  - name: "first_hit_refraction"
+    format: "R16G16B16A16_SFLOAT"
 outputImageConfigs:
   - name: "processed"
     format: "R16G16B16A16_SFLOAT"

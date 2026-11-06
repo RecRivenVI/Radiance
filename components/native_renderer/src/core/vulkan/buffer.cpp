@@ -1,9 +1,11 @@
 #include "core/vulkan/buffer.hpp"
+#include "core/diagnostics/scene_replay.hpp"
 
 #include "core/logging.hpp"
 #include "core/failure_state.hpp"
 
 #include "core/diagnostics/alloc_trace.hpp"
+#include "core/diagnostics/frame_profile.hpp"
 #include "core/render/render_framework.hpp"
 #include "core/render/renderer.hpp"
 #include "core/vulkan/command.hpp"
@@ -24,7 +26,13 @@ auto bufferCerr() {
 }
 
 namespace {
+template <class Action>
+auto allocationCall(const char *label, uint64_t bytes, Action &&action) {
+    mcvr::profile::AllocationScope scope(label, bytes);
+    return action();
+}
 void nameAllocation(VmaAllocator allocator, VmaAllocation allocation, const char *kind, VkBufferUsageFlags usage) {
+    mcvr::profile::AllocationScope scope("allocation.vma.name");
     char name[192];
     std::snprintf(name, sizeof(name), "%s %s usage=%u",
                   mcvr::diag::allocTraceTag ? mcvr::diag::allocTraceTag : "internal", kind, unsigned(usage));
@@ -41,6 +49,7 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
                                          size_t size,
                                          VkBufferUsageFlags usage)
     : vma_(vma), device_(device), size_(size), bufferUsage_(usage) {
+    mcvr::profile::AllocationScope total("allocation.host.total", size_);
     VkBufferCreateInfo bufferInfo = {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size_;
@@ -54,8 +63,10 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
     //     allocationInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     // }
 
-    const VkResult createResult =
-        vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &buffer_, &allocation_, &allocationInfo_);
+    const VkResult createResult = allocationCall("allocation.host.vma", size_, [&] {
+        return vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &buffer_, &allocation_,
+                               &allocationInfo_);
+    });
     if (createResult != VK_SUCCESS) { throwBufferAllocationFailure(createResult, "host-visible buffer", size_); }
     mappedPtr_ = allocationInfo_.pMappedData;
     allocTraceTag_ = mcvr::diag::recordAllocCreate("host", size_);
@@ -75,6 +86,7 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
                                          VkBufferUsageFlags usage,
                                          VkDeviceSize minAlignment)
     : vma_(vma), device_(device), size_(size), bufferUsage_(usage) {
+    mcvr::profile::AllocationScope total("allocation.host.total", size_);
     VkBufferCreateInfo bufferInfo = {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = size_;
@@ -88,8 +100,10 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
     //     allocationInfo.flags |= VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
     // }
 
-    const VkResult createResult = vmaCreateBufferWithAlignment(vma_->allocator(), &bufferInfo, &allocationInfo,
-                                                               minAlignment, &buffer_, &allocation_, &allocationInfo_);
+    const VkResult createResult = allocationCall("allocation.host.vma-aligned", size_, [&] {
+        return vmaCreateBufferWithAlignment(vma_->allocator(), &bufferInfo, &allocationInfo, minAlignment, &buffer_,
+                                            &allocation_, &allocationInfo_);
+    });
     if (createResult != VK_SUCCESS) {
         throwBufferAllocationFailure(createResult, "aligned host-visible buffer", size_);
     }
@@ -106,10 +120,12 @@ vk::HostVisibleBuffer::HostVisibleBuffer(std::shared_ptr<VMA> vma,
 }
 
 vk::HostVisibleBuffer::~HostVisibleBuffer() {
+    mcvr::profile::AllocationScope total("allocation.host.destroy-total", size_);
     device_->resource(VK_OBJECT_TYPE_BUFFER, (uint64_t)buffer_, bufferAddress_, size_, "MCVR host buffer", false);
     mcvr::diag::recordAllocDestroy("host", size_, allocTraceTag_);
     if (buffer_ != VK_NULL_HANDLE || allocation_ != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(vma_->allocator(), buffer_, allocation_);
+        allocationCall("allocation.vma.destroy", size_,
+                       [&] { vmaDestroyBuffer(vma_->allocator(), buffer_, allocation_); });
     }
 
 #ifdef DEBUG
@@ -202,6 +218,7 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
       size_(size),
       vmaAllocationFlags_(vmaAllocationFlags),
       vmaUsage_(vmaUsage) {
+    mcvr::profile::AllocationScope total("allocation.device.total", size_);
 #ifdef DEBUG
 // bufferCout() << "created buffer with size: " << size_ << std::endl;
 #endif
@@ -240,8 +257,10 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
     //     mcvr::log::info("Buffer") << "already specified VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" << std::endl;
     // }
 
-    const VkResult createResult =
-        vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &buffer_, &allocation_, &allocationInfo_);
+    const VkResult createResult = allocationCall("allocation.device.vma", size_, [&] {
+        return vmaCreateBuffer(vma_->allocator(), &bufferInfo, &allocationInfo, &buffer_, &allocation_,
+                               &allocationInfo_);
+    });
     if (createResult != VK_SUCCESS) {
         if (stagingBuffer_ != VK_NULL_HANDLE || stagingAllocation_ != VK_NULL_HANDLE) {
             vmaDestroyBuffer(vma_->allocator(), stagingBuffer_, stagingAllocation_);
@@ -276,6 +295,7 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
       size_(size),
       vmaAllocationFlags_(vmaAllocationFlags),
       vmaUsage_(vmaUsage) {
+    mcvr::profile::AllocationScope total("allocation.device.total", size_);
 #ifdef DEBUG
 // bufferCout() << "created buffer with size: " << size_ << std::endl;
 #endif
@@ -314,8 +334,10 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
     //     mcvr::log::info("Buffer") << "already specified VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT" << std::endl;
     // }
 
-    const VkResult createResult = vmaCreateBufferWithAlignment(vma_->allocator(), &bufferInfo, &allocationInfo,
-                                                               minAlignment, &buffer_, &allocation_, &allocationInfo_);
+    const VkResult createResult = allocationCall("allocation.device.vma-aligned", size_, [&] {
+        return vmaCreateBufferWithAlignment(vma_->allocator(), &bufferInfo, &allocationInfo, minAlignment, &buffer_,
+                                            &allocation_, &allocationInfo_);
+    });
     if (createResult != VK_SUCCESS) {
         if (stagingBuffer_ != VK_NULL_HANDLE || stagingAllocation_ != VK_NULL_HANDLE) {
             vmaDestroyBuffer(vma_->allocator(), stagingBuffer_, stagingAllocation_);
@@ -337,6 +359,7 @@ vk::DeviceLocalBuffer::DeviceLocalBuffer(std::shared_ptr<VMA> vma,
 }
 
 vk::DeviceLocalBuffer::~DeviceLocalBuffer() {
+    mcvr::profile::AllocationScope total("allocation.device.destroy-total", size_);
     device_->resource(VK_OBJECT_TYPE_BUFFER, (uint64_t)buffer_, bufferAddress_, size_, "MCVR device buffer", false);
     mcvr::diag::recordAllocDestroy("buffer", size_, allocTraceTag_);
     if (transientStagingRetainer_ != nullptr) {
@@ -346,10 +369,12 @@ vk::DeviceLocalBuffer::~DeviceLocalBuffer() {
         transientStagingRetainer_ = nullptr;
     }
     if (stagingBuffer_ != VK_NULL_HANDLE || stagingAllocation_ != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(vma_->allocator(), stagingBuffer_, stagingAllocation_);
+        allocationCall("allocation.vma.destroy-staging", size_,
+                       [&] { vmaDestroyBuffer(vma_->allocator(), stagingBuffer_, stagingAllocation_); });
     }
     if (buffer_ != VK_NULL_HANDLE || allocation_ != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(vma_->allocator(), buffer_, allocation_);
+        allocationCall("allocation.vma.destroy", size_,
+                       [&] { vmaDestroyBuffer(vma_->allocator(), buffer_, allocation_); });
     }
 
 #ifdef DEBUG
@@ -532,5 +557,6 @@ VkDeviceAddress &vk::DeviceLocalBuffer::bufferAddress() {
         mcvr::failure::invariant("DeviceLocalBuffer::bufferAddress",
                                  "buffer lacks VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT");
     }
+    if (mcvr::replay::captureEnabled()) mcvr::replay::registerBuffer(bufferAddress_, shared_from_this());
     return bufferAddress_;
 }

@@ -8,7 +8,7 @@
 // The file defines global arrays:
 //   - sobol_256spp_256d[256*256]
 //   - scramblingTile[128*128*8]
-#include "../../../third_party/FidelityFX-SDK/sdk/src/components/sssr/samplerBlueNoiseErrorDistribution_128x128_OptimizedFor_2d2d2d2d_1spp.cpp"
+#include "sampler_blue_noise.cpp"
 
 auto blueNoiseCout() {
     return mcvr::log::info("BlueNoise");

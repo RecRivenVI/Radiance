@@ -9,20 +9,8 @@
 #include <iostream>
 
 #ifdef MCVR_ENABLE_FFX_UPSCALER
-#    ifdef _WIN32
-#        include <windows.h>
-#        define FFX_API_ENTRY
-#        pragma warning(push)
-#        pragma warning(disable : 4005)
-#    endif
-
-#    include <ffx_api/ffx_api.hpp>
-#    include <ffx_api/ffx_upscale.hpp>
-#    include <ffx_api/vk/ffx_api_vk.hpp>
-
-#    ifdef _WIN32
-#        pragma warning(pop)
-#    endif
+#    include <ffx_upscale.hpp>
+#    include <vk/ffx_api_vk.hpp>
 
 #    include <volk.h>
 
@@ -65,7 +53,7 @@ FSR3Upscaler::~FSR3Upscaler() {
 
 bool FSR3Upscaler::isAvailable() const {
 #ifdef MCVR_ENABLE_FFX_UPSCALER
-    return true;
+    return mcvr::fsr::apiAvailable();
 #else
     return false;
 #endif
@@ -81,6 +69,7 @@ bool FSR3Upscaler::initialize(const UpscalerConfig &config) {
     mcvr::log::error("Fsr3Upscaler") << "FSR3Upscaler::initialize: FSR3 support not compiled in" << std::endl;
     return false;
 #else
+    if (!isAvailable()) return false;
     if (m_initialized) {
 #    ifdef DEBUG
         mcvr::log::debug("Fsr3Upscaler") << "Destroying the previous context" << std::endl;
@@ -161,9 +150,8 @@ bool FSR3Upscaler::createContext() {
         ffx::QueryDescGetVersions versionQuery{};
         versionQuery.createDescType = FFX_API_CREATE_CONTEXT_DESC_TYPE_UPSCALE;
 #    ifdef _WIN32
-        // On Windows, FFX SDK assumes 'device' is ID3D12Device* and crashes when passed a VkDevice.
-        // Passing nullptr avoids this check and safely uses the internal FSR3 provider.
-        versionQuery.device = nullptr;
+        VkDeviceContext deviceContext{m_device, m_physicalDevice, mcvr::fsr::customVkGetDeviceProcAddr};
+        versionQuery.device = &deviceContext;
 #    else
         versionQuery.device = m_device;
 #    endif
@@ -231,8 +219,13 @@ bool FSR3Upscaler::createContext() {
     // Create Vulkan backend use volk's loaded function pointers via our wrapper
     ffx::CreateBackendVKDesc backendDesc{};
     backendDesc.header.type = FFX_API_CREATE_CONTEXT_DESC_TYPE_BACKEND_VK;
+#    ifdef _WIN32
+    backendDesc.deviceContext.vkDevice = m_device;
+    backendDesc.deviceContext.vkPhysicalDevice = m_physicalDevice;
+#    else
     backendDesc.vkDevice = m_device;
     backendDesc.vkPhysicalDevice = m_physicalDevice;
+#    endif
 
     PFN_vkGetDeviceProcAddr deviceProcAddr =
         reinterpret_cast<PFN_vkGetDeviceProcAddr>(mcvr::fsr::customVkGetDeviceProcAddr);
@@ -259,7 +252,11 @@ bool FSR3Upscaler::createContext() {
         return false;
     }
 
+#    ifdef _WIN32
+    backendDesc.deviceContext.vkDeviceProcAddr = deviceProcAddr;
+#    else
     backendDesc.vkDeviceProcAddr = deviceProcAddr;
+#    endif
 #    ifdef DEBUG
     mcvr::log::error("Fsr3Upscaler") << "FSR3: vkDeviceProcAddr = " << reinterpret_cast<void *>(deviceProcAddr)
                                      << std::endl;
@@ -280,8 +277,15 @@ bool FSR3Upscaler::createContext() {
     createFsr.fpMessage = mcvr::fsr::messageCallback;
 
     m_fsrContext = nullptr;
+#    ifdef _WIN32
+    ffx::CreateContextDescUpscaleVersion apiVersion{};
+    apiVersion.version = FFX_UPSCALER_VERSION;
+    ffx::ReturnCode retCode =
+        ffx::CreateContext(reinterpret_cast<ffx::Context &>(m_fsrContext), nullptr, createFsr, backendDesc, apiVersion);
+#    else
     ffx::ReturnCode retCode =
         ffx::CreateContext(reinterpret_cast<ffx::Context &>(m_fsrContext), nullptr, createFsr, backendDesc);
+#    endif
 
     if (retCode == ffx::ReturnCode::Ok) {
         ffx::InitHelper<ffxQueryGetProviderVersion> providerQuery{};
@@ -462,7 +466,7 @@ bool FSR3Upscaler::dispatch(const UpscalerInput &input) {
     dispatchUpscale.cameraNear = input.cameraNear;
     dispatchUpscale.cameraFar = input.cameraFar;
     dispatchUpscale.cameraFovAngleVertical = input.cameraFovVertical;
-    dispatchUpscale.viewSpaceToMetersFactor = 0.0f;
+    dispatchUpscale.viewSpaceToMetersFactor = 1.0f; // One world block is one metre.
 
     // Flags
     dispatchUpscale.flags = 0;
